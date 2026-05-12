@@ -1,0 +1,3 @@
+# Placeholder for rule configuration.
+# The minimal SafeHarness implementation currently uses built-in Python guards.
+mode: default

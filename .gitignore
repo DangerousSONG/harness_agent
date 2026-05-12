@@ -8,6 +8,7 @@ venv/
 .team/
 .tasks/
 .transcripts/
+.audit/
 
 .vscode/
 .DS_Store

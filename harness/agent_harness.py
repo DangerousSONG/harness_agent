@@ -39,9 +39,6 @@ NOT a teaching session -- this is the "put it all together" reference.
 import json
 import os
 import sys
-import time
-import uuid
-import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -49,7 +46,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from queue import Queue
 from openai import OpenAI
 from dotenv import load_dotenv
 from tools import (
@@ -60,7 +56,9 @@ from tools import (
     run_write,
     run_edit,
 )
-from runtime import SkillLoader
+from runtime import LocalBackend, SkillLoader
+from safety import AuditLogger, PolicyEngine
+from safety.guards import DEFAULT_LEAD_CAPABILITIES
 from harness.todos import TodoManager
 from harness.subagent import run_subagent
 from harness.compression import estimate_tokens, microcompact, auto_compact
@@ -68,7 +66,6 @@ from harness.file_tasks import TaskManager
 from harness.background import BackgroundManager
 from harness.messaging import MessageBus
 from harness.team import TeammateManager
-from harness.review_state import shutdown_requests, plan_requests
 from harness.prompt import build_system_prompt
 from harness.loop import agent_loop
 
@@ -93,11 +90,9 @@ TRANSCRIPT_DIR = 压缩转录目录
 '''
 WORKDIR = PROJECT_ROOT
 
-TEAM_DIR = PROJECT_ROOT / ".team"
-INBOX_DIR = TEAM_DIR / "inbox"
-TASKS_DIR = PROJECT_ROOT / ".tasks"
 SKILLS_DIR = PROJECT_ROOT / "skills"
 TRANSCRIPT_DIR = PROJECT_ROOT / ".transcripts"
+AUDIT_DIR = PROJECT_ROOT / ".audit"
 TOKEN_THRESHOLD = 100000
 POLL_INTERVAL = 5
 IDLE_TIMEOUT = 60
@@ -109,14 +104,16 @@ VALID_MSG_TYPES = {"message", "broadcast", "shutdown_request",
 # === SECTION: global_instances ===
 TODO = TodoManager()
 SKILLS = SkillLoader(SKILLS_DIR)
-TASK_MGR = TaskManager(TASKS_DIR)
-BG = BackgroundManager(WORKDIR)
-BUS = MessageBus(INBOX_DIR)
+BACKEND = LocalBackend(PROJECT_ROOT, WORKDIR)
+POLICY = PolicyEngine()
+AUDIT = AuditLogger(AUDIT_DIR)
+TASK_MGR = TaskManager(BACKEND.task_store)
+BG = BackgroundManager(BACKEND.job_queue)
+BUS = MessageBus(BACKEND.message_store)
 TEAM = TeammateManager(
     bus=BUS,
     task_mgr=TASK_MGR,
-    team_dir=TEAM_DIR,
-    tasks_dir=TASKS_DIR,
+    runner=BACKEND.agent_runner,
     workdir=WORKDIR,
     client=client,
     model=MODEL,
@@ -139,19 +136,18 @@ SYSTEM = build_system_prompt(WORKDIR, SKILLS)
 
 # === SECTION: shutdown_protocol (s10) ===
 def handle_shutdown_request(teammate: str) -> str:
-    req_id = str(uuid.uuid4())[:8]
-    shutdown_requests[req_id] = {"target": teammate, "status": "pending"}
+    req_id = BACKEND.review_store.create_shutdown_request(teammate)
     BUS.send("lead", teammate, "Please shut down.", "shutdown_request", {"request_id": req_id})
     return f"Shutdown request {req_id} sent to '{teammate}'"
 
 # === SECTION: plan_approval (s10) ===
 def handle_plan_review(request_id: str, approve: bool, feedback: str = "") -> str:
-    req = plan_requests.get(request_id)
+    req = BACKEND.review_store.get_plan_request(request_id)
     if not req: return f"Error: Unknown plan request_id '{request_id}'"
-    req["status"] = "approved" if approve else "rejected"
+    BACKEND.review_store.set_plan_status(request_id, "approved" if approve else "rejected")
     BUS.send("lead", req["from"], feedback, "plan_approval_response",
              {"request_id": request_id, "approve": approve, "feedback": feedback})
-    return f"Plan {req['status']} for '{req['from']}'"
+    return f"Plan {'approved' if approve else 'rejected'} for '{req['from']}'"
 
 
 # === SECTION: tool_dispatch (s02) ===
@@ -235,6 +231,10 @@ if __name__ == "__main__":
             estimate_tokens=estimate_tokens,
             microcompact=microcompact,
             auto_compact=auto_compact,
+            policy_engine=POLICY,
+            audit_logger=AUDIT,
+            actor="lead",
+            allowed_capabilities=DEFAULT_LEAD_CAPABILITIES,
         )
         response_content = history[-1]["content"]
         if isinstance(response_content, list):

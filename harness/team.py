@@ -1,9 +1,8 @@
-# harness/team.py
-
 import json
-import threading
 import time
 from pathlib import Path
+
+from runtime.backends import AgentRunner
 
 
 def build_team_tools() -> list[dict]:
@@ -116,8 +115,7 @@ class TeammateManager:
         *,
         bus,
         task_mgr,
-        team_dir: Path,
-        tasks_dir: Path,
+        runner: AgentRunner,
         workdir: Path,
         client,
         model: str,
@@ -130,8 +128,7 @@ class TeammateManager:
     ):
         self.bus = bus
         self.task_mgr = task_mgr
-        self.team_dir = team_dir
-        self.tasks_dir = tasks_dir
+        self.runner = runner
         self.workdir = workdir
         self.client = client
         self.model = model
@@ -142,33 +139,8 @@ class TeammateManager:
         self.idle_timeout = idle_timeout
         self.poll_interval = poll_interval
 
-        self.team_dir.mkdir(parents=True, exist_ok=True)
-
-        self.config_path = self.team_dir / "config.json"
-        self.config = self._load()
-        self.threads = {}
-
-    def _load(self) -> dict:
-        if self.config_path.exists():
-            return json.loads(self.config_path.read_text(encoding="utf-8"))
-
-        return {
-            "team_name": "default",
-            "members": [],
-        }
-
-    def _save(self):
-        self.config_path.write_text(
-            json.dumps(self.config, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-
     def _find(self, name: str) -> dict | None:
-        for member in self.config["members"]:
-            if member["name"] == name:
-                return member
-
-        return None
+        return self.runner.get_member(name)
 
     def spawn(self, name: str, role: str, prompt: str) -> str:
         member = self._find(name)
@@ -177,35 +149,16 @@ class TeammateManager:
             if member["status"] not in ("idle", "shutdown"):
                 return f"Error: '{name}' is currently {member['status']}"
 
-            member["status"] = "working"
-            member["role"] = role
+            self.runner.upsert_member(name, role, "working")
         else:
-            member = {
-                "name": name,
-                "role": role,
-                "status": "working",
-            }
-            self.config["members"].append(member)
+            self.runner.upsert_member(name, role, "working")
 
-        self._save()
-
-        thread = threading.Thread(
-            target=self._loop,
-            args=(name, role, prompt),
-            daemon=True,
-        )
-        thread.start()
-
-        self.threads[name] = thread
+        self.runner.start_teammate(name, self._loop, name, role, prompt)
 
         return f"Spawned '{name}' (role: {role})"
 
     def _set_status(self, name: str, status: str):
-        member = self._find(name)
-
-        if member:
-            member["status"] = status
-            self._save()
+        self.runner.set_member_status(name, status)
 
     def _dispatch_tool(self, name: str, tool_name: str, tool_args: dict) -> tuple[str, bool]:
         idle_requested = False
@@ -249,7 +202,7 @@ class TeammateManager:
         return str(output), idle_requested
 
     def _loop(self, name: str, role: str, prompt: str):
-        team_name = self.config["team_name"]
+        team_name = self.runner.team_name()
 
         system_prompt = (
             f"You are '{name}', role: {role}, team: {team_name}, at {self.workdir}. "
@@ -380,7 +333,7 @@ class TeammateManager:
                     resume = True
                     break
 
-                unclaimed = self._find_unclaimed_tasks()
+                unclaimed = self.task_mgr.list_unclaimed()
 
                 if unclaimed:
                     task = unclaimed[0]
@@ -421,28 +374,15 @@ class TeammateManager:
 
             self._set_status(name, "working")
 
-    def _find_unclaimed_tasks(self) -> list[dict]:
-        unclaimed = []
-
-        for f in sorted(self.tasks_dir.glob("task_*.json")):
-            task = json.loads(f.read_text(encoding="utf-8"))
-
-            if (
-                task.get("status") == "pending"
-                and not task.get("owner")
-                and not task.get("blockedBy")
-            ):
-                unclaimed.append(task)
-
-        return unclaimed
-
     def list_all(self) -> str:
-        if not self.config["members"]:
+        members = self.runner.list_members()
+
+        if not members:
             return "No teammates."
 
-        lines = [f"Team: {self.config['team_name']}"]
+        lines = [f"Team: {self.runner.team_name()}"]
 
-        for member in self.config["members"]:
+        for member in members:
             lines.append(
                 f"  {member['name']} ({member['role']}): {member['status']}"
             )
@@ -450,7 +390,4 @@ class TeammateManager:
         return "\n".join(lines)
 
     def member_names(self) -> list:
-        return [
-            member["name"]
-            for member in self.config["members"]
-        ]
+        return self.runner.member_names()

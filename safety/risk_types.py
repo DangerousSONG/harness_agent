@@ -1,0 +1,7 @@
+DIRECT_PROMPT_INJECTION = "direct_prompt_injection"
+INDIRECT_PROMPT_INJECTION = "indirect_prompt_injection"
+TOOL_ABUSE = "tool_abuse"
+TOOL_TAMPERING = "tool_tampering"
+MEMORY_POISONING = "memory_poisoning"
+PRIVILEGE_ESCALATION = "privilege_escalation"
+SECRET_EXFILTRATION = "secret_exfiltration"

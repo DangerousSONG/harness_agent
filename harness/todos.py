@@ -1,5 +1,5 @@
 # harness/todos.py
-
+# === SECTION: todos (s03) ===
 
 class TodoManager:
     def __init__(self):
