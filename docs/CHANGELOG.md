@@ -4,6 +4,28 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-12
 
+### SafeHarness Policy Configuration
+
+- Added `safety/policy.py` with built-in safe defaults, lightweight YAML parsing, deep-merge fallback behavior, and actor capability lookup.
+- Added `safety/policy_config.py` and connected policy selection to `SAFETY_POLICY`.
+- Changed `PolicyEngine` to accept a loaded policy dictionary.
+- Updated `InputGuard`, `ToolCallGuard`, `ToolResultGuard`, and `PermissionGuard` to read policy configuration.
+- Filled `safety/policies/default_policy.yaml` for local development mode.
+- Filled `safety/policies/high_security_policy.yaml` for stricter locked-down mode.
+- Connected audit path, enabled flag, and payload summary length to the loaded policy.
+- Current `require_approval` decisions are converted to `block` at runtime because an approval queue is not implemented yet.
+- Added `scripts/safety_smoke_test.py`.
+- Added `requirements.txt` with the current minimal runtime dependencies.
+
+### Policy Validation
+
+- `python -m compileall harness runtime tools safety`
+- `"q" | python .\harness\agent_harness.py`
+- `python .\scripts\safety_smoke_test.py`
+- Policy loading smoke test for default policy and bash approval behavior.
+- Missing policy fallback smoke test.
+- High-security direct prompt injection block smoke test.
+
 ### Added
 
 - Created documentation governance structure:

@@ -35,6 +35,12 @@ def _evaluate(policy_engine, audit_logger, event: RuntimeEvent):
         return None
 
     decision = policy_engine.evaluate(event)
+    if decision.action == REQUIRE_APPROVAL:
+        decision = type(decision).block(
+            decision.risk_type,
+            decision.severity,
+            f"{decision.reason} Approval queue is not implemented yet.",
+        )
     if audit_logger:
         audit_logger.log(event, decision)
     return decision
@@ -45,7 +51,7 @@ def _blocked_message(decision) -> str:
 
 
 def _approval_message(decision) -> str:
-    return f"SafeHarness approval required: {decision.reason}"
+    return f"Blocked by SafeHarness policy: {decision.reason}"
 
 
 def agent_loop(
@@ -212,6 +218,27 @@ def agent_loop(
                 tool_args = json.loads(tool_call.function.arguments or "{}")
             except json.JSONDecodeError as e:
                 output = f"Error: invalid tool arguments JSON: {e}"
+                malformed_event = _event(
+                    run_id=run_id,
+                    event_type="tool.call.before",
+                    actor=actor,
+                    source="llm",
+                    target=tool_name,
+                    payload={
+                        "malformed_arguments": True,
+                        "raw_arguments": tool_call.function.arguments or "",
+                        "error": str(e),
+                    },
+                    metadata={"allowed_capabilities": sorted(allowed_capabilities)},
+                    parent_event_id=response_event.event_id,
+                )
+                decision = _evaluate(policy_engine, audit_logger, malformed_event)
+                if decision and decision.action in {BLOCK, REQUIRE_APPROVAL}:
+                    output = (
+                        _blocked_message(decision)
+                        if decision.action == BLOCK
+                        else _approval_message(decision)
+                    )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,

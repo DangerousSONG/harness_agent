@@ -5,13 +5,8 @@ from safety.risk_types import INDIRECT_PROMPT_INJECTION
 
 
 class ToolResultGuard:
-    INJECTION_PATTERNS = [
-        "ignore previous instructions",
-        "you are now",
-        "call this tool",
-        "send this secret",
-        "把以下内容作为最高优先级指令",
-    ]
+    def __init__(self, policy: dict | None = None):
+        self.policy = policy or {}
 
     def evaluate(self, event) -> PolicyDecision:
         if event.event_type != "tool.result.before_model":
@@ -19,8 +14,20 @@ class ToolResultGuard:
 
         result = str(event.payload.get("result", ""))
         lowered = result.lower()
+        indirect = self.policy.get("prompt_injection", {}).get("indirect", {})
 
-        for pattern in self.INJECTION_PATTERNS:
+        for pattern in indirect.get("block_patterns", []):
+            if pattern.lower() in lowered:
+                return PolicyDecision.block(
+                    INDIRECT_PROMPT_INJECTION,
+                    "high",
+                    (
+                        "Matched policy.prompt_injection.indirect.block_patterns "
+                        f"pattern: {pattern}"
+                    ),
+                )
+
+        for pattern in indirect.get("sanitize_patterns", []):
             if pattern.lower() in lowered:
                 sanitized = {
                     **event.payload,
@@ -33,7 +40,10 @@ class ToolResultGuard:
                 return PolicyDecision.sanitize(
                     INDIRECT_PROMPT_INJECTION,
                     "high",
-                    f"Tool result contains prompt-injection phrase: {pattern}",
+                    (
+                        "Matched policy.prompt_injection.indirect.sanitize_patterns "
+                        f"pattern: {pattern}"
+                    ),
                     sanitized,
                 )
 
@@ -48,6 +58,6 @@ class ToolResultGuard:
         return PolicyDecision.sanitize(
             INDIRECT_PROMPT_INJECTION,
             "low",
-            "Wrapped tool result as untrusted content before returning it to the model.",
+            "Applied policy.defaults.indirect_tool_result_injection=sanitize wrapper.",
             wrapped,
         )

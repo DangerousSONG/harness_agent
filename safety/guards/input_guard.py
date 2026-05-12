@@ -5,40 +5,52 @@ from safety.risk_types import DIRECT_PROMPT_INJECTION
 
 
 class InputGuard:
-    BLOCK_PATTERNS = [
-        "reveal system prompt",
-        "泄露系统提示词",
-        "bypass policy",
-        "绕过安全策略",
-        "disable safety",
-        "关闭安全检查",
-    ]
-    WARN_PATTERNS = [
-        "ignore previous instructions",
-        "忽略之前的指令",
-        "忽略系统提示",
-    ]
+    def __init__(self, policy: dict | None = None):
+        self.policy = policy or {}
 
     def evaluate(self, event) -> PolicyDecision:
         if event.event_type not in {"user_input.received", "llm.request.before"}:
             return PolicyDecision.allow()
 
         text = str(event.payload.get("content") or event.payload.get("messages") or "").lower()
+        direct = self.policy.get("prompt_injection", {}).get("direct", {})
+        block_patterns = direct.get("block_patterns", [])
+        warn_patterns = direct.get("warn_patterns", [])
 
-        for pattern in self.BLOCK_PATTERNS:
+        for pattern in block_patterns:
             if pattern.lower() in text:
                 return PolicyDecision.block(
                     DIRECT_PROMPT_INJECTION,
                     "high",
-                    f"Input contains explicit unsafe instruction: {pattern}",
+                    (
+                        "Matched policy.prompt_injection.direct.block_patterns "
+                        f"pattern: {pattern}"
+                    ),
                 )
 
-        for pattern in self.WARN_PATTERNS:
+        for pattern in warn_patterns:
             if pattern.lower() in text:
+                default_action = self.policy.get("defaults", {}).get(
+                    "direct_prompt_injection",
+                    "warn",
+                )
+                if default_action == "block":
+                    return PolicyDecision.block(
+                        DIRECT_PROMPT_INJECTION,
+                        "high",
+                        (
+                            "Matched policy.defaults.direct_prompt_injection=block "
+                            "and policy.prompt_injection.direct.warn_patterns "
+                            f"pattern: {pattern}"
+                        ),
+                    )
                 return PolicyDecision.warn(
                     DIRECT_PROMPT_INJECTION,
                     "medium",
-                    f"Input contains suspicious instruction override text: {pattern}",
+                    (
+                        "Matched policy.prompt_injection.direct.warn_patterns "
+                        f"pattern: {pattern}"
+                    ),
                 )
 
         return PolicyDecision.allow()

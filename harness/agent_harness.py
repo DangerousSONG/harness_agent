@@ -57,8 +57,7 @@ from tools import (
     run_edit,
 )
 from runtime import LocalBackend, SkillLoader
-from safety import AuditLogger, PolicyEngine
-from safety.guards import DEFAULT_LEAD_CAPABILITIES
+from safety import AuditLogger, PolicyEngine, capabilities_for_actor, load_policy
 from harness.todos import TodoManager
 from harness.subagent import run_subagent
 from harness.compression import estimate_tokens, microcompact, auto_compact
@@ -92,7 +91,6 @@ WORKDIR = PROJECT_ROOT
 
 SKILLS_DIR = PROJECT_ROOT / "skills"
 TRANSCRIPT_DIR = PROJECT_ROOT / ".transcripts"
-AUDIT_DIR = PROJECT_ROOT / ".audit"
 TOKEN_THRESHOLD = 100000
 POLL_INTERVAL = 5
 IDLE_TIMEOUT = 60
@@ -105,8 +103,17 @@ VALID_MSG_TYPES = {"message", "broadcast", "shutdown_request",
 TODO = TodoManager()
 SKILLS = SkillLoader(SKILLS_DIR)
 BACKEND = LocalBackend(PROJECT_ROOT, WORKDIR)
-POLICY = PolicyEngine()
-AUDIT = AuditLogger(AUDIT_DIR)
+POLICY_CONFIG = load_policy()
+POLICY = PolicyEngine(policy=POLICY_CONFIG)
+print(f"[SafeHarness] policy={POLICY.policy.get('policy_name', 'unknown')}")
+AUDIT_CONFIG = POLICY.policy.get("audit", {})
+AUDIT_PATH = PROJECT_ROOT / AUDIT_CONFIG.get("path", ".audit/events.jsonl")
+AUDIT = AuditLogger(
+    AUDIT_PATH,
+    enabled=bool(AUDIT_CONFIG.get("enabled", True)),
+    redact_secrets=bool(AUDIT_CONFIG.get("redact_secrets", True)),
+    max_payload_chars=int(AUDIT_CONFIG.get("max_payload_chars", 1000)),
+)
 TASK_MGR = TaskManager(BACKEND.task_store)
 BG = BackgroundManager(BACKEND.job_queue)
 BUS = MessageBus(BACKEND.message_store)
@@ -234,7 +241,7 @@ if __name__ == "__main__":
             policy_engine=POLICY,
             audit_logger=AUDIT,
             actor="lead",
-            allowed_capabilities=DEFAULT_LEAD_CAPABILITIES,
+            allowed_capabilities=capabilities_for_actor(POLICY.policy, "lead"),
         )
         response_content = history[-1]["content"]
         if isinstance(response_content, list):

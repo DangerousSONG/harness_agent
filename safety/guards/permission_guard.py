@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from safety.decisions import PolicyDecision
+from safety.policy import capabilities_for_actor
 from safety.risk_types import PRIVILEGE_ESCALATION, TOOL_ABUSE
 
 
@@ -45,37 +46,67 @@ DEFAULT_LEAD_CAPABILITIES = {
 
 
 class PermissionGuard:
-    HIGH_RISK_TOOLS = {"bash", "background_run"}
+    def __init__(self, policy: dict | None = None):
+        self.policy = policy or {}
+
+    def _tool_config(self, tool: str) -> dict | None:
+        return self.policy.get("tools", {}).get(tool)
 
     def evaluate(self, event) -> PolicyDecision:
         if event.event_type != "tool.call.before":
             return PolicyDecision.allow()
 
         tool = event.target
-        required = TOOL_CAPABILITIES.get(tool, set())
-        allowed = set(event.metadata.get("allowed_capabilities") or DEFAULT_LEAD_CAPABILITIES)
+        config = self._tool_config(tool)
+
+        if config is None and tool not in TOOL_CAPABILITIES:
+            action = self.policy.get("defaults", {}).get("unknown_tool", "block")
+            if action == "block":
+                return PolicyDecision.block(
+                    PRIVILEGE_ESCALATION,
+                    "high",
+                    "Matched policy.defaults.unknown_tool=block "
+                    f"for unknown tool: {tool}",
+                )
+
+        capability = config.get("capability") if config else None
+        required = {capability} if capability else TOOL_CAPABILITIES.get(tool, set())
+        actor = event.actor or "lead"
+        allowed = set(
+            event.metadata.get("allowed_capabilities")
+            or capabilities_for_actor(self.policy, actor)
+            or DEFAULT_LEAD_CAPABILITIES
+        )
         missing = sorted(required - allowed)
 
         if missing:
             return PolicyDecision.block(
                 PRIVILEGE_ESCALATION,
                 "high",
-                f"Tool '{tool}' requires missing capabilities: {', '.join(missing)}",
+                (
+                    f"Matched policy.capabilities.{actor}; tool '{tool}' "
+                    f"requires missing capabilities: {', '.join(missing)}"
+                ),
             )
 
-        actor = event.actor or "lead"
-        if actor != "lead" and tool in self.HIGH_RISK_TOOLS:
+        default_action = config.get("default_action") if config else None
+        risk = config.get("risk", "medium") if config else "medium"
+
+        if actor != "lead" and default_action == "require_approval":
             return PolicyDecision.require_approval(
                 PRIVILEGE_ESCALATION,
-                "high",
-                f"Actor '{actor}' cannot run high-risk tool '{tool}' without approval.",
+                risk,
+                (
+                    f"Matched policy.tools.{tool}.default_action=require_approval "
+                    f"for non-lead actor '{actor}'."
+                ),
             )
 
-        if tool == "bash":
+        if default_action == "require_approval":
             return PolicyDecision.warn(
                 TOOL_ABUSE,
-                "medium",
-                "Shell execution is audited as a medium-risk capability.",
+                risk,
+                f"Matched policy.tools.{tool}.default_action=require_approval",
             )
 
         return PolicyDecision.allow()

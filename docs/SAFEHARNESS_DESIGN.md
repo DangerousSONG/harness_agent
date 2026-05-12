@@ -4,15 +4,17 @@
 
 SafeHarness upgrades the Agent Harness into a policy-mediated runtime. Instead of checking only user input, it emits `RuntimeEvent` objects at key intermediate states and evaluates them through a unified `PolicyEngine`.
 
-## Current Minimal Implementation
+## Current Implementation
 
 Implemented in `safety/`:
 
 - `events.py`: `RuntimeEvent`
 - `decisions.py`: `PolicyDecision`
 - `risk_types.py`: risk type constants
+- `policy.py`: safe defaults, lightweight YAML parsing, and merge helpers
+- `policy_config.py`: policy selection, `SAFETY_POLICY` resolution, and public loader API
 - `policy_engine.py`: guard orchestration
-- `audit.py`: `.audit/events.jsonl` writer with basic secret redaction
+- `audit.py`: audit writer with basic secret redaction
 - `guards/input_guard.py`
 - `guards/tool_call_guard.py`
 - `guards/tool_result_guard.py`
@@ -66,36 +68,80 @@ Policy decisions support:
 - `require_approval`: stop the current action and return an approval-required message.
 - `block`: stop the action.
 
+## Policy Loading
+
+`PolicyEngine` accepts an already loaded policy dictionary. Policy selection and loading live in `safety/policy_config.py`.
+
+Current selection behavior:
+
+- `SAFETY_POLICY=default` -> `safety/policies/default_policy.yaml`
+- `SAFETY_POLICY=high_security` -> `safety/policies/high_security_policy.yaml`
+- unset `SAFETY_POLICY` -> default policy
+
+If the selected file is missing or malformed, loading falls back to built-in safe defaults.
+
+The loaded policy is a deep merge of:
+
+1. `SAFE_POLICY_DEFAULT`
+2. the YAML file contents
+
+This means missing fields keep safe defaults instead of becoming permissive.
+
+Current YAML support is intentionally lightweight and dependency-free. It supports the repository policy format: nested mappings, scalar values, booleans, and lists of scalars.
+
+## Policy Files
+
+`safety/policies/default_policy.yaml` is the local development policy. It gives the lead actor broad local capabilities, while approval-gating high-risk operations such as shell execution, background jobs, and teammate spawning.
+
+`safety/policies/high_security_policy.yaml` is the locked-down policy. It keeps a narrower capability set, blocks unknown tools, blocks shell by default unless the command matches an allowlist, requires approval for edits to `AGENTS.md`, `docs/**`, `harness/**`, `safety/**`, and `tools/**`, and blocks more exfiltration and prompt-injection patterns.
+
+Policy schema sections:
+
+- `policy_name`, `mode`, `version`
+- `defaults`
+- `risk_thresholds`
+- `capabilities`
+- `tools`
+- `prompt_injection`
+- `memory`
+- `audit`
+
 ## Guards
+
+Guards are configuration-driven. `PolicyEngine` loads the policy and passes it into each guard.
 
 ### InputGuard
 
-Detects direct prompt injection phrases such as:
+Reads:
 
-- `ignore previous instructions`
-- `忽略之前的指令`
-- `忽略系统提示`
-- `reveal system prompt`
-- `泄露系统提示词`
-- `bypass policy`
-- `绕过安全策略`
-- `disable safety`
-- `关闭安全检查`
+- `prompt_injection.direct.warn_patterns`
+- `prompt_injection.direct.block_patterns`
 
-Suspicious overrides can warn; explicit system-prompt disclosure or safety bypass attempts block.
+Suspicious instruction override text can warn. Explicit system-prompt disclosure, safety bypass, or safety disabling attempts block according to policy.
 
 ### ToolCallGuard
 
-Checks high-risk tool usage:
+Reads per-tool configuration from `tools.<tool>`:
 
-- dangerous shell/background commands
-- protected file writes or edits, including `.env`, tool schema, prompt, and safety policy paths
-- outbound message content that appears to contain secrets or system prompt content
-- unsafe teammate prompts that request bypass, stealth, or hidden behavior
+- `blocked_patterns`
+- `require_approval_patterns`
+- `blocked_paths`
+- `require_approval_paths`
+- `blocked_content_patterns`
+- `blocked_prompt_patterns`
+- `default_action`
+- `risk`
+
+This guard handles command risk, protected paths, outbound secret patterns, and unsafe teammate prompts.
 
 ### ToolResultGuard
 
-Treats all tool results as untrusted. Before returning a tool result to the model, it wraps the result:
+Reads:
+
+- `prompt_injection.indirect.sanitize_patterns`
+- `prompt_injection.indirect.block_patterns`
+
+All tool results are treated as untrusted. Before returning a tool result to the model, SafeHarness wraps it:
 
 ```xml
 <untrusted_tool_result tool="tool_name">
@@ -103,28 +149,33 @@ Treats all tool results as untrusted. Before returning a tool result to the mode
 </untrusted_tool_result>
 ```
 
-If prompt-injection phrases are detected in the tool output, the result is sanitized.
+If policy patterns match, the result is sanitized or blocked.
 
 ### PermissionGuard
 
-Defines tool capabilities:
+Reads:
 
-- `shell.execute`
-- `file.read`
-- `file.write`
-- `file.edit`
-- `task.manage`
-- `message.send`
-- `teammate.spawn`
-- `background.run`
-- `skill.load`
-- `memory.write`
+- `capabilities.<actor>`
+- `tools.<tool>.capability`
+- `defaults.unknown_tool`
+- `tools.<tool>.default_action`
 
-Each tool maps to required capabilities. The current lead run receives `DEFAULT_LEAD_CAPABILITIES`. Teammate-specific reduced permissions are reserved for the next stage.
+Unknown tools block by default. Missing actor capabilities block. Approval-gated tools warn for the lead and require approval for non-lead actors unless a stricter guard blocks first.
+
+Current runtime behavior:
+
+- `require_approval` is converted to `block` at execution time because an interactive approval queue is not implemented yet.
+- The final reason recorded in audit includes `Approval queue is not implemented yet.`
 
 ## Audit
 
-`AuditLogger` writes `.audit/events.jsonl`. Records include:
+`AuditLogger` writes the configured audit path. In the default policy this is:
+
+```text
+.audit/events.jsonl
+```
+
+Records include:
 
 - event
 - decision
@@ -134,22 +185,21 @@ Each tool maps to required capabilities. The current lead run receives `DEFAULT_
 - risk type
 - severity
 - reason
-- redacted payload summary
+- redacted payload summary capped by `audit.max_payload_chars`
 
 Do not commit `.audit/`.
 
-## Policy Files
-
-`safety/policies/default_policy.yaml` and `high_security_policy.yaml` are placeholders. Current rules are coded in guards. Future work should load YAML policy configuration into `PolicyEngine`.
-
 ## Future Work
 
+- Add policy selection through environment variable or CLI flag.
+- Add a real approval queue so `require_approval` can pause instead of converting to `block`.
 - Add `ToolRegistryGuard` for tool allowlist, schema hash, handler matching, and malicious descriptions.
 - Add `MemoryGuard` for `memory.write.before` and skill-content safety scanning.
 - Add explicit `skill.load.before` event before skill body injection.
 - Add `task.create.before`, `message.send.before`, and `teammate.spawn.before` manager-level events.
 - Add LLM Judge as a second-pass classifier for ambiguous cases.
 - Add enterprise policy-center integration for centrally managed allowlists and deny rules.
+- Add formal policy schema validation and startup diagnostics.
 
 ## Change Rules
 

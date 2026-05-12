@@ -22,32 +22,51 @@ def redact_text(value: str, limit: int = 500) -> str:
     return text
 
 
-def summarize_payload(payload: Any) -> Any:
+def summarize_payload(payload: Any, max_chars: int = 500) -> Any:
     if isinstance(payload, str):
-        return redact_text(payload)
+        return redact_text(payload, max_chars)
     if isinstance(payload, dict):
         return {
-            str(k): summarize_payload(v)
+            str(k): summarize_payload(v, max_chars)
             for k, v in payload.items()
             if str(k).lower() not in {"content_raw", "full_content"}
         }
     if isinstance(payload, list):
-        return [summarize_payload(v) for v in payload[:20]]
+        return [summarize_payload(v, max_chars) for v in payload[:20]]
     return payload
 
 
 class AuditLogger:
-    def __init__(self, audit_dir: Path):
-        self.audit_dir = audit_dir
+    def __init__(
+        self,
+        audit_path: Path,
+        *,
+        enabled: bool = True,
+        redact_secrets: bool = True,
+        max_payload_chars: int = 1000,
+    ):
+        self.enabled = enabled
+        self.redact_secrets = redact_secrets
+        self.max_payload_chars = max_payload_chars
+        if audit_path.suffix == ".jsonl":
+            self.path = audit_path
+            self.audit_dir = audit_path.parent
+        else:
+            self.audit_dir = audit_path
+            self.path = self.audit_dir / "events.jsonl"
         self.audit_dir.mkdir(parents=True, exist_ok=True)
-        self.path = self.audit_dir / "events.jsonl"
 
     def log(self, event: RuntimeEvent, decision: PolicyDecision) -> None:
+        if not self.enabled:
+            return
+
         record = {
             "timestamp": utc_now(),
             "event": {
                 **event.to_dict(),
-                "payload": summarize_payload(event.payload),
+                "payload": summarize_payload(event.payload, self.max_payload_chars)
+                if self.redact_secrets
+                else event.payload,
             },
             "decision": decision.to_dict(),
             "actor": event.actor,

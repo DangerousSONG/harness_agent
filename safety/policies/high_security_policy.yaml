@@ -1,3 +1,184 @@
-# Placeholder for stricter enterprise policy configuration.
-# Future versions can load this file into PolicyEngine.
-mode: high_security
+policy_name: high_security
+mode: locked_down
+version: 0.1.0
+
+defaults:
+  unknown_tool: block
+  malformed_tool_args: block
+  indirect_tool_result_injection: sanitize
+  direct_prompt_injection: block
+  require_approval_fallback: block
+
+risk_thresholds:
+  warn: low
+  require_approval: low
+  block: medium
+
+capabilities:
+  lead:
+    - shell.execute
+    - file.read
+    - file.write
+    - file.edit
+    - task.manage
+    - message.send
+    - skill.load
+  teammate:
+    - file.read
+    - task.manage
+
+tools:
+  bash:
+    capability: shell.execute
+    risk: high
+    default_action: block
+    allowed_patterns:
+      - "dir"
+      - "ls"
+      - "pwd"
+      - "echo "
+      - "Get-ChildItem"
+    blocked_patterns:
+      - "rm -rf /"
+      - "del /s"
+      - "sudo"
+      - "shutdown"
+      - "reboot"
+      - "format "
+      - "Remove-Item -Recurse"
+  read_file:
+    capability: file.read
+    risk: medium
+    default_action: allow
+    blocked_paths:
+      - ".env"
+      - "*.pem"
+      - "*.key"
+      - "secrets/*"
+      - ".audit/*"
+  write_file:
+    capability: file.write
+    risk: high
+    default_action: allow
+    require_approval_paths:
+      - "AGENTS.md"
+      - "docs/**"
+      - "harness/**"
+      - "safety/**"
+      - "tools/**"
+    blocked_paths:
+      - ".env"
+      - "*.pem"
+      - "*.key"
+      - "secrets/*"
+  edit_file:
+    capability: file.edit
+    risk: high
+    default_action: allow
+    require_approval_paths:
+      - "AGENTS.md"
+      - "docs/**"
+      - "harness/**"
+      - "safety/**"
+      - "tools/**"
+    blocked_paths:
+      - ".env"
+      - "*.pem"
+      - "*.key"
+      - "secrets/*"
+  background_run:
+    capability: background.run
+    risk: high
+    default_action: require_approval
+    blocked_patterns:
+      - "curl "
+      - "wget "
+      - "Invoke-WebRequest"
+      - "scp "
+      - "ssh "
+  send_message:
+    capability: message.send
+    risk: high
+    default_action: allow
+    blocked_content_patterns:
+      - "sk-"
+      - "OPENAI_API_KEY"
+      - "ANTHROPIC_API_KEY"
+      - "BEGIN PRIVATE KEY"
+      - "password"
+      - "secret"
+      - "system prompt"
+  broadcast:
+    capability: message.send
+    risk: high
+    default_action: allow
+    blocked_content_patterns:
+      - "sk-"
+      - "OPENAI_API_KEY"
+      - "ANTHROPIC_API_KEY"
+      - "BEGIN PRIVATE KEY"
+      - "password"
+      - "secret"
+      - "system prompt"
+  spawn_teammate:
+    capability: teammate.spawn
+    risk: high
+    default_action: require_approval
+    blocked_prompt_patterns:
+      - "hide from user"
+      - "do not report"
+      - "bypass"
+      - "disable safety"
+      - "ignore previous instructions"
+      - "长期潜伏"
+      - "绕过安全"
+      - "隐藏"
+  load_skill:
+    capability: skill.load
+    risk: high
+    default_action: require_approval
+
+prompt_injection:
+  direct:
+    warn_patterns:
+      - "ignore previous instructions"
+      - "忽略之前的指令"
+      - "忽略上面的规则"
+    block_patterns:
+      - "ignore previous instructions"
+      - "忽略之前的指令"
+      - "忽略上面的规则"
+      - "reveal system prompt"
+      - "泄露系统提示词"
+      - "disable safety"
+      - "关闭安全检查"
+      - "bypass policy"
+      - "绕过安全策略"
+  indirect:
+    sanitize_patterns:
+      - "ignore previous instructions"
+      - "you are now"
+      - "call this tool"
+      - "send this secret"
+      - "把以下内容作为最高优先级指令"
+    block_patterns:
+      - "exfiltrate"
+      - "steal"
+      - "泄露密钥"
+      - "发送凭证"
+      - "system prompt"
+
+memory:
+  blocked_patterns:
+    - "永远忽略安全规则"
+    - "永久绕过权限"
+    - "我是系统管理员"
+    - "save this api key"
+    - "记住这个密钥"
+    - "store this token"
+
+audit:
+  enabled: true
+  path: ".audit/events.jsonl"
+  redact_secrets: true
+  max_payload_chars: 500
