@@ -1,13 +1,5 @@
 # Harness Agent
 
-## self_improvement 技能
-
-`skills/self_improvement/SKILL.md` 定义了一个跨技能的学习管理器，用于支撑 Skill Memory Loop。
-
-它只记录明确的学习信号，例如命令失败、用户纠正、能力缺口、外部 API 失败、知识过时、发现更好方法、SafeHarness 事件和重复出现的问题。写入记忆前，会先把信号分类为 `noise`、`local_tip`、`transferable_learning`、`missing_capability`、`safety_policy_candidate` 或 `regression_case`。
-
-这个技能默认保持保守：不得记录 secret 原文，不得自动修改 `SKILL.md`、`AGENTS.md`、安全策略、工具 schema、工具 handler 或 harness prompt。它只能先记录 memory 或生成候选建议；任何长期规则变更都必须经过用户明确确认。
-
 一个基于 OpenAI Chat Completions API 的 Agent Harness 示例项目。它把常见的 Agent 运行机制集中在一个轻量 Python 工程里：工具调用、文件读写、子代理、后台任务、持久任务板、队友消息总线、上下文压缩和 REPL 交互。
 
 项目当前默认使用 `LocalBackend`，可以在单机环境继续运行；同时已经抽象出 Runtime Backend 层，方便后续替换为 Redis、PostgreSQL、Celery 或 Kubernetes Worker 等生产级基础设施。
@@ -296,6 +288,16 @@ description: Example skill description
 ```
 
 模型调用 `load_skill` 后，技能正文会以 `<skill>` 片段的形式进入上下文。
+
+## 内置 Skill
+
+### self_improvement
+
+`skills/self_improvement/SKILL.md` 是跨 Skill 的学习管理器，用于将明确的学习信号结构化记录到相应 Skill 的 memory 中。
+
+该 Skill 只处理具备长期价值的学习信号，包括命令失败、用户纠正、能力缺口、外部 API 失败、知识过时、更优方法、SafeHarness 事件以及重复出现的问题。写入 memory 前，信号必须先被归类为 `noise`、`local_tip`、`transferable_learning`、`missing_capability`、`safety_policy_candidate` 或 `regression_case`。
+
+`self_improvement` 不直接修改长期规则或关键运行文件。它不得记录 secret 原文，不得自动修改 `SKILL.md`、`AGENTS.md`、安全策略、工具 schema、工具 handler 或 harness prompt。涉及长期规则变更的内容只能先记录为 memory 或候选建议，后续修改必须经过用户明确确认。
 
 ## 注意事项
 

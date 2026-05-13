@@ -8,6 +8,7 @@ This file records meaningful project iterations. When judging current state, rea
 
 - 将顶层 `README.md` 中新增的英文说明段落统一改为中文。
 - 保留必要的技术名词、路径、命令和环境变量名称。
+- 将 `self_improvement` 说明从 README 开头移至 Skill 相关章节，并改为更正式的项目文档表述。
 
 ### self_improvement Benchmark Skeleton
 
