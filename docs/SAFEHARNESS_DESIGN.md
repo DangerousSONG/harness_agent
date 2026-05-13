@@ -162,6 +162,11 @@ Reads:
 
 Unknown tools block by default. Missing actor capabilities block. Approval-gated tools warn for the lead and require approval for non-lead actors unless a stricter guard blocks first.
 
+Skill memory tool capability mapping:
+
+- `record_learning`, `record_error`, `record_feature_request`, `record_policy_candidate`, and `record_regression_test` require `memory.write`.
+- `summarize_skill_memory` and `list_skill_memory` require `skill.load`.
+
 Current runtime behavior:
 
 - `require_approval` is converted to `block` at execution time because an interactive approval queue is not implemented yet.

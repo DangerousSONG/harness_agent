@@ -1,0 +1,18 @@
+skill: <skill_name>
+version: 0.1.0
+description: Static skill eval cases. No runner is required for this template.
+cases:
+  - id: <CASE-ID>
+    name: <short name>
+    category: <category>
+    input:
+      signal: <learning signal>
+      text: <input text>
+      target_skill: <skill_name>
+      domain: <domain>
+      source: <source>
+    existing_memory: []
+    expected:
+      should_record: true
+      record_type: <learning|error|feature_request|policy_candidate|regression_test>
+      classification: <noise|local_tip|transferable_learning|missing_capability|safety_policy_candidate|regression_case>

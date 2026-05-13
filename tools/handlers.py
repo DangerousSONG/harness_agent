@@ -12,6 +12,7 @@ def build_tool_handlers(
     TODO,
     run_subagent,
     SKILLS,
+    SKILL_MEMORY,
     BG,
     TASK_MGR,
     TEAM,
@@ -19,6 +20,59 @@ def build_tool_handlers(
     handle_shutdown_request,
     handle_plan_review,
 ):
+    def record_learning(**kw):
+        return SKILL_MEMORY.record_learning(
+            kw["skill_name"],
+            kw["title"],
+            kw["content"],
+            evidence=kw.get("evidence", ""),
+            source=kw.get("source", "manual"),
+            domain=kw.get("domain", "learning"),
+            priority=kw.get("priority", "medium"),
+        )
+
+    def record_error(**kw):
+        return SKILL_MEMORY.record_error(
+            kw["skill_name"],
+            kw["title"],
+            kw["content"],
+            command=kw.get("command", ""),
+            traceback=kw.get("traceback", ""),
+            source=kw.get("source", "manual"),
+            domain=kw.get("domain", "error"),
+            priority=kw.get("priority", "high"),
+        )
+
+    def record_feature_request(**kw):
+        return SKILL_MEMORY.record_feature_request(
+            kw["skill_name"],
+            kw["title"],
+            kw["content"],
+            source=kw.get("source", "manual"),
+            domain=kw.get("domain", "feature_request"),
+            priority=kw.get("priority", "medium"),
+        )
+
+    def record_policy_candidate(**kw):
+        return SKILL_MEMORY.record_policy_candidate(
+            kw["skill_name"],
+            kw["title"],
+            kw["content"],
+            risk_type=kw.get("risk_type", ""),
+            severity=kw.get("severity", ""),
+            source=kw.get("source", "manual"),
+            priority=kw.get("priority", "medium"),
+        )
+
+    def record_regression_test(**kw):
+        return SKILL_MEMORY.record_regression_test(
+            kw["skill_name"],
+            kw["title"],
+            kw["content"],
+            domain=kw.get("domain", "regression_test"),
+            priority=kw.get("priority", "medium"),
+        )
+
     return {
         "bash":             lambda **kw: run_bash(kw["command"]),
         "read_file":        lambda **kw: run_read(kw["path"], kw.get("limit")),
@@ -28,6 +82,13 @@ def build_tool_handlers(
         "TodoWrite":        lambda **kw: TODO.update(kw["items"]),
         "task":             lambda **kw: run_subagent(kw["prompt"], kw.get("agent_type", "Explore")),
         "load_skill":       lambda **kw: SKILLS.load(kw["name"]),
+        "record_learning":  record_learning,
+        "record_error":     record_error,
+        "record_feature_request": lambda **kw: record_feature_request(**kw),
+        "record_policy_candidate": lambda **kw: record_policy_candidate(**kw),
+        "record_regression_test": lambda **kw: record_regression_test(**kw),
+        "summarize_skill_memory": lambda **kw: SKILL_MEMORY.summarize_memory(kw["skill_name"]),
+        "list_skill_memory": lambda **kw: SKILL_MEMORY.list_memory(kw["skill_name"]),
         "compress":         lambda **kw: "Compressing...",
 
         "background_run":   lambda **kw: BG.run(kw["command"], kw.get("timeout", 120)),

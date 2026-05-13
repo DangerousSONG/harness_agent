@@ -1,5 +1,13 @@
 # Harness Agent
 
+## self_improvement Skill
+
+`skills/self_improvement/SKILL.md` defines a cross-skill learning manager for the Skill Memory Loop.
+
+It records only clear learning signals, such as command failures, user corrections, missing capabilities, external API failures, stale knowledge, better methods, SafeHarness events, and recurring patterns. Before writing memory, it classifies the signal as `noise`, `local_tip`, `transferable_learning`, `missing_capability`, `safety_policy_candidate`, or `regression_case`.
+
+The skill is intentionally conservative: it must not record raw secrets, automatically modify `SKILL.md`, `AGENTS.md`, safety policies, tool schemas, tool handlers, or harness prompts. It can record memory or candidate suggestions first; any long-term rule change requires explicit user confirmation.
+
 一个基于 OpenAI Chat Completions API 的 Agent Harness 示例项目。它把常见的 Agent 运行机制集中在一个轻量 Python 工程里：工具调用、文件读写、子代理、后台任务、持久任务板、队友消息总线、上下文压缩和 REPL 交互。
 
 项目当前默认使用 `LocalBackend`，可以在单机环境继续运行；同时已经抽象出 Runtime Backend 层，方便后续替换为 Redis、PostgreSQL、Celery 或 Kubernetes Worker 等生产级基础设施。

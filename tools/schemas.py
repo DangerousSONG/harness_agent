@@ -353,4 +353,130 @@ def build_tools(valid_msg_types: list[str]) -> list[dict]:
                 }
             }
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "record_learning",
+                "description": "Record a skill learning note in skill memory.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {"type": "string"},
+                        "title": {"type": "string"},
+                        "content": {"type": "string"},
+                        "evidence": {"type": "string"},
+                        "source": {"type": "string"},
+                        "domain": {"type": "string"},
+                        "priority": {"type": "string"},
+                    },
+                    "required": ["skill_name", "title", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "record_error",
+                "description": "Record a skill error note in skill memory.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {"type": "string"},
+                        "title": {"type": "string"},
+                        "content": {"type": "string"},
+                        "command": {"type": "string"},
+                        "traceback": {"type": "string"},
+                        "source": {"type": "string"},
+                        "domain": {"type": "string"},
+                        "priority": {"type": "string"},
+                    },
+                    "required": ["skill_name", "title", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "record_feature_request",
+                "description": "Record a skill feature request in skill memory.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {"type": "string"},
+                        "title": {"type": "string"},
+                        "content": {"type": "string"},
+                        "source": {"type": "string"},
+                        "domain": {"type": "string"},
+                        "priority": {"type": "string"},
+                    },
+                    "required": ["skill_name", "title", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "record_policy_candidate",
+                "description": "Record a skill policy candidate in skill memory.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {"type": "string"},
+                        "title": {"type": "string"},
+                        "content": {"type": "string"},
+                        "risk_type": {"type": "string"},
+                        "severity": {"type": "string"},
+                        "source": {"type": "string"},
+                        "priority": {"type": "string"},
+                    },
+                    "required": ["skill_name", "title", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "record_regression_test",
+                "description": "Record a skill regression test candidate in skill memory.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {"type": "string"},
+                        "title": {"type": "string"},
+                        "content": {"type": "string"},
+                        "domain": {"type": "string"},
+                        "priority": {"type": "string"},
+                    },
+                    "required": ["skill_name", "title", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "summarize_skill_memory",
+                "description": "Summarize stored memory for a skill.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {"type": "string"}
+                    },
+                    "required": ["skill_name"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_skill_memory",
+                "description": "List stored memory files and counts for a skill.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {"type": "string"}
+                    },
+                    "required": ["skill_name"]
+                }
+            }
+        },
     ]

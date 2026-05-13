@@ -56,7 +56,7 @@ from tools import (
     run_write,
     run_edit,
 )
-from runtime import LocalBackend, SkillLoader
+from runtime import LocalBackend, SkillLoader, SkillMemoryManager
 from safety import AuditLogger, PolicyEngine, capabilities_for_actor, load_policy
 from harness.todos import TodoManager
 from harness.subagent import run_subagent
@@ -90,6 +90,7 @@ TRANSCRIPT_DIR = 压缩转录目录
 WORKDIR = PROJECT_ROOT
 
 SKILLS_DIR = PROJECT_ROOT / "skills"
+GLOBAL_SKILL_MEMORY_DIR = PROJECT_ROOT / ".skills_memory"
 TRANSCRIPT_DIR = PROJECT_ROOT / ".transcripts"
 TOKEN_THRESHOLD = 100000
 POLL_INTERVAL = 5
@@ -102,6 +103,7 @@ VALID_MSG_TYPES = {"message", "broadcast", "shutdown_request",
 # === SECTION: global_instances ===
 TODO = TodoManager()
 SKILLS = SkillLoader(SKILLS_DIR)
+SKILL_MEMORY = SkillMemoryManager(SKILLS_DIR, GLOBAL_SKILL_MEMORY_DIR)
 BACKEND = LocalBackend(PROJECT_ROOT, WORKDIR)
 POLICY_CONFIG = load_policy()
 POLICY = PolicyEngine(policy=POLICY_CONFIG)
@@ -184,6 +186,7 @@ TOOL_HANDLERS = build_tool_handlers(
 ),
 
     SKILLS=SKILLS,
+    SKILL_MEMORY=SKILL_MEMORY,
     BG=BG,
     TASK_MGR=TASK_MGR,
     TEAM=TEAM,

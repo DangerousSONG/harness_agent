@@ -28,6 +28,13 @@ TOOL_CAPABILITIES = {
     "broadcast": {"message.send"},
     "shutdown_request": {"teammate.spawn"},
     "plan_approval": {"teammate.spawn"},
+    "record_learning": {"memory.write"},
+    "record_error": {"memory.write"},
+    "record_feature_request": {"memory.write"},
+    "record_policy_candidate": {"memory.write"},
+    "record_regression_test": {"memory.write"},
+    "summarize_skill_memory": {"skill.load"},
+    "list_skill_memory": {"skill.load"},
     "idle": set(),
 }
 
@@ -42,6 +49,7 @@ DEFAULT_LEAD_CAPABILITIES = {
     "teammate.spawn",
     "background.run",
     "skill.load",
+    "memory.write",
 }
 
 

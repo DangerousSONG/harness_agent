@@ -2,5 +2,14 @@
 
 from .skill_loader import SkillLoader
 from .backends import LocalBackend
+from .evolution_gate import EvolutionCandidate, EvaluationResult, EvolutionGate
+from .skill_memory import SkillMemoryManager
 
-__all__ = ["LocalBackend", "SkillLoader"]
+__all__ = [
+    "LocalBackend",
+    "SkillLoader",
+    "SkillMemoryManager",
+    "EvolutionCandidate",
+    "EvaluationResult",
+    "EvolutionGate",
+]

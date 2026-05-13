@@ -32,6 +32,7 @@ SAFE_POLICY_DEFAULT = {
             "teammate.spawn",
             "background.run",
             "skill.load",
+            "memory.write",
         ],
         "teammate": [
             "file.read",
@@ -133,6 +134,41 @@ SAFE_POLICY_DEFAULT = {
         "load_skill": {
             "capability": "skill.load",
             "risk": "medium",
+            "default_action": "allow",
+        },
+        "record_learning": {
+            "capability": "memory.write",
+            "risk": "medium",
+            "default_action": "allow",
+        },
+        "record_error": {
+            "capability": "memory.write",
+            "risk": "medium",
+            "default_action": "allow",
+        },
+        "record_feature_request": {
+            "capability": "memory.write",
+            "risk": "medium",
+            "default_action": "allow",
+        },
+        "record_policy_candidate": {
+            "capability": "memory.write",
+            "risk": "medium",
+            "default_action": "allow",
+        },
+        "record_regression_test": {
+            "capability": "memory.write",
+            "risk": "medium",
+            "default_action": "allow",
+        },
+        "summarize_skill_memory": {
+            "capability": "skill.load",
+            "risk": "low",
+            "default_action": "allow",
+        },
+        "list_skill_memory": {
+            "capability": "skill.load",
+            "risk": "low",
             "default_action": "allow",
         },
     },
