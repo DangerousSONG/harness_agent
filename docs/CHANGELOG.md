@@ -4,6 +4,11 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-13
 
+### README 中文统一
+
+- 将顶层 `README.md` 中新增的英文说明段落统一改为中文。
+- 保留必要的技术名词、路径、命令和环境变量名称。
+
 ### self_improvement Benchmark Skeleton
 
 - Added static eval cases for `self_improvement` under `skills/self_improvement/eval/cases.yaml`.
