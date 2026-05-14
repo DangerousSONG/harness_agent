@@ -2,6 +2,16 @@
 
 This file records meaningful project iterations. When judging current state, read this before older design notes.
 
+## 2026-05-14
+
+### Skill Memory Signal Attribution
+
+- Added `LearningSignal` and `classify_learning_signal` as the first learning signal classification entry point.
+- Added active skill attribution through `last_loaded_skill` after successful `load_skill`.
+- Made `record_*` tools able to omit `skill_name`; missing attribution falls back to the active skill or `self_improvement` with review required.
+- Added attribution metadata fields to new memory records: `Target Skill`, `Source Skill`, `Attribution Reason`, `Attribution Confidence`, and `Needs Attribution Review`.
+- Documented that the LLM judges learning signal ownership, runtime code handles redaction/deduplication/persistence, Evolution Gate handles promotion decisions, and humans confirm guarded long-term changes.
+
 ## 2026-05-13
 
 ### README 中文统一

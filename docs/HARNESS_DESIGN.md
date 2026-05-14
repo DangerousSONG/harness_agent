@@ -70,7 +70,11 @@ Stage 1 skill memory support now lives in `runtime/skill_memory.py`.
   - `eval/cases.yaml`
 - Global cross-skill memory lives under `.skills_memory/`.
 - Stage 1 intentionally uses markdown files. It now includes simple duplicate detection before `record_*` writes and updates existing markdown blocks by changing `Occurrence Count`, `Priority`, `Status`, and `Related`.
-- Skill memory is now exposed through the OpenAI tool surface, but it does not yet participate in automatic post-task learning loops.
+- Memory records now include attribution fields: `Target Skill`, `Source Skill`, `Attribution Reason`, `Attribution Confidence`, and `Needs Attribution Review`.
+- `SkillMemoryManager` tracks `last_loaded_skill` when `load_skill` succeeds. If `record_*` omits `skill_name`, the runtime uses `last_loaded_skill`; if no skill has been loaded, it records under `self_improvement` and marks the attribution for review.
+- `LearningSignal` and `classify_learning_signal` provide the first learning signal classification entry point. The model can use the `self_improvement` skill rules to decide whether a user correction, command failure, tool error, SafeHarness event, capability gap, better method, or stale knowledge should become memory.
+- The LLM judges the learning signal and target skill. Runtime code handles redaction, deduplication, attribution metadata, and markdown persistence.
+- Skill memory is exposed through the OpenAI tool surface, but long-term promotion remains separate from recording.
 
 ## Evolution Gate
 
@@ -81,6 +85,8 @@ It introduces:
 - `EvolutionCandidate`: proposed change metadata, target skill, source memory record, target files, expected improvement, evaluation plan, rollback plan, status, and creation time.
 - `EvaluationResult`: correctness and safety gains, regression and overblocking risks, cost increase, computed evolution score, passed and failed cases, optional judge score, decision, and reason.
 - `EvolutionGate`: computes `evolution_score = correctness_gain + safety_gain - regression_risk - overblocking_risk - cost_increase`, applies first-stage rule decisions, and writes audit entries to `.audit/evolution.jsonl`.
+
+Evolution Gate is the promotion gate for memory-derived improvements. It decides whether a candidate should be rejected, kept as a candidate, accepted as a candidate, or routed to human review. Human confirmation still decides whether guarded files such as `SKILL.md`, `AGENTS.md`, safety policy, tool code, or prompts are actually changed.
 
 Current first-stage decisions are structural only:
 

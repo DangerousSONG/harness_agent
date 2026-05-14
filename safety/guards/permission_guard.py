@@ -33,6 +33,7 @@ TOOL_CAPABILITIES = {
     "record_feature_request": {"memory.write"},
     "record_policy_candidate": {"memory.write"},
     "record_regression_test": {"memory.write"},
+    "classify_learning_signal": {"memory.write"},
     "summarize_skill_memory": {"skill.load"},
     "list_skill_memory": {"skill.load"},
     "idle": set(),

@@ -297,6 +297,8 @@ description: Example skill description
 
 该 Skill 只处理具备长期价值的学习信号，包括命令失败、用户纠正、能力缺口、外部 API 失败、知识过时、更优方法、SafeHarness 事件以及重复出现的问题。写入 memory 前，信号必须先被归类为 `noise`、`local_tip`、`transferable_learning`、`missing_capability`、`safety_policy_candidate` 或 `regression_case`。
 
+学习信号可以由模型根据 `self_improvement` 规则判断归属。代码侧负责 secret 脱敏、重复记录合并、归属元数据写入和 markdown 落盘；`EvolutionGate` 负责判断候选改进是进化、退化还是需要人工确认。真正修改 `SKILL.md`、`AGENTS.md`、安全策略、工具代码或 prompt 前，仍必须经过人工确认。
+
 `self_improvement` 不直接修改长期规则或关键运行文件。它不得记录 secret 原文，不得自动修改 `SKILL.md`、`AGENTS.md`、安全策略、工具 schema、工具 handler 或 harness prompt。涉及长期规则变更的内容只能先记录为 memory 或候选建议，后续修改必须经过用户明确确认。
 
 ## 注意事项

@@ -368,8 +368,12 @@ def build_tools(valid_msg_types: list[str]) -> list[dict]:
                         "source": {"type": "string"},
                         "domain": {"type": "string"},
                         "priority": {"type": "string"},
+                        "source_skill": {"type": "string"},
+                        "attribution_reason": {"type": "string"},
+                        "attribution_confidence": {"type": "string"},
+                        "needs_attribution_review": {"type": "boolean"},
                     },
-                    "required": ["skill_name", "title", "content"]
+                    "required": ["title", "content"]
                 }
             }
         },
@@ -389,8 +393,12 @@ def build_tools(valid_msg_types: list[str]) -> list[dict]:
                         "source": {"type": "string"},
                         "domain": {"type": "string"},
                         "priority": {"type": "string"},
+                        "source_skill": {"type": "string"},
+                        "attribution_reason": {"type": "string"},
+                        "attribution_confidence": {"type": "string"},
+                        "needs_attribution_review": {"type": "boolean"},
                     },
-                    "required": ["skill_name", "title", "content"]
+                    "required": ["title", "content"]
                 }
             }
         },
@@ -408,8 +416,12 @@ def build_tools(valid_msg_types: list[str]) -> list[dict]:
                         "source": {"type": "string"},
                         "domain": {"type": "string"},
                         "priority": {"type": "string"},
+                        "source_skill": {"type": "string"},
+                        "attribution_reason": {"type": "string"},
+                        "attribution_confidence": {"type": "string"},
+                        "needs_attribution_review": {"type": "boolean"},
                     },
-                    "required": ["skill_name", "title", "content"]
+                    "required": ["title", "content"]
                 }
             }
         },
@@ -428,8 +440,12 @@ def build_tools(valid_msg_types: list[str]) -> list[dict]:
                         "severity": {"type": "string"},
                         "source": {"type": "string"},
                         "priority": {"type": "string"},
+                        "source_skill": {"type": "string"},
+                        "attribution_reason": {"type": "string"},
+                        "attribution_confidence": {"type": "string"},
+                        "needs_attribution_review": {"type": "boolean"},
                     },
-                    "required": ["skill_name", "title", "content"]
+                    "required": ["title", "content"]
                 }
             }
         },
@@ -446,8 +462,41 @@ def build_tools(valid_msg_types: list[str]) -> list[dict]:
                         "content": {"type": "string"},
                         "domain": {"type": "string"},
                         "priority": {"type": "string"},
+                        "source_skill": {"type": "string"},
+                        "attribution_reason": {"type": "string"},
+                        "attribution_confidence": {"type": "string"},
+                        "needs_attribution_review": {"type": "boolean"},
                     },
-                    "required": ["skill_name", "title", "content"]
+                    "required": ["title", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "classify_learning_signal",
+                "description": "Classify whether an event, user correction, tool error, or feedback should become skill memory and identify the target skill.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "raw_content": {"type": "string"},
+                        "signal_type": {
+                            "type": "string",
+                            "enum": [
+                                "user_correction",
+                                "command_failed",
+                                "tool_error",
+                                "missing_capability",
+                                "safeharness_event",
+                                "better_method_found",
+                                "stale_knowledge",
+                            ],
+                        },
+                        "source": {"type": "string"},
+                        "candidate_skill": {"type": "string"},
+                        "confidence": {"type": "string"},
+                    },
+                    "required": ["raw_content"]
                 }
             }
         },

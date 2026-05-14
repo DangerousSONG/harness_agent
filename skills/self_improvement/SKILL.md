@@ -54,6 +54,34 @@ Use the target skill that owns the domain of the learning. If ownership is uncle
 - `regression_case`: use `record_regression_test`.
 - `noise`: do nothing.
 
+## Automatic Signal Capture
+
+Do not wait only for the user to say "record this". When a clear signal appears during normal work, classify it first with `classify_learning_signal`.
+
+Use `classify_learning_signal` for:
+
+- user corrections;
+- command failures;
+- tool errors;
+- missing capabilities;
+- SafeHarness events;
+- better methods found during work;
+- stale or outdated knowledge.
+
+The classification result decides whether to call a `record_*` tool. The code is responsible for redaction, deduplication, attribution metadata, and writing markdown files. This skill is responsible for judging whether the signal is meaningful and what target skill should own it.
+
+## Skill Attribution
+
+Every memory record should include attribution metadata:
+
+- `Target Skill`: the skill that owns the learning.
+- `Source Skill`: the skill or workflow that detected the learning signal.
+- `Attribution Reason`: why the target skill was selected.
+- `Attribution Confidence`: `low`, `medium`, or `high`.
+- `Needs Attribution Review`: `true` when ownership is uncertain.
+
+If a `record_*` tool call omits `skill_name`, the runtime uses the last successfully loaded skill. If no skill has been loaded, the runtime records under `self_improvement` and marks the record as needing attribution review.
+
 ## Record Quality
 
 Each memory entry should be concise and structured:
@@ -68,3 +96,5 @@ Each memory entry should be concise and structured:
 ## Safety Boundaries
 
 This skill can propose improvements, but it must not directly install permanent rules into skills, repository instructions, safety policies, tool schemas, tool handlers, or system prompts. Those changes must remain user-approved code or document changes.
+
+Promotion is separate from recording. Memory records and promotion candidates may be created, but Evolution Gate must decide whether a proposed change looks like improvement or regression. Human confirmation is still required before modifying `SKILL.md`, `AGENTS.md`, safety policy, tool code, or prompts.

@@ -161,6 +161,11 @@ SAFE_POLICY_DEFAULT = {
             "risk": "medium",
             "default_action": "allow",
         },
+        "classify_learning_signal": {
+            "capability": "memory.write",
+            "risk": "low",
+            "default_action": "allow",
+        },
         "summarize_skill_memory": {
             "capability": "skill.load",
             "risk": "low",

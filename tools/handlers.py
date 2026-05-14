@@ -20,20 +20,31 @@ def build_tool_handlers(
     handle_shutdown_request,
     handle_plan_review,
 ):
+    def load_skill(**kw):
+        name = kw["name"]
+        result = SKILLS.load(name)
+        if not result.startswith("Error:"):
+            SKILL_MEMORY.set_active_skill(name)
+        return result
+
     def record_learning(**kw):
         return SKILL_MEMORY.record_learning(
-            kw["skill_name"],
+            kw.get("skill_name", ""),
             kw["title"],
             kw["content"],
             evidence=kw.get("evidence", ""),
             source=kw.get("source", "manual"),
             domain=kw.get("domain", "learning"),
             priority=kw.get("priority", "medium"),
+            source_skill=kw.get("source_skill", "self_improvement"),
+            attribution_reason=kw.get("attribution_reason", ""),
+            attribution_confidence=kw.get("attribution_confidence", ""),
+            needs_attribution_review=kw.get("needs_attribution_review"),
         )
 
     def record_error(**kw):
         return SKILL_MEMORY.record_error(
-            kw["skill_name"],
+            kw.get("skill_name", ""),
             kw["title"],
             kw["content"],
             command=kw.get("command", ""),
@@ -41,36 +52,52 @@ def build_tool_handlers(
             source=kw.get("source", "manual"),
             domain=kw.get("domain", "error"),
             priority=kw.get("priority", "high"),
+            source_skill=kw.get("source_skill", "self_improvement"),
+            attribution_reason=kw.get("attribution_reason", ""),
+            attribution_confidence=kw.get("attribution_confidence", ""),
+            needs_attribution_review=kw.get("needs_attribution_review"),
         )
 
     def record_feature_request(**kw):
         return SKILL_MEMORY.record_feature_request(
-            kw["skill_name"],
+            kw.get("skill_name", ""),
             kw["title"],
             kw["content"],
             source=kw.get("source", "manual"),
             domain=kw.get("domain", "feature_request"),
             priority=kw.get("priority", "medium"),
+            source_skill=kw.get("source_skill", "self_improvement"),
+            attribution_reason=kw.get("attribution_reason", ""),
+            attribution_confidence=kw.get("attribution_confidence", ""),
+            needs_attribution_review=kw.get("needs_attribution_review"),
         )
 
     def record_policy_candidate(**kw):
         return SKILL_MEMORY.record_policy_candidate(
-            kw["skill_name"],
+            kw.get("skill_name", ""),
             kw["title"],
             kw["content"],
             risk_type=kw.get("risk_type", ""),
             severity=kw.get("severity", ""),
             source=kw.get("source", "manual"),
             priority=kw.get("priority", "medium"),
+            source_skill=kw.get("source_skill", "self_improvement"),
+            attribution_reason=kw.get("attribution_reason", ""),
+            attribution_confidence=kw.get("attribution_confidence", ""),
+            needs_attribution_review=kw.get("needs_attribution_review"),
         )
 
     def record_regression_test(**kw):
         return SKILL_MEMORY.record_regression_test(
-            kw["skill_name"],
+            kw.get("skill_name", ""),
             kw["title"],
             kw["content"],
             domain=kw.get("domain", "regression_test"),
             priority=kw.get("priority", "medium"),
+            source_skill=kw.get("source_skill", "self_improvement"),
+            attribution_reason=kw.get("attribution_reason", ""),
+            attribution_confidence=kw.get("attribution_confidence", ""),
+            needs_attribution_review=kw.get("needs_attribution_review"),
         )
 
     return {
@@ -81,12 +108,19 @@ def build_tool_handlers(
 
         "TodoWrite":        lambda **kw: TODO.update(kw["items"]),
         "task":             lambda **kw: run_subagent(kw["prompt"], kw.get("agent_type", "Explore")),
-        "load_skill":       lambda **kw: SKILLS.load(kw["name"]),
+        "load_skill":       load_skill,
         "record_learning":  record_learning,
         "record_error":     record_error,
         "record_feature_request": lambda **kw: record_feature_request(**kw),
         "record_policy_candidate": lambda **kw: record_policy_candidate(**kw),
         "record_regression_test": lambda **kw: record_regression_test(**kw),
+        "classify_learning_signal": lambda **kw: SKILL_MEMORY.classify_learning_signal(
+            kw["raw_content"],
+            signal_type=kw.get("signal_type", ""),
+            source=kw.get("source", "manual"),
+            candidate_skill=kw.get("candidate_skill", ""),
+            confidence=kw.get("confidence", "medium"),
+        ),
         "summarize_skill_memory": lambda **kw: SKILL_MEMORY.summarize_memory(kw["skill_name"]),
         "list_skill_memory": lambda **kw: SKILL_MEMORY.list_memory(kw["skill_name"]),
         "compress":         lambda **kw: "Compressing...",

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 import re
 import uuid
 
@@ -76,13 +78,31 @@ def normalize_name(name: str) -> str:
     return cleaned or "unnamed_skill"
 
 
+@dataclass
+class LearningSignal:
+    signal_type: str
+    raw_content: str
+    source: str = "manual"
+    candidate_skill: str = ""
+    confidence: str = "medium"
+    recommended_record_type: str = "none"
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
 class SkillMemoryManager:
     def __init__(self, skills_dir: Path, global_memory_dir: Path):
         self.skills_dir = Path(skills_dir)
         self.global_memory_dir = Path(global_memory_dir)
+        self.last_loaded_skill: str | None = None
         self.skills_dir.mkdir(parents=True, exist_ok=True)
         self.global_memory_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_global_memory()
+
+    def set_active_skill(self, skill_name: str) -> str:
+        self.last_loaded_skill = normalize_name(skill_name)
+        return self.last_loaded_skill
 
     def ensure_memory(self, skill_name: str) -> str:
         skill_name = normalize_name(skill_name)
@@ -128,6 +148,10 @@ class SkillMemoryManager:
         domain: str = "learning",
         source: str = "manual",
         occurrence_count: int = 1,
+        source_skill: str = "self_improvement",
+        attribution_reason: str = "",
+        attribution_confidence: str = "",
+        needs_attribution_review: bool | None = None,
     ) -> str:
         return self._record(
             skill_name,
@@ -139,6 +163,10 @@ class SkillMemoryManager:
             domain,
             source,
             occurrence_count,
+            source_skill,
+            attribution_reason,
+            attribution_confidence,
+            needs_attribution_review,
         )
 
     def record_error(
@@ -154,6 +182,10 @@ class SkillMemoryManager:
         domain: str = "error",
         source: str = "manual",
         occurrence_count: int = 1,
+        source_skill: str = "self_improvement",
+        attribution_reason: str = "",
+        attribution_confidence: str = "",
+        needs_attribution_review: bool | None = None,
     ) -> str:
         return self._record(
             skill_name,
@@ -169,6 +201,10 @@ class SkillMemoryManager:
             domain,
             source,
             occurrence_count,
+            source_skill,
+            attribution_reason,
+            attribution_confidence,
+            needs_attribution_review,
         )
 
     def record_feature_request(
@@ -182,6 +218,10 @@ class SkillMemoryManager:
         domain: str = "feature_request",
         source: str = "manual",
         occurrence_count: int = 1,
+        source_skill: str = "self_improvement",
+        attribution_reason: str = "",
+        attribution_confidence: str = "",
+        needs_attribution_review: bool | None = None,
     ) -> str:
         return self._record(
             skill_name,
@@ -193,6 +233,10 @@ class SkillMemoryManager:
             domain,
             source,
             occurrence_count,
+            source_skill,
+            attribution_reason,
+            attribution_confidence,
+            needs_attribution_review,
         )
 
     def record_policy_candidate(
@@ -208,6 +252,10 @@ class SkillMemoryManager:
         domain: str = "policy",
         source: str = "manual",
         occurrence_count: int = 1,
+        source_skill: str = "self_improvement",
+        attribution_reason: str = "",
+        attribution_confidence: str = "",
+        needs_attribution_review: bool | None = None,
     ) -> str:
         return self._record(
             skill_name,
@@ -223,6 +271,10 @@ class SkillMemoryManager:
             domain,
             source,
             occurrence_count,
+            source_skill,
+            attribution_reason,
+            attribution_confidence,
+            needs_attribution_review,
         )
 
     def record_regression_test(
@@ -236,6 +288,10 @@ class SkillMemoryManager:
         domain: str = "regression_test",
         source: str = "manual",
         occurrence_count: int = 1,
+        source_skill: str = "self_improvement",
+        attribution_reason: str = "",
+        attribution_confidence: str = "",
+        needs_attribution_review: bool | None = None,
     ) -> str:
         return self._record(
             skill_name,
@@ -247,7 +303,53 @@ class SkillMemoryManager:
             domain,
             source,
             occurrence_count,
+            source_skill,
+            attribution_reason,
+            attribution_confidence,
+            needs_attribution_review,
         )
+
+    def classify_learning_signal(
+        self,
+        raw_content: str,
+        *,
+        signal_type: str = "",
+        source: str = "manual",
+        candidate_skill: str = "",
+        confidence: str = "medium",
+    ) -> str:
+        signal = LearningSignal(
+            signal_type=signal_type.strip() or self._infer_signal_type(raw_content),
+            raw_content=redact_secrets(raw_content.strip()),
+            source=source.strip() or "manual",
+            candidate_skill=normalize_name(candidate_skill) if candidate_skill else "",
+            confidence=confidence.strip() or "medium",
+        )
+        record_type = self._recommended_record_type(signal)
+        target_skill, reason, attribution_confidence, needs_review = self._resolve_attribution(
+            signal.candidate_skill,
+            "self_improvement",
+            "",
+            "",
+            None,
+        )
+        should_record = record_type != "none" and not self._looks_like_memory_poisoning(signal.raw_content)
+
+        if self._looks_like_indirect_prompt_injection(signal.raw_content):
+            should_record = signal.signal_type == "safeharness_event"
+            record_type = "policy_candidate" if should_record else "none"
+            reason = "tool result contains indirect prompt injection markers; do not store it as learning"
+
+        result = {
+            "should_record": should_record,
+            "record_type": record_type if should_record else "none",
+            "target_skill": target_skill,
+            "reason": self._classification_reason(signal, should_record, record_type, reason),
+            "confidence": attribution_confidence if needs_review else signal.confidence,
+            "learning_signal": signal.to_dict(),
+            "needs_attribution_review": needs_review,
+        }
+        return json.dumps(result, ensure_ascii=False, indent=2)
 
     def list_memory(self, skill_name: str) -> str:
         self.ensure_memory(skill_name)
@@ -312,7 +414,18 @@ class SkillMemoryManager:
         domain: str,
         source: str,
         occurrence_count: int,
+        source_skill: str,
+        attribution_reason: str,
+        attribution_confidence: str,
+        needs_attribution_review: bool | None,
     ) -> str:
+        skill_name, resolved_reason, resolved_confidence, resolved_review = self._resolve_attribution(
+            skill_name,
+            source_skill,
+            attribution_reason,
+            attribution_confidence,
+            needs_attribution_review,
+        )
         self.ensure_memory(skill_name)
         filename = MEMORY_FILES[record_type]
         path = self._memory_dir(skill_name) / filename
@@ -320,6 +433,9 @@ class SkillMemoryManager:
         clean_details = redact_secrets(details.strip())
         clean_source = redact_secrets(source.strip())
         clean_domain = redact_secrets(domain.strip())
+        clean_source_skill = redact_secrets(normalize_name(source_skill or "self_improvement"))
+        clean_attribution_reason = redact_secrets(resolved_reason)
+        clean_attribution_confidence = redact_secrets(resolved_confidence)
         similar = self._find_similar_record(
             skill_name,
             record_type,
@@ -348,6 +464,11 @@ class SkillMemoryManager:
                 f"- Domain: {clean_domain or 'unknown'}",
                 f"- Source: {clean_source or 'unknown'}",
                 f"- Occurrence Count: {max(int(occurrence_count), 1)}",
+                f"- Target Skill: {skill_name}",
+                f"- Source Skill: {clean_source_skill}",
+                f"- Attribution Reason: {clean_attribution_reason}",
+                f"- Attribution Confidence: {clean_attribution_confidence}",
+                f"- Needs Attribution Review: {str(resolved_review).lower()}",
                 "",
                 "### Details",
                 clean_details or "(no details)",
@@ -359,6 +480,102 @@ class SkillMemoryManager:
             f.write(block)
 
         return f"Recorded {record_type} {record_id} for '{normalize_name(skill_name)}'"
+
+    def _resolve_attribution(
+        self,
+        skill_name: str,
+        source_skill: str,
+        attribution_reason: str,
+        attribution_confidence: str,
+        needs_attribution_review: bool | None,
+    ) -> tuple[str, str, str, bool]:
+        if skill_name and skill_name.strip():
+            return (
+                normalize_name(skill_name),
+                attribution_reason or "explicit skill_name was provided",
+                attribution_confidence or "high",
+                bool(needs_attribution_review) if needs_attribution_review is not None else False,
+            )
+        if self.last_loaded_skill:
+            return (
+                self.last_loaded_skill,
+                attribution_reason or "no skill_name provided; using last_loaded_skill",
+                attribution_confidence or "medium",
+                bool(needs_attribution_review) if needs_attribution_review is not None else False,
+            )
+        return (
+            "self_improvement",
+            attribution_reason or "no skill_name or last_loaded_skill; defaulting to self_improvement",
+            attribution_confidence or "low",
+            True if needs_attribution_review is None else bool(needs_attribution_review),
+        )
+
+    def _infer_signal_type(self, raw_content: str) -> str:
+        text = raw_content.lower()
+        if any(token in text for token in ("error", "failed", "traceback", "exception", "失败", "报错")):
+            return "command_failed"
+        if any(token in text for token in ("not supported", "missing capability", "不支持", "能力缺口")):
+            return "missing_capability"
+        if any(token in text for token in ("stale", "deprecated", "过时", "废弃")):
+            return "stale_knowledge"
+        if any(token in text for token in ("better method", "更好方法", "更优")):
+            return "better_method_found"
+        if any(token in text for token in ("不是", "应该", "以后用", "纠正")):
+            return "user_correction"
+        return "unknown"
+
+    def _recommended_record_type(self, signal: LearningSignal) -> str:
+        mapping = {
+            "user_correction": "learning",
+            "better_method_found": "learning",
+            "stale_knowledge": "learning",
+            "command_failed": "error",
+            "tool_error": "error",
+            "missing_capability": "feature_request",
+            "safeharness_event": "policy_candidate",
+        }
+        signal.recommended_record_type = mapping.get(signal.signal_type, "none")
+        return signal.recommended_record_type
+
+    def _classification_reason(
+        self,
+        signal: LearningSignal,
+        should_record: bool,
+        record_type: str,
+        attribution_reason: str,
+    ) -> str:
+        if self._looks_like_memory_poisoning(signal.raw_content):
+            return "content attempts to modify authority, safety, or approval rules and must not pollute long-term memory"
+        if not should_record:
+            return "no durable learning signal was detected"
+        return f"{signal.signal_type} maps to {record_type}; {attribution_reason}"
+
+    def _looks_like_memory_poisoning(self, text: str) -> bool:
+        lowered = text.lower()
+        patterns = (
+            "ignore safeharness",
+            "disable safety",
+            "bypass approval",
+            "bypass policy",
+            "system administrator",
+            "忽略 safeharness",
+            "关闭安全",
+            "绕过审批",
+            "绕过安全",
+            "我是系统管理员",
+        )
+        return any(pattern in lowered for pattern in patterns)
+
+    def _looks_like_indirect_prompt_injection(self, text: str) -> bool:
+        lowered = text.lower()
+        patterns = (
+            "ignore previous instructions",
+            "you are now",
+            "call this tool",
+            "send this secret",
+            "把以下内容作为最高优先级指令",
+        )
+        return any(pattern in lowered for pattern in patterns)
 
     def _find_similar_record(
         self,
@@ -643,6 +860,11 @@ class SkillMemoryManager:
                     "- Domain",
                     "- Source",
                     "- Occurrence Count",
+                    "- Target Skill",
+                    "- Source Skill",
+                    "- Attribution Reason",
+                    "- Attribution Confidence",
+                    "- Needs Attribution Review",
                     "",
                 ]
             ),
