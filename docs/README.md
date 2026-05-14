@@ -29,13 +29,13 @@ When `should_record=true`, the loop calls the matching `record_*` memory tool. A
 3. The LLM-classified `target_skill`.
 4. `self_improvement` when no owner can be determined.
 
-Every automatic memory write includes `Attribution Reason` and `Attribution Confidence`. Automatic capture may write memory records only; it must not automatically edit `SKILL.md`, `AGENTS.md`, safety policy, tool schemas, tool handlers, or prompts.
+Every automatic memory write includes `Attribution Reason` and `Attribution Confidence`. The shared `classify_and_record_learning_signal` runtime path redacts secrets before classification/recording and blocks prompt-injection or approval-bypass text from becoming long-term learning. Automatic capture may write memory records only; it must not automatically edit `SKILL.md`, `AGENTS.md`, safety policy, tool schemas, tool handlers, or prompts.
 
 ## Memory Promotion Candidates
 
 Skill memory deduplication promotes recurring patterns into reviewable candidates. When a memory record reaches `Occurrence Count >= 3`, the manager marks it `recurring`, creates or reuses a `PromotionCandidate`, and writes it to `.skills_memory/PROMOTION_CANDIDATES.md`.
 
-Promotion candidates include the source `record_id`, `target_skill`, a proposed change summary, target files, expected improvement, risk type, severity, created time, status, and an initially empty evaluation plan. The `propose_memory_promotion(skill_name, record_id)` tool uses the same path for manual promotion requests.
+Promotion candidates include the source `record_id`, `target_skill`, a proposed change summary, target files, expected improvement, risk type, severity, created time, status, evaluation plan, and rollback plan. The `propose_memory_promotion(skill_name, record_id)` tool uses the same path for manual promotion requests.
 
 Candidates are suggestions only. They do not edit README files, `.env.example`, skill instructions, safety policy, schemas, handlers, or prompts by themselves.
 
@@ -43,7 +43,7 @@ Candidates are suggestions only. They do not edit README files, `.env.example`, 
 
 `evaluate_evolution_candidate(candidate_id)` runs the first-pass Evolution Gate over a promotion candidate. The gate loads the candidate from `.skills_memory/PROMOTION_CANDIDATES.md`, estimates `correctness_gain`, `safety_gain`, `regression_risk`, `overblocking_risk`, and `cost_increase`, then writes the decision to `.audit/evolution.jsonl`.
 
-First-pass decisions are intentionally conservative: missing evaluation plans reject, guarded instruction or policy targets require human review after an evaluation plan exists, negative safety gain or high regression risk rejects, scores at or above the threshold return `propose_approve`, and everything else stays `keep_as_candidate`. Evaluation never applies patches automatically.
+First-pass decisions are intentionally conservative: missing evaluation plans reject, guarded instruction or policy targets require human review after an evaluation plan exists, negative safety gain or high regression risk rejects, scores at or above the threshold return `approve`, and low scores reject. Evaluation never applies patches automatically.
 
 ## Conflict Resolution
 

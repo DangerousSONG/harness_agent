@@ -104,6 +104,7 @@ class PromotionCandidate:
     created_at: str = field(default_factory=utc_now)
     status: str = "proposed"
     evaluation_plan: str = ""
+    rollback_plan: str = ""
 
     @classmethod
     def create(
@@ -118,6 +119,7 @@ class PromotionCandidate:
         severity: str,
         status: str = "proposed",
         evaluation_plan: str = "",
+        rollback_plan: str = "",
     ) -> "PromotionCandidate":
         return cls(
             candidate_id=f"PROMO-{uuid.uuid4().hex[:8].upper()}",
@@ -130,6 +132,7 @@ class PromotionCandidate:
             severity=severity,
             status=status,
             evaluation_plan=evaluation_plan,
+            rollback_plan=rollback_plan,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -753,7 +756,8 @@ class SkillMemoryManager:
             expected_improvement=expected,
             risk_type=self._promotion_risk_type(record_kind),
             severity=self._promotion_severity(fields.get("Priority", "")),
-            evaluation_plan="",
+            evaluation_plan=self._default_evaluation_plan(target_files, record_kind),
+            rollback_plan="Do not apply patches automatically. If a human-approved change is later made, rollback by reverting only that reviewed change.",
         )
 
     def _write_promotion_candidate(self, candidate: PromotionCandidate) -> None:
@@ -780,6 +784,7 @@ class SkillMemoryManager:
                 f"- Created At: {clean['created_at']}",
                 f"- Status: {clean['status']}",
                 f"- Evaluation Plan: {clean['evaluation_plan']}",
+                f"- Rollback Plan: {clean['rollback_plan']}",
                 "",
             ]
         )
@@ -858,6 +863,14 @@ class SkillMemoryManager:
         if value in {"p3", "low"}:
             return "low"
         return "medium"
+
+    def _default_evaluation_plan(self, target_files: list[str], record_kind: str) -> str:
+        if not target_files:
+            return "Human reviews the recurring memory pattern and decides whether a follow-up eval, doc change, or policy proposal is needed."
+        joined = ", ".join(target_files)
+        if record_kind == "regression_test":
+            return f"Add or inspect eval coverage related to {joined}; run the smallest relevant validation before approval."
+        return f"Review proposed changes to {joined}; run compile/startup validation and inspect the affected docs or guidance before approval."
 
     def _record_kind_for_path(self, path: Path) -> str:
         filename = path.name
@@ -1097,6 +1110,7 @@ class SkillMemoryManager:
                     "- Created At",
                     "- Status",
                     "- Evaluation Plan",
+                    "- Rollback Plan",
                     "",
                 ]
             ),

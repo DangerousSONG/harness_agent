@@ -4,6 +4,15 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-14
 
+### Self Improvement Learning Loop
+
+- Added a shared `classify_and_record_learning_signal` runtime path for post-turn learning capture and tool-driven capture.
+- Updated automatic attribution to prefer the classifier's target skill, use low confidence as an attribution-review signal, and avoid routing everything to the last loaded skill.
+- Added runtime redaction and prompt-injection/memory-poisoning blocking before any automatic memory write.
+- Promotion candidates now include both `Evaluation Plan` and `Rollback Plan` when generated.
+- Tightened Evolution Gate decisions to advice-only `approve`, `reject`, or `needs_human_review`; no patch application is performed.
+- Added minimal unittest coverage for redaction, target-skill routing, low-confidence review, duplicate occurrence increments, promotion creation, sensitive-target review, and prompt-injection filtering.
+
 ### Evolution Gate Evaluation
 
 - Extended `EvolutionGate` to load `PromotionCandidate` records from `.skills_memory/PROMOTION_CANDIDATES.md` by `candidate_id`.

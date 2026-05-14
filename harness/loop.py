@@ -3,7 +3,7 @@
 import json
 import uuid
 
-from runtime.learning_signal import classify_learning_signal
+from runtime.learning_signal import classify_and_record_learning_signal
 from safety.decisions import BLOCK, REQUIRE_APPROVAL, SANITIZE
 from safety.events import RuntimeEvent
 
@@ -15,6 +15,7 @@ MEMORY_RECORD_TOOLS = {
     "record_regression_test",
     "propose_memory_promotion",
     "evaluate_evolution_candidate",
+    "classify_and_record_learning_signal",
     "classify_learning_signal",
 }
 
@@ -112,58 +113,29 @@ def _auto_record_learning_signal(
         return
 
     try:
-        classification = classify_learning_signal(
+        result = classify_and_record_learning_signal(
             client=client,
             model=model,
+            skill_memory=tool_handlers.get("__skill_memory__"),
+            raw_content=json.dumps(
+                {
+                    "latest_tool_events": latest_tool_events,
+                    "latest_llm_messages": latest_llm_messages,
+                },
+                ensure_ascii=False,
+            ),
             conversation_context=_recent_context(messages),
             latest_tool_events=latest_tool_events,
             latest_llm_messages=latest_llm_messages,
-        ).to_dict()
+        )
     except Exception as e:
-        print(f"> auto_memory classify skipped: {e}")
+        print(f"> auto_memory skipped: {e}")
         return
-    if not classification.get("should_record"):
+    if not result.get("classification", {}).get("should_record"):
         return
 
-    record_type = classification.get("record_type")
-    tool_name = RECORD_TOOL_BY_TYPE.get(record_type)
-    if not tool_name or tool_name not in tool_handlers:
-        return
-
-    recent_loaded_skill = _recent_loaded_skill(latest_tool_events)
-    classified_skill = classification.get("target_skill")
-    base_reason = str(classification.get("reason") or "automatic learning signal classification")
-    if recent_loaded_skill:
-        target_skill = recent_loaded_skill
-        reason = f"recent load_skill('{recent_loaded_skill}') succeeded; {base_reason}"
-        confidence = "high"
-    elif classified_skill:
-        target_skill = classified_skill
-        reason = f"LLM classified target_skill as '{classified_skill}'; {base_reason}"
-        confidence = str(classification.get("attribution_confidence") or "medium")
-    else:
-        target_skill = "self_improvement"
-        reason = f"LLM returned no target_skill; defaulting to self_improvement; {base_reason}"
-        confidence = "low"
-    title = str(classification.get("title") or f"Automatic {record_type} signal")[:200]
-    content = str(classification.get("content") or reason)
-    args = {
-        "skill_name": target_skill,
-        "title": title,
-        "content": content,
-        "source": "auto_learning_signal",
-        "domain": record_type,
-        "source_skill": "self_improvement",
-        "attribution_reason": reason,
-        "attribution_confidence": confidence,
-        "needs_attribution_review": confidence == "low",
-    }
-    try:
-        output = tool_handlers[tool_name](**args)
-        print(f"> auto_memory:{tool_name}:")
-        print(str(output)[:200])
-    except Exception as e:
-        print(f"> auto_memory error: {e}")
+    print("> auto_memory:")
+    print(str(result.get("record_result", ""))[:200])
 
 
 def agent_loop(

@@ -21,6 +21,7 @@ def build_tool_handlers(
     handle_plan_review,
     EVOLUTION_GATE=None,
     classify_learning_signal_for_tool=None,
+    classify_and_record_learning_signal_for_tool=None,
 ):
     def load_skill(**kw):
         name = kw["name"]
@@ -103,6 +104,7 @@ def build_tool_handlers(
         )
 
     return {
+        "__skill_memory__": SKILL_MEMORY,
         "bash":             lambda **kw: run_bash(kw["command"]),
         "read_file":        lambda **kw: run_read(kw["path"], kw.get("limit")),
         "write_file":       lambda **kw: run_write(kw["path"], kw["content"]),
@@ -129,6 +131,18 @@ def build_tool_handlers(
             },
             indent=2,
             ensure_ascii=False,
+        ),
+        "classify_and_record_learning_signal": lambda **kw: (
+            classify_and_record_learning_signal_for_tool(**kw)
+            if classify_and_record_learning_signal_for_tool
+            else json.dumps(
+                {
+                    "classification": {"should_record": False},
+                    "record_result": "skipped: classify_and_record runtime is not configured",
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
         ),
         "classify_learning_signal": lambda **kw: (
             classify_learning_signal_for_tool(**kw)

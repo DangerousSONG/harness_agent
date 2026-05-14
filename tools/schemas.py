@@ -503,6 +503,33 @@ def build_tools(valid_msg_types: list[str]) -> list[dict]:
         {
             "type": "function",
             "function": {
+                "name": "classify_and_record_learning_signal",
+                "description": "Classify a learning signal, write the appropriate skill memory record when safe, and return classification plus record_result.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "raw_content": {"type": "string"},
+                        "skill_name": {"type": "string"},
+                        "conversation_context": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                        },
+                        "latest_tool_events": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                        },
+                        "latest_llm_messages": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                        },
+                    },
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "classify_learning_signal",
                 "description": "Use the LLM classifier to decide whether recent conversation, tool events, or feedback should become skill memory and identify the target skill.",
                 "parameters": {

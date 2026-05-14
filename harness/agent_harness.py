@@ -61,6 +61,7 @@ from runtime import (
     LocalBackend,
     SkillLoader,
     SkillMemoryManager,
+    classify_and_record_learning_signal,
     classify_learning_signal,
 )
 from safety import AuditLogger, PolicyEngine, capabilities_for_actor, load_policy
@@ -193,6 +194,20 @@ def classify_learning_signal_for_tool(**kw) -> str:
     return json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
 
 
+def classify_and_record_learning_signal_for_tool(**kw) -> str:
+    result = classify_and_record_learning_signal(
+        client=client,
+        model=MODEL,
+        skill_memory=SKILL_MEMORY,
+        raw_content=kw.get("raw_content", ""),
+        conversation_context=kw.get("conversation_context") or [],
+        latest_tool_events=kw.get("latest_tool_events") or [],
+        latest_llm_messages=kw.get("latest_llm_messages") or [],
+        explicit_skill_name=kw.get("skill_name", ""),
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
 TOOL_HANDLERS = build_tool_handlers(
     run_bash=lambda command: run_bash(WORKDIR, command),
     run_read=lambda path, limit=None: run_read(WORKDIR, path, limit),
@@ -227,6 +242,7 @@ TOOL_HANDLERS = build_tool_handlers(
     handle_plan_review=handle_plan_review,
     EVOLUTION_GATE=EVOLUTION_GATE,
     classify_learning_signal_for_tool=classify_learning_signal_for_tool,
+    classify_and_record_learning_signal_for_tool=classify_and_record_learning_signal_for_tool,
 )
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import json
+import re
 from typing import Any
 
 
@@ -12,6 +13,32 @@ RECORD_TYPES = {
     "policy_candidate",
     "regression_test",
 }
+
+RECORD_METHOD_BY_TYPE = {
+    "learning": "record_learning",
+    "error": "record_error",
+    "feature_request": "record_feature_request",
+    "policy_candidate": "record_policy_candidate",
+    "regression_test": "record_regression_test",
+}
+
+SECRET_PATTERNS = [
+    re.compile(r"(?i)(api[_-]?key|token|secret|password)\s*[:=]\s*['\"]?[^'\"\s]+"),
+    re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
+    re.compile(r"-----BEGIN [A-Z ]+PRIVATE KEY-----.*?-----END [A-Z ]+PRIVATE KEY-----", re.DOTALL),
+]
+
+MEMORY_POISONING_PATTERNS = (
+    "ignore previous instructions",
+    "ignore safeharness",
+    "disable safety",
+    "bypass approval",
+    "bypass policy",
+    "turn off safety",
+    "you are now",
+    "send this secret",
+    "system administrator",
+)
 
 
 @dataclass
@@ -28,6 +55,24 @@ class LearningSignalClassification:
         return asdict(self)
 
 
+def redact_learning_payload(value: Any) -> Any:
+    if isinstance(value, str):
+        result = value
+        for pattern in SECRET_PATTERNS:
+            result = pattern.sub("[REDACTED_SECRET]", result)
+        return result
+    if isinstance(value, list):
+        return [redact_learning_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_learning_payload(item) for key, item in value.items()}
+    return value
+
+
+def looks_like_memory_poisoning(value: Any) -> bool:
+    text = json.dumps(value, ensure_ascii=False).lower() if not isinstance(value, str) else value.lower()
+    return any(pattern in text for pattern in MEMORY_POISONING_PATTERNS)
+
+
 def classify_learning_signal(
     *,
     client,
@@ -37,9 +82,9 @@ def classify_learning_signal(
     latest_llm_messages: list[dict],
 ) -> LearningSignalClassification:
     payload = {
-        "conversation_context": conversation_context,
-        "latest_tool_events": latest_tool_events,
-        "latest_llm_messages": latest_llm_messages,
+        "conversation_context": redact_learning_payload(conversation_context),
+        "latest_tool_events": redact_learning_payload(latest_tool_events),
+        "latest_llm_messages": redact_learning_payload(latest_llm_messages),
     }
     prompt = (
         "You are the self_improvement skill classifier. Decide whether the latest "
@@ -66,6 +111,133 @@ def classify_learning_signal(
     )
     content = response.choices[0].message.content or "{}"
     return normalize_learning_signal_classification(_safe_json_loads(content))
+
+
+def classify_and_record_learning_signal(
+    *,
+    client,
+    model: str,
+    skill_memory,
+    raw_content: str = "",
+    conversation_context: list[dict] | None = None,
+    latest_tool_events: list[dict] | None = None,
+    latest_llm_messages: list[dict] | None = None,
+    explicit_skill_name: str = "",
+) -> dict[str, Any]:
+    conversation_context = conversation_context or []
+    latest_tool_events = latest_tool_events or []
+    latest_llm_messages = latest_llm_messages or []
+    raw_content = str(redact_learning_payload(raw_content or ""))
+    payload_has_poisoning = looks_like_memory_poisoning(
+        {
+            "raw_content": raw_content,
+            "conversation_context": conversation_context,
+            "latest_tool_events": latest_tool_events,
+            "latest_llm_messages": latest_llm_messages,
+        }
+    )
+    if payload_has_poisoning:
+        classification = LearningSignalClassification(
+            should_record=False,
+            record_type="learning",
+            target_skill=None,
+            reason="Skipped because content looks like prompt injection, approval bypass, or safety disabling instruction.",
+            attribution_confidence="low",
+            title="Skipped unsafe learning signal",
+            content="",
+        )
+        return {
+            "classification": classification.to_dict(),
+            "record_result": "skipped: unsafe content is not recorded as long-term learning",
+        }
+
+    classification = classify_learning_signal(
+        client=client,
+        model=model,
+        conversation_context=conversation_context or [{"role": "user", "content": raw_content}],
+        latest_tool_events=latest_tool_events,
+        latest_llm_messages=latest_llm_messages,
+    )
+    if not classification.should_record:
+        return {
+            "classification": classification.to_dict(),
+            "record_result": "skipped: classifier returned should_record=false",
+        }
+
+    target_skill, attribution_reason, needs_review = resolve_target_skill(
+        classification=classification,
+        explicit_skill_name=explicit_skill_name,
+        last_loaded_skill=getattr(skill_memory, "last_loaded_skill", None),
+    )
+    method_name = RECORD_METHOD_BY_TYPE.get(classification.record_type)
+    if not method_name or not hasattr(skill_memory, method_name):
+        return {
+            "classification": classification.to_dict(),
+            "record_result": f"skipped: unsupported record_type={classification.record_type}",
+        }
+
+    content = redact_learning_payload(classification.content or raw_content or classification.reason)
+    title = str(redact_learning_payload(classification.title or f"Automatic {classification.record_type} signal"))[:200]
+    record_kwargs = {
+        "source": "auto_learning_signal",
+        "domain": classification.record_type,
+        "source_skill": "self_improvement",
+        "attribution_reason": attribution_reason,
+        "attribution_confidence": classification.attribution_confidence,
+        "needs_attribution_review": needs_review,
+    }
+    record_result = getattr(skill_memory, method_name)(
+        target_skill,
+        title,
+        str(content),
+        **record_kwargs,
+    )
+    return {
+        "classification": {
+            **classification.to_dict(),
+            "target_skill": target_skill,
+            "needs_attribution_review": needs_review,
+        },
+        "record_result": record_result,
+    }
+
+
+def resolve_target_skill(
+    *,
+    classification: LearningSignalClassification,
+    explicit_skill_name: str = "",
+    last_loaded_skill: str | None = None,
+) -> tuple[str, str, bool]:
+    confidence = classification.attribution_confidence.lower()
+    if confidence == "low":
+        return (
+            "self_improvement",
+            "classifier attribution confidence was low; defaulting to self_improvement for review",
+            True,
+        )
+    if classification.target_skill:
+        return (
+            classification.target_skill,
+            f"classifier selected target_skill='{classification.target_skill}' with {confidence} confidence",
+            False,
+        )
+    if explicit_skill_name and explicit_skill_name.strip():
+        return (
+            explicit_skill_name.strip(),
+            "explicit skill_name was provided after classifier did not select a target",
+            True,
+        )
+    if last_loaded_skill:
+        return (
+            last_loaded_skill,
+            "using last_loaded_skill after classifier and explicit skill_name were unavailable",
+            True,
+        )
+    return (
+        "self_improvement",
+        "no reliable skill attribution available; defaulting to self_improvement",
+        True,
+    )
 
 
 def normalize_learning_signal_classification(data: dict[str, Any]) -> LearningSignalClassification:

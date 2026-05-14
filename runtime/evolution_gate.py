@@ -167,11 +167,11 @@ class EvolutionGate:
             result.decision = "reject"
             result.reason = "Rejected because failed_cases is not empty."
         elif result.evolution_score >= APPROVAL_THRESHOLD:
-            result.decision = "propose_approve"
-            result.reason = "Proposed approval because combined score met the threshold. Automatic patch application is disabled."
+            result.decision = "approve"
+            result.reason = "Approve suggestion because combined score met the threshold. Automatic patch application is disabled."
         else:
-            result.decision = "keep_as_candidate"
-            result.reason = "Kept as candidate because combined score is below the approval threshold."
+            result.decision = "reject"
+            result.reason = "Rejected because combined score is below the approval threshold."
 
         self.write_audit(candidate, result)
         return result
@@ -268,7 +268,10 @@ class EvolutionGate:
                 expected_improvement=fields.get("Expected Improvement", ""),
                 risk_level=severity,
                 evaluation_plan=fields.get("Evaluation Plan", ""),
-                rollback_plan="Do not apply a patch automatically; require human-approved rollback planning before implementation.",
+                rollback_plan=fields.get(
+                    "Rollback Plan",
+                    "Do not apply a patch automatically; require human-approved rollback planning before implementation.",
+                ),
                 risk_type=fields.get("Risk Type", ""),
                 severity=severity,
                 status=fields.get("Status", "proposed"),
