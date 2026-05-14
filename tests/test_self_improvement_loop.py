@@ -81,7 +81,7 @@ class SelfImprovementLoopTests(unittest.TestCase):
             self.assertIn("[REDACTED_SECRET]", text)
             self.assertNotIn("sk-123456789012345678901234", text)
 
-    def test_record_to_target_skill(self):
+    def test_classifier_target_skill_priority(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = self.make_manager(root)
@@ -108,7 +108,7 @@ class SelfImprovementLoopTests(unittest.TestCase):
             self.assertEqual(result["classification"]["target_skill"], "python")
             self.assertTrue((root / "skills" / "python" / "memory" / "LEARNINGS.md").exists())
 
-    def test_low_confidence_attribution_review(self):
+    def test_low_confidence_goes_to_self_improvement_review(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = self.make_manager(root)
@@ -135,7 +135,7 @@ class SelfImprovementLoopTests(unittest.TestCase):
             self.assertIn("- Needs Attribution Review: true", text)
             self.assertIn("- Target Skill: self_improvement", text)
 
-    def test_duplicate_record_increments_occurrence(self):
+    def test_duplicate_record_increments_occurrence_count(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = self.make_manager(root)
@@ -188,7 +188,7 @@ class SelfImprovementLoopTests(unittest.TestCase):
 
         self.assertEqual(result.decision, "needs_human_review")
 
-    def test_prompt_injection_not_recorded_as_learning(self):
+    def test_prompt_injection_not_recorded(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = self.make_manager(root)

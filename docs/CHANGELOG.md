@@ -11,6 +11,7 @@ This file records meaningful project iterations. When judging current state, rea
 - Added runtime redaction and prompt-injection/memory-poisoning blocking before any automatic memory write.
 - Promotion candidates now include both `Evaluation Plan` and `Rollback Plan` when generated.
 - Tightened Evolution Gate decisions to advice-only `approve`, `reject`, or `needs_human_review`; no patch application is performed.
+- Added `scripts/debug_self_improvement.py` for a deterministic local walkthrough of correction classification, skill attribution, memory writes, duplicate merging, and promotion candidate creation.
 - Added minimal unittest coverage for redaction, target-skill routing, low-confidence review, duplicate occurrence increments, promotion creation, sensitive-target review, and prompt-injection filtering.
 
 ### Evolution Gate Evaluation

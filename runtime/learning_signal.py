@@ -225,13 +225,13 @@ def resolve_target_skill(
         return (
             explicit_skill_name.strip(),
             "explicit skill_name was provided after classifier did not select a target",
-            True,
+            False,
         )
     if last_loaded_skill:
         return (
             last_loaded_skill,
             "using last_loaded_skill after classifier and explicit skill_name were unavailable",
-            True,
+            False,
         )
     return (
         "self_improvement",

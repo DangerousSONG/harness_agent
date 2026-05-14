@@ -19,15 +19,6 @@ MEMORY_RECORD_TOOLS = {
     "classify_learning_signal",
 }
 
-RECORD_TOOL_BY_TYPE = {
-    "learning": "record_learning",
-    "error": "record_error",
-    "feature_request": "record_feature_request",
-    "policy_candidate": "record_policy_candidate",
-    "regression_test": "record_regression_test",
-}
-
-
 def _event(
     *,
     run_id: str,
@@ -86,18 +77,6 @@ def _recent_context(messages: list, limit: int = 6) -> list[dict]:
             item["name"] = message.get("name")
         recent.append(item)
     return recent
-
-
-def _recent_loaded_skill(latest_tool_events: list[dict]) -> str | None:
-    for event in reversed(latest_tool_events):
-        if event.get("tool") != "load_skill" or event.get("status") != "ok":
-            continue
-        arguments = event.get("arguments") or {}
-        if isinstance(arguments, dict):
-            skill_name = str(arguments.get("name") or "").strip()
-            if skill_name:
-                return skill_name
-    return None
 
 
 def _auto_record_learning_signal(

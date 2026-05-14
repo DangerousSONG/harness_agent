@@ -31,6 +31,8 @@ When `should_record=true`, the loop calls the matching `record_*` memory tool. A
 
 Every automatic memory write includes `Attribution Reason` and `Attribution Confidence`. The shared `classify_and_record_learning_signal` runtime path redacts secrets before classification/recording and blocks prompt-injection or approval-bypass text from becoming long-term learning. Automatic capture may write memory records only; it must not automatically edit `SKILL.md`, `AGENTS.md`, safety policy, tool schemas, tool handlers, or prompts.
 
+For a deterministic local walkthrough, run `python .\scripts\debug_self_improvement.py`. It creates a test-only `markdown_writer` skill if needed, records three similar corrections, prints classification and attribution details, and checks that memory and promotion candidate files were written.
+
 ## Memory Promotion Candidates
 
 Skill memory deduplication promotes recurring patterns into reviewable candidates. When a memory record reaches `Occurrence Count >= 3`, the manager marks it `recurring`, creates or reuses a `PromotionCandidate`, and writes it to `.skills_memory/PROMOTION_CANDIDATES.md`.
