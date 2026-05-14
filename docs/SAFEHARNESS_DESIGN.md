@@ -164,7 +164,7 @@ Unknown tools block by default. Missing actor capabilities block. Approval-gated
 
 Skill memory tool capability mapping:
 
-- `record_learning`, `record_error`, `record_feature_request`, `record_policy_candidate`, and `record_regression_test` require `memory.write`.
+- `record_learning`, `record_error`, `record_feature_request`, `record_policy_candidate`, `record_regression_test`, `propose_memory_promotion`, and `evaluate_evolution_candidate` require `memory.write`.
 - `summarize_skill_memory` and `list_skill_memory` require `skill.load`.
 
 Current runtime behavior:

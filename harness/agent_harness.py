@@ -56,7 +56,13 @@ from tools import (
     run_write,
     run_edit,
 )
-from runtime import LocalBackend, SkillLoader, SkillMemoryManager
+from runtime import (
+    EvolutionGate,
+    LocalBackend,
+    SkillLoader,
+    SkillMemoryManager,
+    classify_learning_signal,
+)
 from safety import AuditLogger, PolicyEngine, capabilities_for_actor, load_policy
 from harness.todos import TodoManager
 from harness.subagent import run_subagent
@@ -116,6 +122,10 @@ AUDIT = AuditLogger(
     redact_secrets=bool(AUDIT_CONFIG.get("redact_secrets", True)),
     max_payload_chars=int(AUDIT_CONFIG.get("max_payload_chars", 1000)),
 )
+EVOLUTION_GATE = EvolutionGate(
+    audit_path=PROJECT_ROOT / ".audit" / "evolution.jsonl",
+    promotion_candidates_path=GLOBAL_SKILL_MEMORY_DIR / "PROMOTION_CANDIDATES.md",
+)
 TASK_MGR = TaskManager(BACKEND.task_store)
 BG = BackgroundManager(BACKEND.job_queue)
 BUS = MessageBus(BACKEND.message_store)
@@ -161,6 +171,28 @@ def handle_plan_review(request_id: str, approve: bool, feedback: str = "") -> st
 
 # === SECTION: tool_dispatch (s02) ===
 TOOLS = build_tools(list(VALID_MSG_TYPES))
+
+
+def classify_learning_signal_for_tool(**kw) -> str:
+    conversation_context = kw.get("conversation_context")
+    latest_tool_events = kw.get("latest_tool_events")
+    latest_llm_messages = kw.get("latest_llm_messages")
+    if conversation_context is None:
+        conversation_context = [{"role": "user", "content": kw.get("raw_content", "")}]
+    if latest_tool_events is None:
+        latest_tool_events = []
+    if latest_llm_messages is None:
+        latest_llm_messages = []
+    result = classify_learning_signal(
+        client=client,
+        model=MODEL,
+        conversation_context=conversation_context,
+        latest_tool_events=latest_tool_events,
+        latest_llm_messages=latest_llm_messages,
+    )
+    return json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
+
+
 TOOL_HANDLERS = build_tool_handlers(
     run_bash=lambda command: run_bash(WORKDIR, command),
     run_read=lambda path, limit=None: run_read(WORKDIR, path, limit),
@@ -193,6 +225,8 @@ TOOL_HANDLERS = build_tool_handlers(
     BUS=BUS,
     handle_shutdown_request=handle_shutdown_request,
     handle_plan_review=handle_plan_review,
+    EVOLUTION_GATE=EVOLUTION_GATE,
+    classify_learning_signal_for_tool=classify_learning_signal_for_tool,
 )
 
 

@@ -3,13 +3,17 @@
 from .skill_loader import SkillLoader
 from .backends import LocalBackend
 from .evolution_gate import EvolutionCandidate, EvaluationResult, EvolutionGate
-from .skill_memory import LearningSignal, SkillMemoryManager
+from .learning_signal import LearningSignalClassification, classify_learning_signal
+from .skill_memory import LearningSignal, PromotionCandidate, SkillMemoryManager
 
 __all__ = [
     "LocalBackend",
     "SkillLoader",
     "SkillMemoryManager",
     "LearningSignal",
+    "PromotionCandidate",
+    "LearningSignalClassification",
+    "classify_learning_signal",
     "EvolutionCandidate",
     "EvaluationResult",
     "EvolutionGate",

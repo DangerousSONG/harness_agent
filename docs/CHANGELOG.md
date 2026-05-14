@@ -4,6 +4,30 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-14
 
+### Evolution Gate Evaluation
+
+- Extended `EvolutionGate` to load `PromotionCandidate` records from `.skills_memory/PROMOTION_CANDIDATES.md` by `candidate_id`.
+- Added first-pass metric estimation for `correctness_gain`, `safety_gain`, `regression_risk`, `overblocking_risk`, and `cost_increase`.
+- Updated gate decisions to reject missing evaluation plans, route guarded instruction/policy candidates to human review, reject negative safety or high regression risk, propose approval when score meets threshold, and otherwise keep candidates.
+- Added `evaluate_evolution_candidate(candidate_id)` and wired it to `.audit/evolution.jsonl`; the tool only evaluates and never applies patches.
+- Added SafeHarness capability entries for `evaluate_evolution_candidate`.
+
+### Memory Promotion Candidates
+
+- Added `PromotionCandidate` as the memory-side candidate shape for recurring patterns.
+- Repeated memory records now create or reuse a promotion candidate when deduplication reaches `Occurrence Count >= 3`.
+- Promotion candidates are written to `.skills_memory/PROMOTION_CANDIDATES.md` with structured fields, including source record id, target skill, proposed change summary, target files, expected improvement, risk type, severity, status, and evaluation plan.
+- Added the `propose_memory_promotion` tool for manual candidate creation from `skill_name` and `record_id`.
+- Added SafeHarness capability entries for `propose_memory_promotion`.
+
+### Automatic Learning Signal Capture
+
+- Added `runtime/learning_signal.py` with an LLM-backed `classify_learning_signal` helper that accepts conversation context, latest tool events, and latest LLM messages, then normalizes the result into a structured classification object.
+- Wired the agent loop to call the classifier after each LLM response and after each tool round, then automatically call the matching `record_*` memory tool when `should_record=true`.
+- Enforced automatic attribution priority: successful recent `load_skill(name)` wins, otherwise the LLM-selected target skill is used, otherwise records default to `self_improvement`.
+- Automatic memory writes now always pass `Attribution Reason` and `Attribution Confidence`.
+- Kept automatic capture limited to memory writes; it does not modify `SKILL.md`, `AGENTS.md`, safety policy, tool schemas, tool handlers, or prompts.
+
 ### Skill Memory Signal Attribution
 
 - Added `LearningSignal` and `classify_learning_signal` as the first learning signal classification entry point.

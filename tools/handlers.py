@@ -19,6 +19,8 @@ def build_tool_handlers(
     BUS,
     handle_shutdown_request,
     handle_plan_review,
+    EVOLUTION_GATE=None,
+    classify_learning_signal_for_tool=None,
 ):
     def load_skill(**kw):
         name = kw["name"]
@@ -114,12 +116,30 @@ def build_tool_handlers(
         "record_feature_request": lambda **kw: record_feature_request(**kw),
         "record_policy_candidate": lambda **kw: record_policy_candidate(**kw),
         "record_regression_test": lambda **kw: record_regression_test(**kw),
-        "classify_learning_signal": lambda **kw: SKILL_MEMORY.classify_learning_signal(
-            kw["raw_content"],
-            signal_type=kw.get("signal_type", ""),
-            source=kw.get("source", "manual"),
-            candidate_skill=kw.get("candidate_skill", ""),
-            confidence=kw.get("confidence", "medium"),
+        "propose_memory_promotion": lambda **kw: SKILL_MEMORY.propose_memory_promotion(
+            kw["skill_name"],
+            kw["record_id"],
+        ),
+        "evaluate_evolution_candidate": lambda **kw: json.dumps(
+            EVOLUTION_GATE.evaluate_candidate_id(kw["candidate_id"]).to_dict()
+            if EVOLUTION_GATE
+            else {
+                "decision": "reject",
+                "reason": "EvolutionGate is not configured.",
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        "classify_learning_signal": lambda **kw: (
+            classify_learning_signal_for_tool(**kw)
+            if classify_learning_signal_for_tool
+            else SKILL_MEMORY.classify_learning_signal(
+                kw.get("raw_content", ""),
+                signal_type=kw.get("signal_type", ""),
+                source=kw.get("source", "manual"),
+                candidate_skill=kw.get("candidate_skill", ""),
+                confidence=kw.get("confidence", "medium"),
+            )
         ),
         "summarize_skill_memory": lambda **kw: SKILL_MEMORY.summarize_memory(kw["skill_name"]),
         "list_skill_memory": lambda **kw: SKILL_MEMORY.list_memory(kw["skill_name"]),

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 import json
@@ -88,6 +88,51 @@ class LearningSignal:
     recommended_record_type: str = "none"
 
     def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
+@dataclass
+class PromotionCandidate:
+    candidate_id: str
+    record_id: str
+    target_skill: str
+    proposed_change_summary: str
+    target_files: list[str]
+    expected_improvement: str
+    risk_type: str
+    severity: str
+    created_at: str = field(default_factory=utc_now)
+    status: str = "proposed"
+    evaluation_plan: str = ""
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        record_id: str,
+        target_skill: str,
+        proposed_change_summary: str,
+        target_files: list[str],
+        expected_improvement: str,
+        risk_type: str,
+        severity: str,
+        status: str = "proposed",
+        evaluation_plan: str = "",
+    ) -> "PromotionCandidate":
+        return cls(
+            candidate_id=f"PROMO-{uuid.uuid4().hex[:8].upper()}",
+            record_id=record_id,
+            target_skill=normalize_name(target_skill),
+            proposed_change_summary=proposed_change_summary,
+            target_files=target_files,
+            expected_improvement=expected_improvement,
+            risk_type=risk_type,
+            severity=severity,
+            status=status,
+            evaluation_plan=evaluation_plan,
+        )
+
+    def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
@@ -403,6 +448,13 @@ class SkillMemoryManager:
             if self._is_similar_record(record, clean_title, clean_details, "", "")
         ]
 
+    def propose_memory_promotion(self, skill_name: str, record_id: str) -> str:
+        self.ensure_memory(skill_name)
+        record = self._find_record_by_id(skill_name, record_id)
+        if not record:
+            return f"Error: Memory record '{record_id}' was not found for '{normalize_name(skill_name)}'"
+        return self._create_or_get_promotion_candidate(record)
+
     def _record(
         self,
         skill_name: str,
@@ -625,6 +677,7 @@ class SkillMemoryManager:
             "Priority",
             self._priority_for_occurrence(occurrence_count),
         )
+        promotion_message = ""
         if occurrence_count >= 3:
             updated_block = self._set_field(updated_block, "Status", "recurring")
         updated_block = self._append_related(updated_block, related)
@@ -633,12 +686,199 @@ class SkillMemoryManager:
 
         message = f"Updated similar record {record['record_id']} in {path.name}; occurrence_count={occurrence_count}"
         if occurrence_count >= 3:
-            message += ". This looks like a recurring pattern and should become a promotion candidate."
+            updated_record = dict(record)
+            updated_record["block"] = updated_block
+            updated_record["fields"] = self._parse_fields(updated_block)
+            updated_record["details"] = self._parse_details(updated_block)
+            promotion_message = self._create_or_get_promotion_candidate(updated_record)
+            message += f". Recurring pattern promotion: {promotion_message}"
         return message
+
+    def _find_record_by_id(
+        self,
+        skill_name: str,
+        record_id: str,
+    ) -> dict[str, object] | None:
+        wanted = record_id.strip()
+        if not wanted:
+            return None
+        for record_type in MEMORY_FILES:
+            path = self._memory_dir(skill_name) / MEMORY_FILES[record_type]
+            for record in self._read_records(path):
+                if str(record["record_id"]).strip() == wanted:
+                    return record
+        return None
+
+    def _create_or_get_promotion_candidate(self, record: dict[str, object]) -> str:
+        record_id = str(record["record_id"])
+        existing = self._find_existing_promotion_candidate(record_id)
+        if existing:
+            fields = dict(existing["fields"])
+            candidate_id = fields.get("Candidate ID", str(existing["record_id"]))
+            summary = fields.get("Proposed Change Summary", str(existing["title"]))
+            return f"{candidate_id}: {summary}"
+
+        candidate = self._build_promotion_candidate(record)
+        self._write_promotion_candidate(candidate)
+        return f"{candidate.candidate_id}: {candidate.proposed_change_summary}"
+
+    def _find_existing_promotion_candidate(
+        self,
+        record_id: str,
+    ) -> dict[str, object] | None:
+        path = self._promotion_candidates_path()
+        for record in self._read_records(path):
+            fields = dict(record["fields"])
+            if fields.get("Record ID") == record_id:
+                return record
+        return None
+
+    def _build_promotion_candidate(self, record: dict[str, object]) -> PromotionCandidate:
+        fields = dict(record["fields"])
+        title = str(record["title"]).strip() or str(record["record_id"])
+        details = str(record["details"]).strip()
+        target_skill = fields.get("Target Skill") or self._skill_name_for_record(record)
+        record_kind = self._record_kind_for_path(Path(record["path"]))
+        target_files, summary, expected = self._suggest_promotion_change(
+            target_skill=target_skill,
+            record_kind=record_kind,
+            title=title,
+            details=details,
+        )
+        return PromotionCandidate.create(
+            record_id=str(record["record_id"]),
+            target_skill=target_skill,
+            proposed_change_summary=summary,
+            target_files=target_files,
+            expected_improvement=expected,
+            risk_type=self._promotion_risk_type(record_kind),
+            severity=self._promotion_severity(fields.get("Priority", "")),
+            evaluation_plan="",
+        )
+
+    def _write_promotion_candidate(self, candidate: PromotionCandidate) -> None:
+        path = self._promotion_candidates_path()
+        self._ensure_promotion_candidates_file()
+        clean = {
+            key: redact_secrets(str(value))
+            for key, value in candidate.to_dict().items()
+            if key != "target_files"
+        }
+        target_files = [redact_secrets(item) for item in candidate.target_files]
+        block = "\n".join(
+            [
+                "",
+                f"## {candidate.candidate_id} - {clean['proposed_change_summary']}",
+                f"- Candidate ID: {candidate.candidate_id}",
+                f"- Record ID: {clean['record_id']}",
+                f"- Target Skill: {clean['target_skill']}",
+                f"- Proposed Change Summary: {clean['proposed_change_summary']}",
+                f"- Target Files: {', '.join(target_files)}",
+                f"- Expected Improvement: {clean['expected_improvement']}",
+                f"- Risk Type: {clean['risk_type']}",
+                f"- Severity: {clean['severity']}",
+                f"- Created At: {clean['created_at']}",
+                f"- Status: {clean['status']}",
+                f"- Evaluation Plan: {clean['evaluation_plan']}",
+                "",
+            ]
+        )
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(block)
+
+    def _suggest_promotion_change(
+        self,
+        *,
+        target_skill: str,
+        record_kind: str,
+        title: str,
+        details: str,
+    ) -> tuple[list[str], str, str]:
+        text = f"{title}\n{details}".lower()
+        if "openai_api_key" in text or ("api key" in text and "missing" in text):
+            target_files = ["README.md", ".env.example"]
+            summary = (
+                "Based on repeated errors for OPENAI_API_KEY missing, propose adding "
+                "guidance to README.md and .env.example."
+            )
+            expected = (
+                "Reduce recurring setup failures by making required OpenAI environment "
+                "variables easier to discover."
+            )
+            return target_files, summary, expected
+
+        if "env" in text and ("missing" in text or "not set" in text):
+            target_files = ["README.md", ".env.example"]
+            summary = (
+                f"Based on repeated {record_kind} records for {title}, propose clarifying "
+                "environment setup guidance in README.md and .env.example."
+            )
+            expected = "Reduce repeat setup mistakes and shorten recovery time."
+            return target_files, summary, expected
+
+        if record_kind == "regression_test":
+            target_file = f"skills/{normalize_name(target_skill)}/eval/cases.yaml"
+            summary = (
+                f"Based on repeated regression signals for {title}, propose adding an "
+                f"eval case to {target_file}."
+            )
+            expected = "Catch the recurring behavior before future changes are accepted."
+            return [target_file], summary, expected
+
+        if record_kind == "policy_candidate" or "safeharness" in text or "policy" in text:
+            summary = (
+                f"Based on repeated safety or policy signals for {title}, propose human "
+                "review of the pattern before changing any policy."
+            )
+            expected = "Preserve the recurring safety signal for review without changing policy automatically."
+            return [], summary, expected
+
+        summary = (
+            f"Based on repeated {record_kind} records for {title}, propose reviewing "
+            f"whether {normalize_name(target_skill)} needs documentation, tests, or workflow guidance."
+        )
+        expected = "Reduce recurrence by turning the repeated memory pattern into a reviewed improvement."
+        return [], summary, expected
+
+    def _promotion_risk_type(self, record_kind: str) -> str:
+        return {
+            "error": "recurring_error",
+            "feature_request": "capability_gap",
+            "policy_candidate": "safety_policy_candidate",
+            "regression_test": "regression_case",
+            "learning": "process_improvement",
+        }.get(record_kind, "recurring_pattern")
+
+    def _promotion_severity(self, priority: str) -> str:
+        value = priority.strip().lower()
+        if value in {"p1", "high", "critical"}:
+            return "high"
+        if value in {"p2", "medium"}:
+            return "medium"
+        if value in {"p3", "low"}:
+            return "low"
+        return "medium"
+
+    def _record_kind_for_path(self, path: Path) -> str:
+        filename = path.name
+        for record_kind, memory_file in MEMORY_FILES.items():
+            if filename == memory_file:
+                return record_kind
+        return "memory"
+
+    def _skill_name_for_record(self, record: dict[str, object]) -> str:
+        path = Path(record["path"])
+        if path.parent.name == "memory":
+            return normalize_name(path.parent.parent.name)
+        return "self_improvement"
 
     def _candidate_memory_paths(self, skill_name: str, record_type: str) -> list[Path]:
         paths = [self._memory_dir(skill_name) / MEMORY_FILES[record_type]]
-        paths.extend(sorted(self.global_memory_dir.glob("*.md")))
+        paths.extend(
+            path
+            for path in sorted(self.global_memory_dir.glob("*.md"))
+            if path.name != GLOBAL_MEMORY_FILES["promotion_candidate"]
+        )
         return paths
 
     def _read_records(self, path: Path) -> list[dict[str, object]]:
@@ -825,10 +1065,43 @@ class SkillMemoryManager:
 
     def _ensure_global_memory(self) -> None:
         for record_type, filename in GLOBAL_MEMORY_FILES.items():
-            self._ensure_markdown_file(
-                self.global_memory_dir / filename,
-                f"# {record_type.replace('_', ' ').title()}",
-            )
+            if record_type == "promotion_candidate":
+                self._ensure_promotion_candidates_file()
+            else:
+                self._ensure_markdown_file(
+                    self.global_memory_dir / filename,
+                    f"# {record_type.replace('_', ' ').title()}",
+                )
+
+    def _promotion_candidates_path(self) -> Path:
+        return self.global_memory_dir / GLOBAL_MEMORY_FILES["promotion_candidate"]
+
+    def _ensure_promotion_candidates_file(self) -> None:
+        path = self._promotion_candidates_path()
+        if path.exists():
+            return
+        path.write_text(
+            "\n".join(
+                [
+                    "# Promotion Candidates",
+                    "",
+                    "Records use the following required fields:",
+                    "- Candidate ID",
+                    "- Record ID",
+                    "- Target Skill",
+                    "- Proposed Change Summary",
+                    "- Target Files",
+                    "- Expected Improvement",
+                    "- Risk Type",
+                    "- Severity",
+                    "- Created At",
+                    "- Status",
+                    "- Evaluation Plan",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
 
     def _compose_details(self, content: str, **extra_fields: str) -> str:
         lines = [content.strip()]

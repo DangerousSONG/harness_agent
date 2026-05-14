@@ -3,8 +3,28 @@
 import json
 import uuid
 
+from runtime.learning_signal import classify_learning_signal
 from safety.decisions import BLOCK, REQUIRE_APPROVAL, SANITIZE
 from safety.events import RuntimeEvent
+
+MEMORY_RECORD_TOOLS = {
+    "record_learning",
+    "record_error",
+    "record_feature_request",
+    "record_policy_candidate",
+    "record_regression_test",
+    "propose_memory_promotion",
+    "evaluate_evolution_candidate",
+    "classify_learning_signal",
+}
+
+RECORD_TOOL_BY_TYPE = {
+    "learning": "record_learning",
+    "error": "record_error",
+    "feature_request": "record_feature_request",
+    "policy_candidate": "record_policy_candidate",
+    "regression_test": "record_regression_test",
+}
 
 
 def _event(
@@ -54,6 +74,98 @@ def _approval_message(decision) -> str:
     return f"Blocked by SafeHarness policy: {decision.reason}"
 
 
+def _recent_context(messages: list, limit: int = 6) -> list[dict]:
+    recent = []
+    for message in messages[-limit:]:
+        item = {
+            "role": message.get("role"),
+            "content": str(message.get("content", ""))[:1200],
+        }
+        if message.get("name"):
+            item["name"] = message.get("name")
+        recent.append(item)
+    return recent
+
+
+def _recent_loaded_skill(latest_tool_events: list[dict]) -> str | None:
+    for event in reversed(latest_tool_events):
+        if event.get("tool") != "load_skill" or event.get("status") != "ok":
+            continue
+        arguments = event.get("arguments") or {}
+        if isinstance(arguments, dict):
+            skill_name = str(arguments.get("name") or "").strip()
+            if skill_name:
+                return skill_name
+    return None
+
+
+def _auto_record_learning_signal(
+    *,
+    client,
+    model: str,
+    messages: list,
+    tool_handlers: dict,
+    latest_tool_events: list[dict],
+    latest_llm_messages: list[dict],
+) -> None:
+    if not latest_tool_events and not latest_llm_messages:
+        return
+
+    try:
+        classification = classify_learning_signal(
+            client=client,
+            model=model,
+            conversation_context=_recent_context(messages),
+            latest_tool_events=latest_tool_events,
+            latest_llm_messages=latest_llm_messages,
+        ).to_dict()
+    except Exception as e:
+        print(f"> auto_memory classify skipped: {e}")
+        return
+    if not classification.get("should_record"):
+        return
+
+    record_type = classification.get("record_type")
+    tool_name = RECORD_TOOL_BY_TYPE.get(record_type)
+    if not tool_name or tool_name not in tool_handlers:
+        return
+
+    recent_loaded_skill = _recent_loaded_skill(latest_tool_events)
+    classified_skill = classification.get("target_skill")
+    base_reason = str(classification.get("reason") or "automatic learning signal classification")
+    if recent_loaded_skill:
+        target_skill = recent_loaded_skill
+        reason = f"recent load_skill('{recent_loaded_skill}') succeeded; {base_reason}"
+        confidence = "high"
+    elif classified_skill:
+        target_skill = classified_skill
+        reason = f"LLM classified target_skill as '{classified_skill}'; {base_reason}"
+        confidence = str(classification.get("attribution_confidence") or "medium")
+    else:
+        target_skill = "self_improvement"
+        reason = f"LLM returned no target_skill; defaulting to self_improvement; {base_reason}"
+        confidence = "low"
+    title = str(classification.get("title") or f"Automatic {record_type} signal")[:200]
+    content = str(classification.get("content") or reason)
+    args = {
+        "skill_name": target_skill,
+        "title": title,
+        "content": content,
+        "source": "auto_learning_signal",
+        "domain": record_type,
+        "source_skill": "self_improvement",
+        "attribution_reason": reason,
+        "attribution_confidence": confidence,
+        "needs_attribution_review": confidence == "low",
+    }
+    try:
+        output = tool_handlers[tool_name](**args)
+        print(f"> auto_memory:{tool_name}:")
+        print(str(output)[:200])
+    except Exception as e:
+        print(f"> auto_memory error: {e}")
+
+
 def agent_loop(
     *,
     messages: list,
@@ -81,6 +193,8 @@ def agent_loop(
     allowed_capabilities = allowed_capabilities or set()
 
     while True:
+        latest_tool_events = []
+        latest_llm_messages = []
         microcompact(messages)
 
         if estimate_tokens(messages) > token_threshold:
@@ -182,6 +296,13 @@ def agent_loop(
             parent_event_id=request_event.event_id,
         )
         _evaluate(policy_engine, audit_logger, response_event)
+        latest_llm_messages.append({
+            "content": msg.content or "",
+            "tool_calls": [
+                tool_call.function.name
+                for tool_call in (msg.tool_calls or [])
+            ],
+        })
 
         if not msg.tool_calls:
             if msg.content:
@@ -190,6 +311,14 @@ def agent_loop(
                     "role": "assistant",
                     "content": msg.content,
                 })
+            _auto_record_learning_signal(
+                client=client,
+                model=model,
+                messages=messages,
+                tool_handlers=tool_handlers,
+                latest_tool_events=latest_tool_events,
+                latest_llm_messages=latest_llm_messages,
+            )
             return
 
         messages.append({
@@ -239,6 +368,12 @@ def agent_loop(
                         if decision.action == BLOCK
                         else _approval_message(decision)
                     )
+                latest_tool_events.append({
+                    "tool": tool_name,
+                    "status": "malformed_arguments",
+                    "error": str(e),
+                    "result": output,
+                })
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
@@ -263,6 +398,13 @@ def agent_loop(
                     if decision.action == BLOCK
                     else _approval_message(decision)
                 )
+                if tool_name not in MEMORY_RECORD_TOOLS:
+                    latest_tool_events.append({
+                        "tool": tool_name,
+                        "status": "blocked",
+                        "reason": decision.reason,
+                        "result": output,
+                    })
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
@@ -294,6 +436,13 @@ def agent_loop(
                     if decision.action == BLOCK
                     else _approval_message(decision)
                 )
+                if tool_name not in MEMORY_RECORD_TOOLS:
+                    latest_tool_events.append({
+                        "tool": tool_name,
+                        "status": "blocked",
+                        "reason": decision.reason,
+                        "result": output,
+                    })
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
@@ -307,6 +456,13 @@ def agent_loop(
                 output = handler(**tool_args) if handler else f"Unknown tool: {tool_name}"
             except Exception as e:
                 output = f"Error: {e}"
+            if tool_name not in MEMORY_RECORD_TOOLS:
+                latest_tool_events.append({
+                    "tool": tool_name,
+                    "arguments": tool_args,
+                    "status": "error" if str(output).startswith("Error:") else "ok",
+                    "result": str(output)[:2000],
+                })
 
             after_event = _event(
                 run_id=run_id,
@@ -338,6 +494,13 @@ def agent_loop(
                     if decision.action == BLOCK
                     else _approval_message(decision)
                 )
+                if tool_name not in MEMORY_RECORD_TOOLS:
+                    latest_tool_events.append({
+                        "tool": tool_name,
+                        "status": "blocked_result",
+                        "reason": decision.reason,
+                        "result": output,
+                    })
             elif decision and decision.action == SANITIZE:
                 output = result_event.payload.get("result", output)
 
@@ -357,6 +520,15 @@ def agent_loop(
                 "role": "user",
                 "content": "<reminder>Update your todos.</reminder>",
             })
+
+        _auto_record_learning_signal(
+            client=client,
+            model=model,
+            messages=messages,
+            tool_handlers=tool_handlers,
+            latest_tool_events=latest_tool_events,
+            latest_llm_messages=latest_llm_messages,
+        )
 
         if manual_compress:
             print("[manual compact]")

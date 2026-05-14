@@ -161,6 +161,16 @@ SAFE_POLICY_DEFAULT = {
             "risk": "medium",
             "default_action": "allow",
         },
+        "propose_memory_promotion": {
+            "capability": "memory.write",
+            "risk": "medium",
+            "default_action": "allow",
+        },
+        "evaluate_evolution_candidate": {
+            "capability": "memory.write",
+            "risk": "medium",
+            "default_action": "allow",
+        },
         "classify_learning_signal": {
             "capability": "memory.write",
             "risk": "low",

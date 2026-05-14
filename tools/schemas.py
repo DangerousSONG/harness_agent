@@ -474,12 +474,53 @@ def build_tools(valid_msg_types: list[str]) -> list[dict]:
         {
             "type": "function",
             "function": {
+                "name": "propose_memory_promotion",
+                "description": "Create or return a promotion candidate for a recurring skill memory record.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {"type": "string"},
+                        "record_id": {"type": "string"},
+                    },
+                    "required": ["skill_name", "record_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "evaluate_evolution_candidate",
+                "description": "Evaluate a promotion candidate with Evolution Gate and write the decision to the evolution audit log. Does not apply patches.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": {"type": "string"},
+                    },
+                    "required": ["candidate_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "classify_learning_signal",
-                "description": "Classify whether an event, user correction, tool error, or feedback should become skill memory and identify the target skill.",
+                "description": "Use the LLM classifier to decide whether recent conversation, tool events, or feedback should become skill memory and identify the target skill.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "raw_content": {"type": "string"},
+                        "conversation_context": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                        },
+                        "latest_tool_events": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                        },
+                        "latest_llm_messages": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                        },
                         "signal_type": {
                             "type": "string",
                             "enum": [
@@ -496,7 +537,7 @@ def build_tools(valid_msg_types: list[str]) -> list[dict]:
                         "candidate_skill": {"type": "string"},
                         "confidence": {"type": "string"},
                     },
-                    "required": ["raw_content"]
+                    "required": []
                 }
             }
         },

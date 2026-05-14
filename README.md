@@ -299,6 +299,12 @@ description: Example skill description
 
 学习信号可以由模型根据 `self_improvement` 规则判断归属。代码侧负责 secret 脱敏、重复记录合并、归属元数据写入和 markdown 落盘；`EvolutionGate` 负责判断候选改进是进化、退化还是需要人工确认。真正修改 `SKILL.md`、`AGENTS.md`、安全策略、工具代码或 prompt 前，仍必须经过人工确认。
 
+Agent 循环会在每轮模型回复以及工具调用结束后自动调用 `classify_learning_signal`。该 helper 接收最近对话上下文、最新工具事件和最新模型消息，由 LLM 返回结构化分类结果；当 `should_record=true` 时，运行时会调用对应的 `record_*` 工具。自动归属优先级为：显式 `record_* skill_name`、最近成功的 `load_skill(name)`、LLM 判断的 `target_skill`、最后回退到 `self_improvement`。每条自动 memory 都会写入 Attribution Reason 和 Attribution Confidence。
+
+当同一条 memory 通过去重逻辑累计到 `Occurrence Count >= 3` 时，系统会将其标记为 `recurring`，并生成或复用一个 `PromotionCandidate`，写入 `.skills_memory/PROMOTION_CANDIDATES.md`。候选记录包含来源 `record_id`、目标 Skill、建议变更摘要、目标文件、预期改进、风险类型、严重程度、状态和空的 evaluation plan。也可以通过 `propose_memory_promotion(skill_name, record_id)` 手动生成同类候选。
+
+`evaluate_evolution_candidate(candidate_id)` 可以对 promotion candidate 做首版 Evolution Gate 评估。它会估算 correctness gain、safety gain、regression risk、overblocking risk 和 cost increase，按规则给出 `reject`、`needs_human_review`、`propose_approve` 或 `keep_as_candidate`，并写入 `.audit/evolution.jsonl`。该工具只评估候选，不会自动应用 patch。
+
 `self_improvement` 不直接修改长期规则或关键运行文件。它不得记录 secret 原文，不得自动修改 `SKILL.md`、`AGENTS.md`、安全策略、工具 schema、工具 handler 或 harness prompt。涉及长期规则变更的内容只能先记录为 memory 或候选建议，后续修改必须经过用户明确确认。
 
 ## 注意事项
