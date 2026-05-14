@@ -1,15 +1,60 @@
+# =========================
+# Environment variables
+# =========================
 .env
+.env.*
+!.env.example
 
-__pycache__/
-*.pyc
+
+# =========================
+# Python virtual environments
+# =========================
 .venv/
 venv/
+env/
+evolve/
 
+
+# =========================
+# Python cache / build artifacts
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+
+# =========================
+# Local self-improvement runtime memory
+# =========================
+.skills_memory/
+skills/*/memory/
+
+
+# =========================
+# Local generated outputs
+# =========================
+*.log
+*_读书笔记.md
+*.tmp
+
+
+# =========================
+# Local project runtime folders
+# =========================
 .team/
 .tasks/
 .transcripts/
 .audit/
 
+
+# =========================
+# Editor / OS files
+# =========================
 .vscode/
+.idea/
 .DS_Store
 Thumbs.db
