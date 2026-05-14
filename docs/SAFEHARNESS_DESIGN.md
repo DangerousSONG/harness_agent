@@ -171,7 +171,8 @@ Current runtime behavior:
 
 - `require_approval` creates a pending item in the local review queue and stops the current action.
 - The user-facing response includes the `review_id`, and the guarded tool call is not executed.
-- Approving a review changes its status to `approved` only. No patch is applied automatically.
+- Review items include the guarded tool name, tool arguments, target files, event type, source, reason, risk type, severity, proposed change, evaluation plan, rollback plan, status, and creation time.
+- Approving a review changes its status to `approved` and writes a patch preview. No patch is applied automatically.
 - Guarded edits include `SKILL.md`, `AGENTS.md`, `safety/**`, `tools/**`, and `harness/prompt.py`.
 
 ## Audit
@@ -199,7 +200,7 @@ Do not commit `.audit/`.
 ## Future Work
 
 - Add policy selection through environment variable or CLI flag.
-- Add explicit patch preview and apply confirmation steps for approved review items.
+- Add an explicit apply confirmation step for approved review items.
 - Add `ToolRegistryGuard` for tool allowlist, schema hash, handler matching, and malicious descriptions.
 - Add `MemoryGuard` for `memory.write.before` and skill-content safety scanning.
 - Add explicit `skill.load.before` event before skill body injection.

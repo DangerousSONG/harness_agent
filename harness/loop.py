@@ -42,11 +42,30 @@ def _event(
     )
 
 
-def _evaluate(policy_engine, audit_logger, event: RuntimeEvent):
+def _evaluate(policy_engine, audit_logger, event: RuntimeEvent, review_store=None):
     if not policy_engine:
         return None
 
     decision = policy_engine.evaluate(event)
+    if decision.action == REQUIRE_APPROVAL:
+        if review_store:
+            try:
+                _attach_review_id(
+                    decision,
+                    _create_review_for_decision(review_store, event, decision),
+                )
+            except Exception as e:
+                decision = type(decision).block(
+                    decision.risk_type,
+                    decision.severity,
+                    f"{decision.reason} Approval review creation failed: {e}",
+                )
+        else:
+            decision = type(decision).block(
+                decision.risk_type,
+                decision.severity,
+                f"{decision.reason} Approval queue is not configured.",
+            )
     if audit_logger:
         audit_logger.log(event, decision)
     return decision
@@ -59,7 +78,7 @@ def _blocked_message(decision) -> str:
 def _approval_message(decision) -> str:
     review_id = getattr(decision, "review_id", "")
     if review_id:
-        return f"需要人工审批，review_id 是 {review_id}；该工具调用尚未执行。原因：{decision.reason}"
+        return f"需要人工审批，review_id={review_id}；该工具调用尚未执行。原因：{decision.reason}"
     return f"需要人工审批；该操作尚未执行。原因：{decision.reason}"
 
 
@@ -100,6 +119,9 @@ def _create_review_for_decision(review_store, event: RuntimeEvent, decision) -> 
         proposed_change=_proposed_change_for_tool(target, args),
         evaluation_plan="Human reviews the request and smallest useful validation before any apply step.",
         rollback_plan="Do not apply automatically. If later applied and unsafe, revert only the reviewed change.",
+        tool_name=target,
+        tool_arguments=args,
+        event_type=event.event_type,
         metadata={
             "event": event.to_dict(),
             "tool_name": target,
@@ -236,13 +258,8 @@ def agent_loop(
                 source="user_input",
                 payload={"content": last_user.get("content", "")},
             )
-            decision = _evaluate(policy_engine, audit_logger, event)
+            decision = _evaluate(policy_engine, audit_logger, event, review_store)
             if decision and decision.action in {BLOCK, REQUIRE_APPROVAL}:
-                if decision.action == REQUIRE_APPROVAL:
-                    _attach_review_id(
-                        decision,
-                        _create_review_for_decision(review_store, event, decision),
-                    )
                 output = (
                     _blocked_message(decision)
                     if decision.action == BLOCK
@@ -261,13 +278,8 @@ def agent_loop(
             payload={"message_count": len(messages)},
             metadata={"allowed_capabilities": sorted(allowed_capabilities)},
         )
-        decision = _evaluate(policy_engine, audit_logger, request_event)
+        decision = _evaluate(policy_engine, audit_logger, request_event, review_store)
         if decision and decision.action in {BLOCK, REQUIRE_APPROVAL}:
-            if decision.action == REQUIRE_APPROVAL:
-                _attach_review_id(
-                    decision,
-                    _create_review_for_decision(review_store, request_event, decision),
-                )
             output = (
                 _blocked_message(decision)
                 if decision.action == BLOCK
@@ -305,7 +317,7 @@ def agent_loop(
             },
             parent_event_id=request_event.event_id,
         )
-        _evaluate(policy_engine, audit_logger, response_event)
+        _evaluate(policy_engine, audit_logger, response_event, review_store)
         latest_llm_messages.append({
             "content": msg.content or "",
             "tool_calls": [
@@ -371,13 +383,8 @@ def agent_loop(
                     metadata={"allowed_capabilities": sorted(allowed_capabilities)},
                     parent_event_id=response_event.event_id,
                 )
-                decision = _evaluate(policy_engine, audit_logger, malformed_event)
+                decision = _evaluate(policy_engine, audit_logger, malformed_event, review_store)
                 if decision and decision.action in {BLOCK, REQUIRE_APPROVAL}:
-                    if decision.action == REQUIRE_APPROVAL:
-                        _attach_review_id(
-                            decision,
-                            _create_review_for_decision(review_store, malformed_event, decision),
-                        )
                     output = (
                         _blocked_message(decision)
                         if decision.action == BLOCK
@@ -406,13 +413,8 @@ def agent_loop(
                 metadata={"allowed_capabilities": sorted(allowed_capabilities)},
                 parent_event_id=response_event.event_id,
             )
-            decision = _evaluate(policy_engine, audit_logger, call_event)
+            decision = _evaluate(policy_engine, audit_logger, call_event, review_store)
             if decision and decision.action in {BLOCK, REQUIRE_APPROVAL}:
-                if decision.action == REQUIRE_APPROVAL:
-                    _attach_review_id(
-                        decision,
-                        _create_review_for_decision(review_store, call_event, decision),
-                    )
                 output = (
                     _blocked_message(decision)
                     if decision.action == BLOCK
@@ -449,13 +451,8 @@ def agent_loop(
                 metadata={"allowed_capabilities": sorted(allowed_capabilities)},
                 parent_event_id=call_event.event_id,
             )
-            decision = _evaluate(policy_engine, audit_logger, execution_event)
+            decision = _evaluate(policy_engine, audit_logger, execution_event, review_store)
             if decision and decision.action in {BLOCK, REQUIRE_APPROVAL}:
-                if decision.action == REQUIRE_APPROVAL:
-                    _attach_review_id(
-                        decision,
-                        _create_review_for_decision(review_store, execution_event, decision),
-                    )
                 output = (
                     _blocked_message(decision)
                     if decision.action == BLOCK
@@ -498,7 +495,7 @@ def agent_loop(
                 payload={"result": str(output)},
                 parent_event_id=execution_event.event_id,
             )
-            _evaluate(policy_engine, audit_logger, after_event)
+            _evaluate(policy_engine, audit_logger, after_event, review_store)
 
             print(f"> {tool_name}:")
             print(str(output)[:200])
@@ -512,13 +509,8 @@ def agent_loop(
                 payload={"result": str(output)},
                 parent_event_id=after_event.event_id,
             )
-            decision = _evaluate(policy_engine, audit_logger, result_event)
+            decision = _evaluate(policy_engine, audit_logger, result_event, review_store)
             if decision and decision.action in {BLOCK, REQUIRE_APPROVAL}:
-                if decision.action == REQUIRE_APPROVAL:
-                    _attach_review_id(
-                        decision,
-                        _create_review_for_decision(review_store, result_event, decision),
-                    )
                 output = (
                     _blocked_message(decision)
                     if decision.action == BLOCK

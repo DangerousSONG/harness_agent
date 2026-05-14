@@ -131,6 +131,9 @@ def build_tool_handlers(
                 proposed_change=candidate.proposed_change if candidate else "",
                 evaluation_plan=candidate.evaluation_plan if candidate else "",
                 rollback_plan=candidate.rollback_plan if candidate else "",
+                tool_name="evaluate_evolution_candidate",
+                tool_arguments={"candidate_id": candidate_id},
+                event_type="evolution_candidate",
                 metadata={
                     "evaluation_result": payload,
                     "candidate": candidate.to_dict() if candidate else {},

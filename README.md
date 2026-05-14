@@ -71,7 +71,7 @@ python .\harness\agent_harness.py
 | `/inbox` | 读取 lead 收件箱 |
 | `/reviews` | 列出 pending 审批项 |
 | `/review <id>` | 查看审批详情 |
-| `/approve <id>` | 批准审批项，只把状态改为 `approved` |
+| `/approve <id>` | 批准审批项，生成 patch preview，但不修改目标文件 |
 | `/reject <id>` | 拒绝审批项 |
 
 ## SafeHarness
@@ -171,7 +171,7 @@ $env:SAFETY_POLICY="high_security"
 python .\harness\agent_harness.py
 ```
 
-敏感变更必须进入审批队列，包括 `SKILL.md`、`AGENTS.md`、`safety/**`、`tools/**`、`harness/prompt.py` 等。批准 review 只改变状态，不会自动修改文件。
+敏感变更必须进入审批队列，包括 `SKILL.md`、`AGENTS.md`、`safety/**`、`tools/**`、`harness/prompt.py` 等。批准 review 会生成 patch preview，但不会自动修改文件。
 
 ### 人工审批队列
 
@@ -186,9 +186,9 @@ stateDiagram-v2
     approved --> applied: future explicit apply
 ```
 
-review item 保存在 `.reviews/REV-*.json`，核心字段包括 `review_id`、`type`、`source`、`target_skill`、`candidate_id`、`target_files`、`reason`、`risk_type`、`severity`、`proposed_change`、`evaluation_plan`、`rollback_plan`、`status` 和 `created_at`。
+review item 保存在 `.reviews/REV-*.json`，核心字段包括 `review_id`、`type`、`source`、`tool_name`、`tool_arguments`、`event_type`、`target_skill`、`candidate_id`、`target_files`、`reason`、`risk_type`、`severity`、`proposed_change`、`evaluation_plan`、`rollback_plan`、`status` 和 `created_at`。
 
-当前实现只支持查看、批准、拒绝。`approved` 只是人工批准状态，不会自动 apply patch。
+当前实现支持查看、批准、拒绝。批准会把状态改为 `approved` 并写出 patch preview；`approved` 不会自动 apply patch。
 
 ## self_improvement 闭环
 
@@ -247,7 +247,7 @@ Skill memory 使用 markdown 文件保存，并在写入前做简单去重。相
 - `tools/**`
 - `harness/prompt.py`
 
-当评估结果是 `needs_human_review` 时，系统会自动创建 `.reviews/REV-*.json`。审批通过只把 review 状态改为 `approved`，仍不会自动修改文件。
+当评估结果是 `needs_human_review` 时，系统会自动创建 `.reviews/REV-*.json`。审批通过会生成 patch preview，但仍不会自动修改文件。
 
 ### 学习闭环图
 

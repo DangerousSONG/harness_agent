@@ -78,7 +78,7 @@ Production direction: PostgreSQL or Redis with TTL, idempotent updates, actor at
 - `LocalMessageStore`: `.team/inbox/*.jsonl`
 - `LocalJobQueue`: daemon threads and in-process job dictionary
 - `LocalAgentRunner`: daemon threads and `.team/config.json`
-- `LocalReviewStore`: in-process dictionaries for legacy plan/shutdown state plus `.reviews/REV-*.json` for human review items
+- `LocalReviewStore`: in-process dictionaries for legacy plan/shutdown state plus `.reviews/REV-*.json` and `.reviews/patches/*.diff` for human review items and patch previews
 
 LocalBackend preserves existing behavior for development and demos.
 

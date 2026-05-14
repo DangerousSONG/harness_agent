@@ -270,10 +270,13 @@ def show_review(review_id: str) -> str:
 
 def approve_review(review_id: str) -> str:
     try:
-        item = BACKEND.review_store.approve_review(review_id)
+        item, patch_path = BACKEND.review_store.approve_review(review_id)
     except ValueError as e:
         return f"Error: {e}"
-    return f"Review {item['review_id']} approved. No target file was modified."
+    return (
+        f"Review {item['review_id']} approved. "
+        f"Patch preview written to {patch_path}. No target file was modified."
+    )
 
 
 def reject_review(review_id: str) -> str:

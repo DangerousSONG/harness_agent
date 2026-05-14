@@ -340,8 +340,10 @@ class LocalReviewStore(ReviewStore):
     def list_reviews(self, status: str | None = None) -> list[dict]:
         return [item.to_dict() for item in self.review_queue.list(status)]
 
-    def approve_review(self, review_id: str) -> dict:
-        return self.review_queue.approve(review_id).to_dict()
+    def approve_review(self, review_id: str) -> tuple[dict, str]:
+        item = self.review_queue.approve(review_id)
+        patch_path = self.review_queue.write_patch_preview(item)
+        return item.to_dict(), str(patch_path)
 
     def reject_review(self, review_id: str) -> dict:
         return self.review_queue.reject(review_id).to_dict()

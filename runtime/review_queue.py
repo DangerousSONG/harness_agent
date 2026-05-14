@@ -32,6 +32,9 @@ class ReviewItem:
     rollback_plan: str
     status: str = "pending"
     created_at: str = field(default_factory=utc_now)
+    tool_name: str = ""
+    tool_arguments: dict[str, Any] = field(default_factory=dict)
+    event_type: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -49,6 +52,9 @@ class ReviewItem:
         proposed_change: str = "",
         evaluation_plan: str = "",
         rollback_plan: str = "",
+        tool_name: str = "",
+        tool_arguments: dict[str, Any] | None = None,
+        event_type: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> "ReviewItem":
         return cls(
@@ -64,6 +70,9 @@ class ReviewItem:
             proposed_change=proposed_change,
             evaluation_plan=evaluation_plan,
             rollback_plan=rollback_plan,
+            tool_name=tool_name,
+            tool_arguments=tool_arguments or {},
+            event_type=event_type,
             metadata=metadata or {},
         )
 
@@ -127,8 +136,8 @@ class ReviewQueue:
         return patch_path
 
     def _build_patch_preview(self, item: ReviewItem) -> str:
-        args = item.metadata.get("tool_arguments", {})
-        tool_name = item.metadata.get("tool_name", "")
+        args = item.tool_arguments or item.metadata.get("tool_arguments", {})
+        tool_name = item.tool_name or item.metadata.get("tool_name", "")
         if tool_name == "write_file" and item.target_files:
             return self._diff_for_write(item.target_files[0], str(args.get("content", "")))
         if tool_name == "edit_file" and item.target_files:
