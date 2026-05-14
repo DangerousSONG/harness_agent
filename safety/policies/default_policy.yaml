@@ -68,9 +68,11 @@ tools:
     require_approval_paths:
       - ".env"
       - "AGENTS.md"
+      - "skills/**/SKILL.md"
       - "README.md"
       - "docs/SAFEHARNESS_DESIGN.md"
       - "safety/**"
+      - "tools/**"
       - "tools/schemas.py"
       - "tools/handlers.py"
       - "harness/prompt.py"
@@ -81,6 +83,7 @@ tools:
     require_approval_paths:
       - ".env"
       - "AGENTS.md"
+      - "skills/**/SKILL.md"
       - "safety/**"
       - "tools/**"
       - "harness/prompt.py"

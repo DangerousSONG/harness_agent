@@ -10,6 +10,8 @@ from pathlib import Path
 from queue import Queue
 from typing import Any
 
+from runtime.review_queue import ReviewQueue
+
 from .base import AgentRunner, JobQueue, MessageStore, ReviewStore, TaskStore
 
 
@@ -306,11 +308,12 @@ class LocalAgentRunner(AgentRunner):
 
 
 class LocalReviewStore(ReviewStore):
-    """In-process review state for local development."""
+    """Local review state for shutdown, plan approval, and human patch gates."""
 
-    def __init__(self):
+    def __init__(self, reviews_dir: Path, workdir: Path):
         self.shutdown_requests = {}
         self.plan_requests = {}
+        self.review_queue = ReviewQueue(reviews_dir, workdir)
 
     def create_shutdown_request(self, target: str) -> str:
         request_id = str(uuid.uuid4())[:8]
@@ -327,6 +330,23 @@ class LocalReviewStore(ReviewStore):
         if request_id in self.plan_requests:
             self.plan_requests[request_id]["status"] = status
 
+    def create_review(self, **fields: Any) -> dict:
+        return self.review_queue.create(**fields).to_dict()
+
+    def get_review(self, review_id: str) -> dict | None:
+        item = self.review_queue.get(review_id)
+        return item.to_dict() if item else None
+
+    def list_reviews(self, status: str | None = None) -> list[dict]:
+        return [item.to_dict() for item in self.review_queue.list(status)]
+
+    def approve_review(self, review_id: str) -> tuple[dict, str]:
+        item, patch_path = self.review_queue.approve(review_id)
+        return item.to_dict(), str(patch_path)
+
+    def reject_review(self, review_id: str) -> dict:
+        return self.review_queue.reject(review_id).to_dict()
+
 
 class LocalBackend:
     """Default backend that preserves the original single-machine behavior."""
@@ -336,7 +356,7 @@ class LocalBackend:
         self.message_store = LocalMessageStore(project_root / ".team" / "inbox")
         self.job_queue = LocalJobQueue(workdir)
         self.agent_runner = LocalAgentRunner(project_root / ".team")
-        self.review_store = LocalReviewStore()
+        self.review_store = LocalReviewStore(project_root / ".reviews", workdir)
 
 
 class RedisMessageStore(MessageStore):

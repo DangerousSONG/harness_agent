@@ -62,6 +62,11 @@ Owns human-review state:
 - `create_shutdown_request`
 - `get_plan_request`
 - `set_plan_status`
+- `create_review`
+- `get_review`
+- `list_reviews`
+- `approve_review`
+- `reject_review`
 
 Production direction: PostgreSQL or Redis with TTL, idempotent updates, actor attribution, and audit trail.
 
@@ -73,7 +78,7 @@ Production direction: PostgreSQL or Redis with TTL, idempotent updates, actor at
 - `LocalMessageStore`: `.team/inbox/*.jsonl`
 - `LocalJobQueue`: daemon threads and in-process job dictionary
 - `LocalAgentRunner`: daemon threads and `.team/config.json`
-- `LocalReviewStore`: in-process dictionaries
+- `LocalReviewStore`: in-process dictionaries for legacy plan/shutdown state plus `.reviews/REV-*.json` and `.reviews/patches/*.diff` for human review items
 
 LocalBackend preserves existing behavior for development and demos.
 

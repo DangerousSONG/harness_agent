@@ -63,6 +63,7 @@ tools:
     default_action: allow
     require_approval_paths:
       - "AGENTS.md"
+      - "skills/**/SKILL.md"
       - "docs/**"
       - "harness/**"
       - "safety/**"
@@ -78,6 +79,7 @@ tools:
     default_action: allow
     require_approval_paths:
       - "AGENTS.md"
+      - "skills/**/SKILL.md"
       - "docs/**"
       - "harness/**"
       - "safety/**"

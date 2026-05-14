@@ -47,6 +47,8 @@ Candidates are suggestions only. They do not edit README files, `.env.example`, 
 
 First-pass decisions are intentionally conservative: missing evaluation plans reject, guarded instruction or policy targets require human review after an evaluation plan exists, negative safety gain or high regression risk rejects, scores at or above the threshold return `approve`, and low scores reject. Evaluation never applies patches automatically.
 
+When a candidate needs human review, the tool creates a pending item in `.reviews/`. Use `/reviews` to list pending items, `/review <id>` to inspect one, `/approve <id>` to mark it approved and generate `.reviews/patches/<id>.diff`, and `/reject <id>` to reject it. Approval is still preview-only; applying a patch requires a separate explicit confirmation step.
+
 ## Conflict Resolution
 
 When documents disagree, use this order:

@@ -123,7 +123,12 @@ The default run path is:
 python .\harness\agent_harness.py
 ```
 
-The REPL exits on `q`, `exit`, or empty input.
+The REPL exits on `q`, `exit`, or empty input. Local review commands are:
+
+- `/reviews`: list pending human-review items.
+- `/review <id>`: show review details.
+- `/approve <id>`: mark a review approved and write a patch preview without applying it.
+- `/reject <id>`: reject a review.
 
 ## Design Constraints
 

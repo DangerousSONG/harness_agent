@@ -241,9 +241,50 @@ TOOL_HANDLERS = build_tool_handlers(
     handle_shutdown_request=handle_shutdown_request,
     handle_plan_review=handle_plan_review,
     EVOLUTION_GATE=EVOLUTION_GATE,
+    REVIEW_STORE=BACKEND.review_store,
     classify_learning_signal_for_tool=classify_learning_signal_for_tool,
     classify_and_record_learning_signal_for_tool=classify_and_record_learning_signal_for_tool,
 )
+
+
+def format_reviews() -> str:
+    reviews = BACKEND.review_store.list_reviews("pending")
+    if not reviews:
+        return "No pending reviews."
+    lines = []
+    for item in reviews:
+        files = ", ".join(item.get("target_files", [])) or "(no files)"
+        lines.append(
+            f"{item['review_id']} [{item['severity']}] {item['type']} "
+            f"candidate={item.get('candidate_id') or '-'} files={files}"
+        )
+    return "\n".join(lines)
+
+
+def show_review(review_id: str) -> str:
+    item = BACKEND.review_store.get_review(review_id)
+    if not item:
+        return f"Unknown review_id: {review_id}"
+    return json.dumps(item, indent=2, ensure_ascii=False)
+
+
+def approve_review(review_id: str) -> str:
+    try:
+        item, patch_path = BACKEND.review_store.approve_review(review_id)
+    except ValueError as e:
+        return f"Error: {e}"
+    return (
+        f"Review {item['review_id']} approved. "
+        f"Patch preview written to {patch_path}. No target file was modified."
+    )
+
+
+def reject_review(review_id: str) -> str:
+    try:
+        item = BACKEND.review_store.reject_review(review_id)
+    except ValueError as e:
+        return f"Error: {e}"
+    return f"Review {item['review_id']} rejected."
 
 
 # === SECTION: repl ===
@@ -275,6 +316,18 @@ if __name__ == "__main__":
         if query.strip() == "/inbox":
             print(json.dumps(BUS.read_inbox("lead"), indent=2))
             continue
+        if query.strip() == "/reviews":
+            print(format_reviews())
+            continue
+        if query.strip().startswith("/review "):
+            print(show_review(query.strip().split(maxsplit=1)[1]))
+            continue
+        if query.strip().startswith("/approve "):
+            print(approve_review(query.strip().split(maxsplit=1)[1]))
+            continue
+        if query.strip().startswith("/reject "):
+            print(reject_review(query.strip().split(maxsplit=1)[1]))
+            continue
         history.append({"role": "user", "content": query})
         agent_loop(
             messages=history,
@@ -293,6 +346,7 @@ if __name__ == "__main__":
             auto_compact=auto_compact,
             policy_engine=POLICY,
             audit_logger=AUDIT,
+            review_store=BACKEND.review_store,
             actor="lead",
             allowed_capabilities=capabilities_for_actor(POLICY.policy, "lead"),
         )

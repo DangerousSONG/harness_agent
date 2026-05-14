@@ -130,6 +130,26 @@ class ReviewStore(ABC):
     def set_plan_status(self, request_id: str, status: str) -> None:
         raise NotImplementedError
 
+    @abstractmethod
+    def create_review(self, **fields: Any) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_review(self, review_id: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_reviews(self, status: str | None = None) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def approve_review(self, review_id: str) -> tuple[dict, str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def reject_review(self, review_id: str) -> dict:
+        raise NotImplementedError
+
 
 class RuntimeBackend(ABC):
     """Factory for concrete runtime infrastructure."""

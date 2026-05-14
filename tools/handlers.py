@@ -20,6 +20,7 @@ def build_tool_handlers(
     handle_shutdown_request,
     handle_plan_review,
     EVOLUTION_GATE=None,
+    REVIEW_STORE=None,
     classify_learning_signal_for_tool=None,
     classify_and_record_learning_signal_for_tool=None,
 ):
@@ -103,6 +104,41 @@ def build_tool_handlers(
             needs_attribution_review=kw.get("needs_attribution_review"),
         )
 
+    def evaluate_evolution_candidate(**kw):
+        if not EVOLUTION_GATE:
+            return json.dumps(
+                {
+                    "decision": "reject",
+                    "reason": "EvolutionGate is not configured.",
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        candidate_id = kw["candidate_id"]
+        result = EVOLUTION_GATE.evaluate_candidate_id(candidate_id)
+        payload = result.to_dict()
+        if result.decision == "needs_human_review" and REVIEW_STORE:
+            candidate = EVOLUTION_GATE.load_promotion_candidate(candidate_id)
+            review = REVIEW_STORE.create_review(
+                type="evolution_candidate",
+                source="evaluate_evolution_candidate",
+                target_skill=candidate.target_skill if candidate else "",
+                candidate_id=candidate_id,
+                target_files=candidate.target_files if candidate else [],
+                reason=result.reason,
+                risk_type=candidate.risk_type if candidate else "",
+                severity=candidate.severity if candidate else "medium",
+                proposed_change=candidate.proposed_change if candidate else "",
+                evaluation_plan=candidate.evaluation_plan if candidate else "",
+                rollback_plan=candidate.rollback_plan if candidate else "",
+                metadata={
+                    "evaluation_result": payload,
+                    "candidate": candidate.to_dict() if candidate else {},
+                },
+            )
+            payload["review_id"] = review["review_id"]
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+
     return {
         "__skill_memory__": SKILL_MEMORY,
         "bash":             lambda **kw: run_bash(kw["command"]),
@@ -122,16 +158,7 @@ def build_tool_handlers(
             kw["skill_name"],
             kw["record_id"],
         ),
-        "evaluate_evolution_candidate": lambda **kw: json.dumps(
-            EVOLUTION_GATE.evaluate_candidate_id(kw["candidate_id"]).to_dict()
-            if EVOLUTION_GATE
-            else {
-                "decision": "reject",
-                "reason": "EvolutionGate is not configured.",
-            },
-            indent=2,
-            ensure_ascii=False,
-        ),
+        "evaluate_evolution_candidate": evaluate_evolution_candidate,
         "classify_and_record_learning_signal": lambda **kw: (
             classify_and_record_learning_signal_for_tool(**kw)
             if classify_and_record_learning_signal_for_tool

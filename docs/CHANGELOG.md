@@ -4,6 +4,15 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-14
 
+### Human Review Queue
+
+- Added a local `ReviewQueue` backed by `.reviews/REV-*.json` with patch previews under `.reviews/patches/`.
+- Changed SafeHarness `require_approval` handling to create a pending review item and return its `review_id` instead of converting the decision to a block.
+- Added REPL commands `/reviews`, `/review <id>`, `/approve <id>`, and `/reject <id>`.
+- Approval now marks a review as `approved` and writes a patch preview only; it does not apply changes to target files.
+- `evaluate_evolution_candidate` now creates a pending review item when the Evolution Gate returns `needs_human_review`.
+- Expanded approval-gated paths so `SKILL.md`, `AGENTS.md`, `safety/**`, `tools/**`, and `harness/prompt.py` changes require human review.
+
 ### Self Improvement Learning Loop
 
 - Added a shared `classify_and_record_learning_signal` runtime path for post-turn learning capture and tool-driven capture.

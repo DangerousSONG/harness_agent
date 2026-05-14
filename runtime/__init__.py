@@ -9,6 +9,7 @@ from .learning_signal import (
     classify_learning_signal,
 )
 from .skill_memory import LearningSignal, PromotionCandidate, SkillMemoryManager
+from .review_queue import ReviewItem, ReviewQueue
 
 __all__ = [
     "LocalBackend",
@@ -22,4 +23,6 @@ __all__ = [
     "EvolutionCandidate",
     "EvaluationResult",
     "EvolutionGate",
+    "ReviewItem",
+    "ReviewQueue",
 ]

@@ -169,8 +169,10 @@ Skill memory tool capability mapping:
 
 Current runtime behavior:
 
-- `require_approval` is converted to `block` at execution time because an interactive approval queue is not implemented yet.
-- The final reason recorded in audit includes `Approval queue is not implemented yet.`
+- `require_approval` creates a pending item in the local review queue and stops the current action.
+- The user-facing response includes the `review_id`, and the guarded tool call is not executed.
+- Approving a review writes `.reviews/patches/<review_id>.diff` as a preview only. No patch is applied until a later explicit confirmation path exists.
+- Guarded edits include `SKILL.md`, `AGENTS.md`, `safety/**`, `tools/**`, and `harness/prompt.py`.
 
 ## Audit
 
