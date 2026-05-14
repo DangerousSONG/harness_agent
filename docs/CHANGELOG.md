@@ -6,10 +6,10 @@ This file records meaningful project iterations. When judging current state, rea
 
 ### Human Review Queue
 
-- Added a local `ReviewQueue` backed by `.reviews/REV-*.json` with patch previews under `.reviews/patches/`.
+- Added a local `ReviewQueue` backed by `.reviews/REV-*.json`.
 - Changed SafeHarness `require_approval` handling to create a pending review item and return its `review_id` instead of converting the decision to a block.
 - Added REPL commands `/reviews`, `/review <id>`, `/approve <id>`, and `/reject <id>`.
-- Approval now marks a review as `approved` and writes a patch preview only; it does not apply changes to target files.
+- Approval now only marks a review as `approved`; it does not apply changes to target files.
 - `evaluate_evolution_candidate` now creates a pending review item when the Evolution Gate returns `needs_human_review`.
 - Expanded approval-gated paths so `SKILL.md`, `AGENTS.md`, `safety/**`, `tools/**`, and `harness/prompt.py` changes require human review.
 
@@ -43,7 +43,7 @@ This file records meaningful project iterations. When judging current state, rea
 
 - Added `runtime/learning_signal.py` with an LLM-backed `classify_learning_signal` helper that accepts conversation context, latest tool events, and latest LLM messages, then normalizes the result into a structured classification object.
 - Wired the agent loop to call the classifier after each LLM response and after each tool round, then automatically call the matching `record_*` memory tool when `should_record=true`.
-- Enforced automatic attribution priority: successful recent `load_skill(name)` wins, otherwise the LLM-selected target skill is used, otherwise records default to `self_improvement`.
+- Enforced automatic attribution priority: low confidence routes to `self_improvement` review; otherwise classifier `target_skill`, explicit `skill_name`, recent `load_skill(name)`, then `self_improvement`.
 - Automatic memory writes now always pass `Attribution Reason` and `Attribution Confidence`.
 - Kept automatic capture limited to memory writes; it does not modify `SKILL.md`, `AGENTS.md`, safety policy, tool schemas, tool handlers, or prompts.
 

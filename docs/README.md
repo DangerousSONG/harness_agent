@@ -20,16 +20,17 @@ This directory is the documentation home for harness_agent. It is intentionally 
 
 ## Automatic Learning Capture
 
-The harness can automatically capture durable learning signals for skill memory. After each LLM response and after each tool round, `runtime.learning_signal.classify_learning_signal` receives recent conversation context, latest tool events, and latest LLM messages. The helper asks the LLM to return a structured classification with `should_record`, `record_type`, `target_skill`, `reason`, `attribution_confidence`, `title`, and `content`.
+The harness can automatically capture durable learning signals for skill memory. After each LLM response and after each tool round, the loop calls the shared `runtime.learning_signal.classify_and_record_learning_signal` path. That helper redacts sensitive content, calls the LLM-backed classifier, normalizes a structured classification with `should_record`, `record_type`, `target_skill`, `reason`, `attribution_confidence`, `title`, and `content`, and writes the matching memory record when `should_record=true`.
 
-When `should_record=true`, the loop calls the matching `record_*` memory tool. Attribution is resolved in this order:
+Attribution is resolved in this order:
 
-1. Explicit `skill_name` on a manual `record_*` call.
-2. The most recent successful `load_skill(name)` in the current tool round.
-3. The LLM-classified `target_skill`.
-4. `self_improvement` when no owner can be determined.
+1. Low attribution confidence always routes to `self_improvement` with attribution review required.
+2. Classifier `target_skill`.
+3. Explicit `skill_name`.
+4. The most recent successful `load_skill(name)`.
+5. `self_improvement` when no owner can be determined.
 
-Every automatic memory write includes `Attribution Reason` and `Attribution Confidence`. The shared `classify_and_record_learning_signal` runtime path redacts secrets before classification/recording and blocks prompt-injection or approval-bypass text from becoming long-term learning. Automatic capture may write memory records only; it must not automatically edit `SKILL.md`, `AGENTS.md`, safety policy, tool schemas, tool handlers, or prompts.
+Every automatic memory write includes `Attribution Reason` and `Attribution Confidence`. Prompt-injection or approval-bypass text is blocked from becoming long-term learning. Automatic capture may write memory records only; it must not automatically edit `SKILL.md`, `AGENTS.md`, safety policy, tool schemas, tool handlers, or prompts.
 
 For a deterministic local walkthrough, run `python .\scripts\debug_self_improvement.py`. It creates a test-only `markdown_writer` skill if needed, records three similar corrections, prints classification and attribution details, and checks that memory and promotion candidate files were written.
 
@@ -47,7 +48,7 @@ Candidates are suggestions only. They do not edit README files, `.env.example`, 
 
 First-pass decisions are intentionally conservative: missing evaluation plans reject, guarded instruction or policy targets require human review after an evaluation plan exists, negative safety gain or high regression risk rejects, scores at or above the threshold return `approve`, and low scores reject. Evaluation never applies patches automatically.
 
-When a candidate needs human review, the tool creates a pending item in `.reviews/`. Use `/reviews` to list pending items, `/review <id>` to inspect one, `/approve <id>` to mark it approved and generate `.reviews/patches/<id>.diff`, and `/reject <id>` to reject it. Approval is still preview-only; applying a patch requires a separate explicit confirmation step.
+The local human approval queue is implemented. When a candidate needs human review, the tool creates a pending item in `.reviews/`. Use `/reviews` to list pending items, `/review <id>` to inspect one, `/approve <id>` to mark it approved, and `/reject <id>` to reject it. Approval changes status only; guarded files are never modified automatically.
 
 ## Conflict Resolution
 

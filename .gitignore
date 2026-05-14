@@ -45,11 +45,11 @@ skills/*/memory/
 # =========================
 # Local project runtime folders
 # =========================
-.team/
-.tasks/
-.transcripts/
-.audit/
 .reviews/
+.audit/
+.tasks/
+.team/
+.transcripts/
 
 
 # =========================

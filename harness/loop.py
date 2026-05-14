@@ -98,7 +98,7 @@ def _create_review_for_decision(review_store, event: RuntimeEvent, decision) -> 
         risk_type=decision.risk_type,
         severity=decision.severity,
         proposed_change=_proposed_change_for_tool(target, args),
-        evaluation_plan="Human reviews the request, generated patch preview, and smallest useful validation before any apply step.",
+        evaluation_plan="Human reviews the request and smallest useful validation before any apply step.",
         rollback_plan="Do not apply automatically. If later applied and unsafe, revert only the reviewed change.",
         metadata={
             "event": event.to_dict(),

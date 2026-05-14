@@ -79,7 +79,6 @@ class ReviewQueue:
         self.workdir = Path(workdir)
         self.patches_dir = self.reviews_dir / "patches"
         self.reviews_dir.mkdir(parents=True, exist_ok=True)
-        self.patches_dir.mkdir(parents=True, exist_ok=True)
 
     def create(self, **fields: Any) -> ReviewItem:
         item = ReviewItem.create(**fields)
@@ -114,15 +113,14 @@ class ReviewQueue:
         self._save(item)
         return item
 
-    def approve(self, review_id: str) -> tuple[ReviewItem, Path]:
-        item = self.set_status(review_id, "approved")
-        patch_path = self.write_patch_preview(item)
-        return item, patch_path
+    def approve(self, review_id: str) -> ReviewItem:
+        return self.set_status(review_id, "approved")
 
     def reject(self, review_id: str) -> ReviewItem:
         return self.set_status(review_id, "rejected")
 
     def write_patch_preview(self, item: ReviewItem) -> Path:
+        self.patches_dir.mkdir(parents=True, exist_ok=True)
         patch_path = self.patches_dir / f"{item.review_id}.diff"
         diff = self._build_patch_preview(item)
         patch_path.write_text(diff, encoding="utf-8")

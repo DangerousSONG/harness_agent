@@ -151,7 +151,7 @@ python .\harness\agent_harness.py
 
 - `default` 保留较完整的 lead 能力，但仍会拦截或审计 `bash`、`background_run`、`spawn_teammate` 等高风险工具。
 - `high_security` 默认阻断未知工具；shell 命令只有命中策略 allowlist 才允许；修改 `AGENTS.md`、`docs/**`、`harness/**`、`safety/**`、`tools/**` 时会触发更严格的审查。
-- 当前还没有实现交互式审批队列，所以 `require_approval` 会先按运行时阻断处理，并返回明确原因。
+- 当前已经实现最小人工审批队列。`require_approval` 会创建 `.reviews/` 下的 pending review item，返回 `review_id`，并停止当前工具调用；不会自动修改目标文件。
 
 ## 目录结构
 
@@ -254,6 +254,10 @@ s_full >>
 - `/tasks`：查看持久任务板
 - `/team`：查看 teammate 状态
 - `/inbox`：读取 lead 的消息收件箱
+- `/reviews`：列出 pending 审批项
+- `/review <id>`：查看审批详情
+- `/approve <id>`：批准审批项，只把状态改为 `approved`
+- `/reject <id>`：拒绝审批项
 
 ## 工具概览
 
@@ -299,13 +303,15 @@ description: Example skill description
 
 学习信号可以由模型根据 `self_improvement` 规则判断归属。代码侧负责 secret 脱敏、重复记录合并、归属元数据写入和 markdown 落盘；`EvolutionGate` 负责判断候选改进是进化、退化还是需要人工确认。真正修改 `SKILL.md`、`AGENTS.md`、安全策略、工具代码或 prompt 前，仍必须经过人工确认。
 
-Agent 循环会在每轮模型回复以及工具调用结束后自动调用 `classify_and_record_learning_signal`。该 helper 接收最近对话上下文、最新工具事件和最新模型消息，由 LLM 返回结构化分类结果；当 `should_record=true` 时，运行时会调用对应的 memory 写入方法。每条自动 memory 都会写入 Attribution Reason 和 Attribution Confidence。
+Agent 循环会在每轮模型回复以及工具调用结束后自动调用 `classify_and_record_learning_signal`。该 helper 接收最近对话上下文、最新工具事件和最新模型消息，先脱敏，再调用 LLM 分类，再在 `should_record=true` 时写入对应 memory。当前自动学习闭环已经使用这个统一 helper，不再是旧的“先 classify，再由外层手动 record”路径。每条自动 memory 都会写入 Attribution Reason 和 Attribution Confidence。
 
-当前自动闭环统一走 `classify_and_record_learning_signal`：先脱敏，再分类，再按分类结果写 memory。归属优先使用 classifier 返回的 `target_skill`；低置信度或无法判断时写入 `self_improvement` 并标记 Needs Attribution Review。提示注入、绕过审批、关闭安全等内容不会被写成长期学习。
+当前自动闭环统一走 `classify_and_record_learning_signal`。归属优先级与 `runtime/learning_signal.py` 保持一致：低置信度先写入 `self_improvement` 并标记 Needs Attribution Review；否则依次使用 classifier 返回的 `target_skill`、显式 `skill_name`、最近成功加载的 `last_loaded_skill`，最后回退到 `self_improvement`。提示注入、绕过审批、关闭安全等内容不会被写成长期学习。
 
 当同一条 memory 通过去重逻辑累计到 `Occurrence Count >= 3` 时，系统会将其标记为 `recurring`，并生成或复用一个 `PromotionCandidate`，写入 `.skills_memory/PROMOTION_CANDIDATES.md`。候选记录包含来源 `record_id`、目标 Skill、建议变更摘要、目标文件、预期改进、风险类型、严重程度、状态、evaluation plan 和 rollback plan。也可以通过 `propose_memory_promotion(skill_name, record_id)` 手动生成同类候选。
 
 `evaluate_evolution_candidate(candidate_id)` 可以对 promotion candidate 做首版 Evolution Gate 评估。它会估算 correctness gain、safety gain、regression risk、overblocking risk 和 cost increase，按规则给出 `reject`、`needs_human_review` 或 `approve`，并写入 `.audit/evolution.jsonl`。该工具只评估候选，不会自动应用 patch。
+
+当评估结果是 `needs_human_review` 时，系统会自动创建 review item。涉及 `SKILL.md`、`AGENTS.md`、`safety/**`、`tools/**` 或 `harness/prompt.py` 的候选变更必须进入审批队列；`approve` 只代表建议通过或人工批准状态，不会自动修改这些文件。
 
 `self_improvement` 不直接修改长期规则或关键运行文件。它不得记录 secret 原文，不得自动修改 `SKILL.md`、`AGENTS.md`、安全策略、工具 schema、工具 handler 或 harness prompt。涉及长期规则变更的内容只能先记录为 memory 或候选建议，后续修改必须经过用户明确确认。
 
