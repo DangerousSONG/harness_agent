@@ -15,6 +15,9 @@ This file records meaningful project iterations. When judging current state, rea
 - Added read-only promotion browsing through `/promotions` and `/promotion <id>` with a markdown parser for existing `PROMO-*` records and source memory metadata.
 - Added `/propose-skill-patch <id>` to validate recurring, safe promotion candidates and create pending `skill.promotion` review items for `skills/<target_skill>/SKILL.md`; approvals still generate preview diffs only.
 - Added `/propose-regression-case <id>` and guarded `/apply <review_id>` so `skill.promotion` reviews cannot modify `SKILL.md` until approved positive and negative regression cases for the same promotion have been applied through ReviewQueue.
+- Tightened skill promotion proposal quality: `policy_candidate` records are refused for direct `SKILL.md` patches, proposed rules are extracted from concrete source memory details instead of promotion-summary templates, and regression cases reuse the same concrete target rule.
+- Made bare `/review` return `Usage: /review <review_id>` locally instead of falling through to the model/tool loop.
+- Skipped automatic long-term memory capture while a `load_skill` approval is pending and the skill has not loaded successfully.
 
 ## 2026-05-14
 

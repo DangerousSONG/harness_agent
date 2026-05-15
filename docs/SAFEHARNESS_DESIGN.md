@@ -175,6 +175,7 @@ Current runtime behavior:
 - Approving a review changes its status to `approved` and writes a patch preview. No patch is applied automatically.
 - `/apply` is limited to approved `skill.regression_case` and `skill.promotion` reviews. Regression-case apply writes reviewed eval cases and records `.reviews/apply_audit.jsonl`; skill-promotion apply is refused until `skills/<skill>/eval/cases.yaml` contains both positive and negative cases for the same `source_promo_id`.
 - Guarded edits include `SKILL.md`, `AGENTS.md`, `safety/**`, `tools/**`, and `harness/prompt.py`.
+- Approval-gated `load_skill` calls explicitly tell the user to approve the generated review before treating the skill as loaded. Automatic memory capture skips follow-up preference text while that load approval is pending, preventing unloaded-skill instructions from becoming durable rules.
 
 ## Audit
 

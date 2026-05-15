@@ -56,6 +56,7 @@ POST_APPROVAL_MESSAGE_PATTERNS = (
     "approval_required",
     "requires approval",
     "waiting for human approval",
+    "load_skill is waiting for human approval",
     "cannot directly modify",
 )
 
@@ -186,6 +187,27 @@ def classify_and_record_learning_signal(
         return {
             "classification": classification.to_dict(),
             "record_result": f"skipped post-approval assistant message{suffix}",
+        }
+
+    if _has_pending_load_skill_approval(
+        skill_memory=skill_memory,
+        raw_content=raw_content,
+        conversation_context=conversation_context,
+        latest_tool_events=latest_tool_events,
+        latest_llm_messages=latest_llm_messages,
+    ):
+        classification = LearningSignalClassification(
+            should_record=False,
+            record_type="learning",
+            target_skill=None,
+            reason="Skipped because load_skill approval is pending and the skill has not loaded successfully.",
+            attribution_confidence="low",
+            title="Skipped pending load_skill approval",
+            content="",
+        )
+        return {
+            "classification": classification.to_dict(),
+            "record_result": "skipped: load_skill approval is pending; skill was not loaded",
         }
 
     payload_has_poisoning = looks_like_memory_poisoning(
@@ -384,6 +406,33 @@ def _post_approval_review_id(
         return None
     match = REVIEW_ID_PATTERN.search(full_text)
     return match.group(0) if match else ""
+
+
+def _has_pending_load_skill_approval(
+    *,
+    skill_memory,
+    raw_content: str,
+    conversation_context: list[dict],
+    latest_tool_events: list[dict],
+    latest_llm_messages: list[dict],
+) -> bool:
+    if getattr(skill_memory, "last_loaded_skill", None):
+        return False
+    text = _stringify_for_scan(
+        {
+            "raw_content": raw_content,
+            "conversation_context": conversation_context,
+            "latest_tool_events": latest_tool_events,
+            "latest_llm_messages": latest_llm_messages,
+        }
+    ).lower()
+    if "load_skill" not in text:
+        return False
+    if "approval_required" not in text and "waiting for human approval" not in text:
+        return False
+    if "review_id" not in text and REVIEW_ID_PATTERN.search(text.upper()) is None:
+        return False
+    return True
 
 
 def _stringify_for_scan(value: Any) -> str:

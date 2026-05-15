@@ -77,6 +77,7 @@ Stage 1 skill memory support now lives in `runtime/skill_memory.py`.
 - `agent_loop` calls `classify_and_record_learning_signal` after a no-tool LLM response and after each LLM + tool round. If `should_record=true`, it calls the matching memory write method.
 - Automatic attribution priority is: classifier `target_skill` when confidence is not low, explicit `skill_name` for tool-driven capture, recent successful `load_skill(name)`, then `self_improvement`. Low-confidence or missing classifier ownership is recorded under `self_improvement` with attribution review required.
 - Every automatic memory write passes `Attribution Reason` and `Attribution Confidence`. Runtime code handles redaction, deduplication, attribution metadata, and markdown persistence.
+- If `load_skill` is waiting for human approval and no successful load has occurred, automatic memory capture skips follow-up learning text rather than attributing it to that unloaded skill.
 - When deduplication raises a memory record to `Occurrence Count >= 3`, the record is marked `recurring` and `SkillMemoryManager` creates or returns a `PromotionCandidate`.
 - Promotion candidates are written to `.skills_memory/PROMOTION_CANDIDATES.md` with candidate id, source record id, target skill, proposed change summary, target files, expected improvement, risk type, severity, created time, status, evaluation plan, and rollback plan.
 - `propose_memory_promotion(skill_name, record_id)` exposes the same candidate creation path through the OpenAI tool surface.
@@ -131,6 +132,8 @@ The REPL exits on `q`, `exit`, or empty input. Local review commands are:
 - `/apply <id>`: apply only supported approved review types. `skill.regression_case` writes reviewed eval cases; `skill.promotion` writes the reviewed `SKILL.md` rule only after matching positive and negative regression coverage exists.
 - `/reject <id>`: reject a review.
 - `/promotions`, `/promotion <id>`, `/propose-skill-patch <id>`, and `/propose-regression-case <id>`: inspect promotion candidates and create pending reviews for skill-rule and regression-case changes. Review approval still only writes patch previews.
+
+`/propose-skill-patch <id>` only creates `skill.promotion` reviews for concrete, source-memory-derived skill rules from `learning`, `feature_request`, or workflow-rule `error` records. `policy_candidate` records are refused with a policy-review message instead of being converted into `SKILL.md` rules. `/propose-regression-case <id>` uses the same concrete rule as `target_rule`, so regression cases do not inherit generic promotion-summary text.
 
 ## Design Constraints
 

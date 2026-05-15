@@ -363,6 +363,9 @@ if __name__ == "__main__":
         if query.strip() == "/reviews":
             print(format_reviews())
             continue
+        if query.strip() == "/review":
+            print("Usage: /review <review_id>")
+            continue
         if query.strip().startswith("/review "):
             print(show_review(query.strip().split(maxsplit=1)[1]))
             continue

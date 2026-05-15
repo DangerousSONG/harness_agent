@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from .promotion_browser import PromotionBrowser, PromotionCandidateView
+from .skill_patch_proposal import extract_concrete_skill_rule, is_concrete_skill_rule
 
 
 @dataclass
@@ -25,9 +26,21 @@ def propose_regression_case_from_promotion(
         return RegressionCaseProposalResult(False, f"Rejected {promo_id}: promotion candidate was not found.")
     if not candidate.target_skill:
         return RegressionCaseProposalResult(False, f"Rejected {candidate.promo_id}: target_skill is required.")
+    if candidate.source_memory_type.strip().lower() == "policy_candidate":
+        return RegressionCaseProposalResult(
+            False,
+            "policy_candidate cannot be promoted directly to SKILL.md; use policy review instead.",
+        )
 
     source_text = browser.source_memory_text(candidate)
-    proposed_yaml = build_regression_cases_yaml(candidate, source_text)
+    target_rule = extract_concrete_skill_rule(candidate, source_text)
+    if not is_concrete_skill_rule(target_rule):
+        return RegressionCaseProposalResult(
+            False,
+            f"Rejected {candidate.promo_id}: cannot extract concrete skill rule from promotion.",
+        )
+
+    proposed_yaml = build_regression_cases_yaml(candidate, source_text, target_rule)
     cases = parse_regression_cases(proposed_yaml)
     if not has_positive_and_negative_cases(cases, candidate.promo_id):
         return RegressionCaseProposalResult(
@@ -53,6 +66,7 @@ def propose_regression_case_from_promotion(
             "source_memory_ids": candidate.source_memory_ids,
             "occurrence_count": candidate.occurrence_count,
             "promotion_summary": candidate.summary,
+            "target_rule": target_rule,
         },
     )
     return RegressionCaseProposalResult(
@@ -62,13 +76,17 @@ def propose_regression_case_from_promotion(
     )
 
 
-def build_regression_cases_yaml(candidate: PromotionCandidateView, source_text: str = "") -> str:
-    rule = _target_rule(candidate)
-    includes = _must_include_terms(candidate, source_text)
+def build_regression_cases_yaml(
+    candidate: PromotionCandidateView,
+    source_text: str = "",
+    target_rule: str = "",
+) -> str:
+    rule = target_rule or extract_concrete_skill_rule(candidate, source_text)
+    includes = _must_include_terms(rule, source_text)
     positive_id = f"{_slug(rule)}_positive"
     negative_id = f"{_slug(rule)}_not_polluted"
-    positive_input = _positive_input(candidate, source_text)
-    negative_input = _negative_input(candidate, source_text)
+    positive_input = _positive_input(candidate, source_text, rule)
+    negative_input = _negative_input(candidate, source_text, rule)
     lines = [
         "cases:",
         f"  - id: {positive_id}",
@@ -140,38 +158,42 @@ def has_positive_and_negative_cases(cases: list[dict[str, Any]], promo_id: str) 
     return has_positive and has_negative
 
 
-def _target_rule(candidate: PromotionCandidateView) -> str:
-    text = candidate.summary or candidate.proposed_change or candidate.promo_id
-    text = re.sub(r"\s+", " ", text).strip(" .")
-    return text[:160]
-
-
-def _must_include_terms(candidate: PromotionCandidateView, source_text: str) -> list[str]:
-    text = f"{candidate.summary}\n{candidate.proposed_change}\n{source_text}".lower()
-    if "book" in text or "读书" in text or "book-note" in text:
-        return ["书名", "核心观点", "三条启发", "行动清单"]
+def _must_include_terms(rule: str, source_text: str) -> list[str]:
+    text = f"{rule}\n{source_text}".lower()
+    if "book" in text or "\u8bfb\u4e66" in text or "book-note" in text:
+        return [
+            "\u4e66\u540d",
+            "\u6838\u5fc3\u89c2\u70b9",
+            "\u4e09\u6761\u542f\u53d1",
+            "\u884c\u52a8\u6e05\u5355",
+        ]
     if "fenced" in text or "code block" in text or "markdown" in text:
         return ["```"]
     if "json" in text:
         return ["{"]
     if "table" in text:
         return ["|"]
-    return ["expected structure"]
+    match = re.search(r"(?i)\b(?:use|include|prefer)\s+([A-Za-z0-9_.`-]{3,})", rule)
+    if match:
+        return [match.group(1).strip("`")]
+    return ["expected behavior"]
 
 
-def _positive_input(candidate: PromotionCandidateView, source_text: str) -> str:
-    text = f"{candidate.summary}\n{source_text}".lower()
-    if "book" in text or "读书" in text:
-        return "请写《被讨厌的勇气》读书笔记"
+def _positive_input(candidate: PromotionCandidateView, source_text: str, rule: str) -> str:
+    text = f"{rule}\n{source_text}".lower()
+    if "book" in text or "\u8bfb\u4e66" in text:
+        return "\u8bf7\u5199\u300a\u88ab\u8ba8\u538c\u7684\u52c7\u6c14\u300b\u8bfb\u4e66\u7b14\u8bb0"
     if "markdown" in text:
-        return "Please write the requested answer in markdown."
+        return "Please write a Markdown answer with a short code example."
     return f"Use {candidate.target_skill} on a task where the promoted rule should apply."
 
 
-def _negative_input(candidate: PromotionCandidateView, source_text: str) -> str:
-    text = f"{candidate.summary}\n{source_text}".lower()
-    if "book" in text or "读书" in text:
-        return "请写一个项目简介"
+def _negative_input(candidate: PromotionCandidateView, source_text: str, rule: str) -> str:
+    text = f"{rule}\n{source_text}".lower()
+    if "book" in text or "\u8bfb\u4e66" in text:
+        return "\u8bf7\u5199\u4e00\u4e2a\u9879\u76ee\u7b80\u4ecb"
+    if "markdown" in text:
+        return "Please write a short project introduction."
     return f"Use {candidate.target_skill} on an unrelated task where the promoted rule should not apply."
 
 

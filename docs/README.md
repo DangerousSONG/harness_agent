@@ -32,6 +32,8 @@ Attribution is resolved in this order:
 
 Every automatic memory write includes `Attribution Reason` and `Attribution Confidence`. Prompt-injection or approval-bypass text is blocked from becoming long-term learning. Automatic capture may write memory records only; it must not automatically edit `SKILL.md`, `AGENTS.md`, safety policy, tool schemas, tool handlers, or prompts.
 
+If `load_skill` is stopped for human approval, the skill is not treated as loaded until approval and a successful load occur. Follow-up preference text in that pending state is skipped by automatic memory capture instead of being written as a durable skill rule.
+
 For a deterministic local walkthrough, run `python .\scripts\debug_self_improvement.py`. It creates a test-only `markdown_writer` skill if needed, records three similar corrections, prints classification and attribution details, and checks that memory and promotion candidate files were written.
 
 ## Memory Promotion Candidates
@@ -48,7 +50,7 @@ Candidates are suggestions only. They do not edit README files, `.env.example`, 
 
 First-pass decisions are intentionally conservative: missing evaluation plans reject, guarded instruction or policy targets require human review after an evaluation plan exists, negative safety gain or high regression risk rejects, scores at or above the threshold return `approve`, and low scores reject. Evaluation never applies patches automatically.
 
-The local human approval queue is implemented. When a candidate needs human review, the tool creates a pending item in `.reviews/`. Use `/reviews` to list pending items, `/review <id>` to inspect one, `/approve <id>` to mark it approved and write a patch preview, `/apply <id>` for the small set of supported reviewed apply operations, and `/reject <id>` to reject it. Skill promotions require matching positive and negative regression cases before `/apply` can modify `SKILL.md`.
+The local human approval queue is implemented. When a candidate needs human review, the tool creates a pending item in `.reviews/`. Use `/reviews` to list pending items, `/review <id>` to inspect one, `/approve <id>` to mark it approved and write a patch preview, `/apply <id>` for the small set of supported reviewed apply operations, and `/reject <id>` to reject it. Skill promotions require matching positive and negative regression cases before `/apply` can modify `SKILL.md`. Promotion proposals for `SKILL.md` must come from concrete `learning`, `feature_request`, or workflow-rule `error` memories; `policy_candidate` records are reserved for a separate policy review path.
 
 ## Conflict Resolution
 

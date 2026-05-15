@@ -91,7 +91,12 @@ def _approval_message(decision) -> str:
                 f"tool_name: {tool_name or '(unknown)'}",
                 f"target_files: {target_files or '(none)'}",
                 f"severity: {severity}",
-                f"reason: {reason}",
+                f"reason: {reason}"
+                + (
+                    f"\n\nload_skill is waiting for human approval. Run /approve {review_id} before treating this skill as loaded."
+                    if tool_name == "load_skill"
+                    else ""
+                ),
                 "",
                 "下一步可输入：",
                 f"/review {review_id}",

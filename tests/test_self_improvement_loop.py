@@ -482,6 +482,45 @@ class SelfImprovementLoopTests(unittest.TestCase):
             self.assertFalse((root / "skills" / "tool_modification" / "memory" / "FEATURE_REQUESTS.md").exists())
             self.assertFalse((root / "skills" / "tool_modification" / "memory" / "POLICY_CANDIDATES.md").exists())
 
+    def test_auto_memory_skips_learning_while_load_skill_approval_is_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            client = FakeClient(
+                {
+                    "should_record": True,
+                    "record_type": "learning",
+                    "target_skill": "markdown_writer",
+                    "reason": "This should not be recorded while load_skill is pending.",
+                    "attribution_confidence": "high",
+                    "title": "Pending skill preference",
+                    "content": "Use a special markdown style.",
+                }
+            )
+            result = classify_and_record_learning_signal(
+                client=client,
+                model="fake",
+                skill_memory=manager,
+                raw_content="After loading markdown_writer, remember my preferred structure.",
+                conversation_context=[
+                    {"role": "user", "content": "Please load markdown_writer."},
+                    {
+                        "role": "tool",
+                        "content": "approval_required review_id=REV-ABC12345 tool_name: load_skill",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "load_skill is waiting for human approval. Run /approve REV-ABC12345 before treating this skill as loaded.",
+                    },
+                ],
+                latest_llm_messages=[],
+            )
+
+            self.assertFalse(result["classification"]["should_record"])
+            self.assertIn("load_skill approval is pending", result["record_result"])
+            self.assertEqual(client.chat.completions.calls, 0)
+            self.assertFalse((root / "skills" / "markdown_writer" / "memory" / "LEARNINGS.md").exists())
+
     def test_edit_file_empty_old_text_preview_warns_without_apply_patch_shape(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -673,8 +712,87 @@ class SelfImprovementLoopTests(unittest.TestCase):
             self.assertIn("--- skills/markdown_writer/SKILL.md", patch)
             self.assertIn("+++ skills/markdown_writer/SKILL.md (proposed)", patch)
             self.assertIn("+## Memory-derived rules", patch)
-            self.assertIn("+- Apply this recurring guidance:", patch)
+            self.assertIn("When writing Markdown with code or structured output, use fenced code blocks consistently.", patch)
             self.assertEqual(skill_file.read_text(encoding="utf-8"), original_skill)
+
+    def test_policy_candidate_promo_cannot_create_skill_patch_or_regression_case(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            for _ in range(3):
+                manager.record_policy_candidate(
+                    "markdown_writer",
+                    "Book Note Structure Policy Candidate",
+                    "Book-note Markdown should use a fixed structure before any policy is changed.",
+                    source="test",
+                )
+            browser = PromotionBrowser(
+                skills_dir=root / "skills",
+                global_memory_dir=root / ".skills_memory",
+                project_root=root,
+            )
+            promo = browser.list_candidates()[0]
+            review_store = LocalReviewStore(root / ".reviews", root)
+
+            skill_result = propose_skill_patch_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id=promo.promo_id,
+            )
+            regression_result = propose_regression_case_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id=promo.promo_id,
+            )
+
+            expected = "policy_candidate cannot be promoted directly to SKILL.md; use policy review instead."
+            self.assertFalse(skill_result.ok)
+            self.assertIn(expected, skill_result.message)
+            self.assertFalse(regression_result.ok)
+            self.assertIn(expected, regression_result.message)
+            self.assertEqual(review_store.list_reviews("pending"), [])
+
+    def test_book_note_learning_promo_uses_concrete_rule_for_patch_and_regression(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            rule = "When writing book-note style Markdown, prefer the structure: 书名 / 核心观点 / 三条启发 / 行动清单."
+            for _ in range(3):
+                manager.record_learning(
+                    "markdown_writer",
+                    "Book note fixed structure",
+                    rule,
+                    source="test",
+                )
+            browser = PromotionBrowser(
+                skills_dir=root / "skills",
+                global_memory_dir=root / ".skills_memory",
+                project_root=root,
+            )
+            promo = browser.list_candidates()[0]
+            review_store = LocalReviewStore(root / ".reviews", root)
+
+            skill_result = propose_skill_patch_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id=promo.promo_id,
+            )
+            regression_result = propose_regression_case_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id=promo.promo_id,
+            )
+
+            self.assertTrue(skill_result.ok)
+            self.assertTrue(regression_result.ok)
+            skill_review = review_store.get_review(skill_result.review_fields["review_id"])
+            regression_review = review_store.get_review(regression_result.review_fields["review_id"])
+            self.assertEqual(skill_review["metadata"]["proposed_rule"], rule)
+            self.assertIn(f'target_rule: "{rule}"', regression_review["proposed_change"])
+            self.assertIn("书名", regression_review["proposed_change"])
+            self.assertIn("行动清单", regression_review["proposed_change"])
+            self.assertNotIn("Based on repeated", skill_review["metadata"]["proposed_rule"])
+            self.assertNotIn("Based on repeated", regression_review["proposed_change"])
 
     def test_skill_promotion_apply_requires_regression_coverage(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -744,7 +862,7 @@ class SelfImprovementLoopTests(unittest.TestCase):
             self.assertIn("Applied skill promotion", message)
             skill_text = skill_file.read_text(encoding="utf-8")
             self.assertIn("## Memory-derived rules", skill_text)
-            self.assertIn("- Apply this recurring guidance:", skill_text)
+            self.assertIn("- When writing Markdown with code or structured output, use fenced code blocks consistently.", skill_text)
             audit_text = (root / ".reviews" / "apply_audit.jsonl").read_text(encoding="utf-8")
             self.assertIn(regression_review["review_id"], audit_text)
             self.assertIn(skill_review_id, audit_text)
