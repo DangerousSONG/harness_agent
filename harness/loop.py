@@ -50,7 +50,7 @@ def _evaluate(policy_engine, audit_logger, event: RuntimeEvent, review_store=Non
     if decision.action == REQUIRE_APPROVAL:
         if review_store:
             try:
-                _attach_review_id(
+                _attach_review(
                     decision,
                     _create_review_for_decision(review_store, event, decision),
                 )
@@ -77,8 +77,28 @@ def _blocked_message(decision) -> str:
 
 def _approval_message(decision) -> str:
     review_id = getattr(decision, "review_id", "")
+    review_item = getattr(decision, "review_item", {}) or {}
+    tool_name = review_item.get("tool_name", "")
+    target_files = ", ".join(review_item.get("target_files") or [])
+    severity = review_item.get("severity") or decision.severity
+    reason = review_item.get("reason") or decision.reason
     if review_id:
-        return f"需要人工审批，review_id={review_id}；该工具调用尚未执行。原因：{decision.reason}"
+        return "\n".join(
+            [
+                "已暂停执行该工具调用，等待人工审批。目标文件未被修改。",
+                "",
+                f"review_id={review_id}",
+                f"tool_name: {tool_name or '(unknown)'}",
+                f"target_files: {target_files or '(none)'}",
+                f"severity: {severity}",
+                f"reason: {reason}",
+                "",
+                "下一步可输入：",
+                f"/review {review_id}",
+                f"/approve {review_id}",
+                f"/reject {review_id}",
+            ]
+        )
     return f"需要人工审批；该操作尚未执行。原因：{decision.reason}"
 
 
@@ -100,9 +120,9 @@ def _proposed_change_for_tool(tool_name: str | None, args: dict) -> str:
     return "Approval-gated runtime action."
 
 
-def _create_review_for_decision(review_store, event: RuntimeEvent, decision) -> str:
+def _create_review_for_decision(review_store, event: RuntimeEvent, decision) -> dict:
     if not review_store:
-        return ""
+        return {}
     args = event.payload.get("arguments", {})
     if not isinstance(args, dict):
         args = {}
@@ -128,11 +148,12 @@ def _create_review_for_decision(review_store, event: RuntimeEvent, decision) -> 
             "tool_arguments": args,
         },
     )
-    return item["review_id"]
+    return item
 
 
-def _attach_review_id(decision, review_id: str):
-    setattr(decision, "review_id", review_id)
+def _attach_review(decision, item: dict):
+    setattr(decision, "review_id", item.get("review_id", ""))
+    setattr(decision, "review_item", item)
     return decision
 
 
@@ -181,6 +202,14 @@ def _auto_record_learning_signal(
         print(f"> auto_memory skipped: {e}")
         return
     if not result.get("classification", {}).get("should_record"):
+        record_result = str(result.get("record_result", ""))
+        if record_result.startswith(
+            (
+                "approval_required event skipped",
+                "skipped post-approval assistant message",
+            )
+        ):
+            print(f"> auto_memory: {record_result[:200]}")
         return
 
     print("> auto_memory:")
@@ -362,7 +391,8 @@ def agent_loop(
         used_todo = False
         manual_compress = False
 
-        for tool_call in msg.tool_calls:
+        tool_calls = msg.tool_calls or []
+        for tool_index, tool_call in enumerate(tool_calls):
             tool_name = tool_call.function.name
 
             try:
@@ -421,17 +451,23 @@ def agent_loop(
                     else _approval_message(decision)
                 )
                 if tool_name not in MEMORY_RECORD_TOOLS:
-                    latest_tool_events.append({
-                        "tool": tool_name,
-                        "status": "blocked",
-                        "reason": decision.reason,
-                        "result": output,
-                    })
+                    latest_tool_events.append(
+                        _tool_event_for_policy_stop(tool_name, decision, output)
+                    )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": output,
                 })
+                if decision.action == REQUIRE_APPROVAL:
+                    _append_skipped_tool_results(
+                        messages,
+                        tool_calls[tool_index + 1 :],
+                        "Skipped because another tool call is waiting for human approval.",
+                    )
+                    print(output)
+                    messages.append({"role": "assistant", "content": output})
+                    return
                 continue
             if decision and decision.action == SANITIZE:
                 tool_args = call_event.payload.get("arguments", tool_args)
@@ -459,17 +495,23 @@ def agent_loop(
                     else _approval_message(decision)
                 )
                 if tool_name not in MEMORY_RECORD_TOOLS:
-                    latest_tool_events.append({
-                        "tool": tool_name,
-                        "status": "blocked",
-                        "reason": decision.reason,
-                        "result": output,
-                    })
+                    latest_tool_events.append(
+                        _tool_event_for_policy_stop(tool_name, decision, output)
+                    )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": output,
                 })
+                if decision.action == REQUIRE_APPROVAL:
+                    _append_skipped_tool_results(
+                        messages,
+                        tool_calls[tool_index + 1 :],
+                        "Skipped because another tool call is waiting for human approval.",
+                    )
+                    print(output)
+                    messages.append({"role": "assistant", "content": output})
+                    return
                 continue
             if decision and decision.action == SANITIZE:
                 tool_args = execution_event.payload.get("arguments", tool_args)
@@ -517,12 +559,10 @@ def agent_loop(
                     else _approval_message(decision)
                 )
                 if tool_name not in MEMORY_RECORD_TOOLS:
-                    latest_tool_events.append({
-                        "tool": tool_name,
-                        "status": "blocked_result",
-                        "reason": decision.reason,
-                        "result": output,
-                    })
+                    event = _tool_event_for_policy_stop(tool_name, decision, output)
+                    if decision.action == BLOCK:
+                        event["status"] = "blocked_result"
+                    latest_tool_events.append(event)
             elif decision and decision.action == SANITIZE:
                 output = result_event.payload.get("result", output)
 
@@ -561,3 +601,33 @@ def agent_loop(
                 transcript_dir=transcript_dir,
             )
             return
+
+
+def _tool_event_for_policy_stop(tool_name: str, decision, output: str) -> dict:
+    if decision.action == REQUIRE_APPROVAL:
+        review_id = getattr(decision, "review_id", "")
+        return {
+            "tool": tool_name,
+            "status": "approval_required",
+            "action": REQUIRE_APPROVAL,
+            "review_id": review_id,
+            "review_created": bool(review_id),
+            "reason": decision.reason,
+            "result": output,
+        }
+    return {
+        "tool": tool_name,
+        "status": "blocked",
+        "action": BLOCK,
+        "reason": decision.reason,
+        "result": output,
+    }
+
+
+def _append_skipped_tool_results(messages: list, tool_calls: list, reason: str) -> None:
+    for tool_call in tool_calls:
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "content": reason,
+        })

@@ -36,6 +36,8 @@ class ReviewItem:
     tool_arguments: dict[str, Any] = field(default_factory=dict)
     event_type: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    requires_better_anchor: bool = False
+    warning: str = ""
 
     @classmethod
     def create(
@@ -56,6 +58,8 @@ class ReviewItem:
         tool_arguments: dict[str, Any] | None = None,
         event_type: str = "",
         metadata: dict[str, Any] | None = None,
+        requires_better_anchor: bool = False,
+        warning: str = "",
     ) -> "ReviewItem":
         return cls(
             review_id=f"REV-{uuid.uuid4().hex[:8].upper()}",
@@ -74,6 +78,8 @@ class ReviewItem:
             tool_arguments=tool_arguments or {},
             event_type=event_type,
             metadata=metadata or {},
+            requires_better_anchor=requires_better_anchor,
+            warning=warning,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -90,6 +96,7 @@ class ReviewQueue:
         self.reviews_dir.mkdir(parents=True, exist_ok=True)
 
     def create(self, **fields: Any) -> ReviewItem:
+        fields = self._with_preview_warnings(fields)
         item = ReviewItem.create(**fields)
         self._save(item)
         return item
@@ -175,6 +182,16 @@ class ReviewQueue:
         ) or f"# No diff for {target_file}\n"
 
     def _diff_for_edit(self, target_file: str, old_text: str, new_text: str) -> str:
+        if old_text == "":
+            return "\n".join(
+                [
+                    "Invalid edit_file preview: old_text is empty. Please provide a concrete old_text anchor.",
+                    f"Review target: {target_file}",
+                    "The review may be approved, but this preview is not a safely applicable patch.",
+                    "No target file was modified.",
+                    "",
+                ]
+            )
         current = self._read_target(target_file)
         proposed = current.replace(old_text, new_text, 1) if old_text in current else current
         prefix = ""
@@ -201,6 +218,16 @@ class ReviewQueue:
         if not path.exists():
             return ""
         return path.read_text(encoding="utf-8")
+
+    def _with_preview_warnings(self, fields: dict[str, Any]) -> dict[str, Any]:
+        metadata = fields.get("metadata") or {}
+        tool_name = fields.get("tool_name") or metadata.get("tool_name", "")
+        args = fields.get("tool_arguments") or metadata.get("tool_arguments", {})
+        if tool_name == "edit_file" and isinstance(args, dict) and str(args.get("old_text", "")) == "":
+            fields = dict(fields)
+            fields["requires_better_anchor"] = True
+            fields["warning"] = "edit_file old_text is empty; patch preview may be unsafe"
+        return fields
 
     def _path(self, review_id: str) -> Path:
         return self.reviews_dir / f"{review_id}.json"

@@ -1,4 +1,4 @@
-# Global Errors
+# Global Error
 
 Records use the following required fields:
 - ID
@@ -8,3 +8,8 @@ Records use the following required fields:
 - Domain
 - Source
 - Occurrence Count
+- Target Skill
+- Source Skill
+- Attribution Reason
+- Attribution Confidence
+- Needs Attribution Review

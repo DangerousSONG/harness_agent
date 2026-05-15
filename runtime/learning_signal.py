@@ -40,6 +40,27 @@ MEMORY_POISONING_PATTERNS = (
     "system administrator",
 )
 
+APPROVAL_EVENT_STATUSES = {
+    "approval_required",
+    "require_approval",
+    "review_created",
+}
+
+POST_APPROVAL_MESSAGE_PATTERNS = (
+    "无法执行",
+    "需要审批",
+    "需要人工审批",
+    "等待人工审批",
+    "不能直接修改",
+    "请批准后执行",
+    "approval_required",
+    "requires approval",
+    "waiting for human approval",
+    "cannot directly modify",
+)
+
+REVIEW_ID_PATTERN = re.compile(r"REV-[A-Z0-9]{8}")
+
 
 @dataclass
 class LearningSignalClassification:
@@ -127,7 +148,46 @@ def classify_and_record_learning_signal(
     conversation_context = conversation_context or []
     latest_tool_events = latest_tool_events or []
     latest_llm_messages = latest_llm_messages or []
+    approval_event = _find_approval_event(latest_tool_events)
+    if approval_event:
+        review_id = _review_id_from_event(approval_event)
+        classification = LearningSignalClassification(
+            should_record=False,
+            record_type="learning",
+            target_skill=None,
+            reason="Skipped approval-required event for ordinary error memory.",
+            attribution_confidence="low",
+            title="Skipped approval-required event",
+            content="",
+        )
+        suffix = f"; review_id={review_id}" if review_id else ""
+        return {
+            "classification": classification.to_dict(),
+            "record_result": f"approval_required event skipped for error memory{suffix}",
+        }
+
     raw_content = str(redact_learning_payload(raw_content or ""))
+    post_approval_review_id = _post_approval_review_id(
+        raw_content=raw_content,
+        conversation_context=conversation_context,
+        latest_llm_messages=latest_llm_messages,
+    )
+    if post_approval_review_id is not None:
+        classification = LearningSignalClassification(
+            should_record=False,
+            record_type="learning",
+            target_skill=None,
+            reason="Skipped assistant explanation after an approval-required event.",
+            attribution_confidence="low",
+            title="Skipped post-approval assistant message",
+            content="",
+        )
+        suffix = f"; review_id={post_approval_review_id}" if post_approval_review_id else ""
+        return {
+            "classification": classification.to_dict(),
+            "record_result": f"skipped post-approval assistant message{suffix}",
+        }
+
     payload_has_poisoning = looks_like_memory_poisoning(
         {
             "raw_content": raw_content,
@@ -267,6 +327,69 @@ def normalize_learning_signal_classification(data: dict[str, Any]) -> LearningSi
         title=str(data.get("title") or f"Automatic {record_type} signal")[:200],
         content=str(data.get("content") or data.get("reason") or ""),
     )
+
+
+def _find_approval_event(latest_tool_events: list[dict]) -> dict[str, Any] | None:
+    for event in latest_tool_events:
+        if not isinstance(event, dict):
+            continue
+        values = {
+            str(event.get("status", "")).lower(),
+            str(event.get("action", "")).lower(),
+            str(event.get("event_type", "")).lower(),
+        }
+        if values & APPROVAL_EVENT_STATUSES:
+            return event
+        if event.get("approval_required") is True or event.get("review_created") is True:
+            return event
+    return None
+
+
+def _review_id_from_event(event: dict[str, Any]) -> str:
+    review_id = event.get("review_id")
+    if review_id:
+        return str(review_id)
+    metadata = event.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("review_id"):
+        return str(metadata["review_id"])
+    return ""
+
+
+def _post_approval_review_id(
+    *,
+    raw_content: str,
+    conversation_context: list[dict],
+    latest_llm_messages: list[dict],
+) -> str | None:
+    latest_text = _stringify_for_scan(latest_llm_messages)
+    if not latest_text:
+        return None
+    if not any(pattern in latest_text.lower() for pattern in POST_APPROVAL_MESSAGE_PATTERNS):
+        return None
+
+    full_text = _stringify_for_scan(
+        {
+            "raw_content": raw_content,
+            "conversation_context": conversation_context,
+            "latest_llm_messages": latest_llm_messages,
+        }
+    )
+    has_review_context = (
+        "approval_required" in full_text.lower()
+        or "review_created" in full_text.lower()
+        or "等待人工审批" in full_text
+        or REVIEW_ID_PATTERN.search(full_text) is not None
+    )
+    if not has_review_context:
+        return None
+    match = REVIEW_ID_PATTERN.search(full_text)
+    return match.group(0) if match else ""
+
+
+def _stringify_for_scan(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _safe_json_loads(text: str) -> dict[str, Any]:

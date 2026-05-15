@@ -2,6 +2,17 @@
 
 This file records meaningful project iterations. When judging current state, read this before older design notes.
 
+## 2026-05-15
+
+### Review Queue Safety Follow-up
+
+- Skipped `approval_required` / `require_approval` / `review_created` tool events in automatic error memory capture so approval gates are not recorded as ordinary `edit_file` failures.
+- Added review metadata for `edit_file` approvals with empty `old_text`, marking them as requiring a better anchor.
+- Changed `edit_file` patch previews with empty `old_text` to emit an explicit invalid-anchor warning instead of a unified diff that could look safely applicable.
+- Kept `/approve` behavior preview-only; approved reviews still do not modify target files.
+- Made approval-required tool stops print a structured waiting-for-approval message with the review id, guarded tool, target files, severity, reason, and `/review` / `/approve` / `/reject` commands.
+- Skipped automatic memory capture for assistant explanations that only restate a pending approval requirement, preventing approval flow from becoming `tool_usage` errors, `tool_modification` feature requests, or policy candidates.
+
 ## 2026-05-14
 
 ### Human Review Queue
