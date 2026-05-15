@@ -59,10 +59,15 @@ from tools import (
 from runtime import (
     EvolutionGate,
     LocalBackend,
+    PromotionBrowser,
     SkillLoader,
     SkillMemoryManager,
     classify_and_record_learning_signal,
     classify_learning_signal,
+    format_promotion_detail,
+    format_promotion_list,
+    propose_regression_case_from_promotion,
+    propose_skill_patch_from_promotion,
 )
 from safety import AuditLogger, PolicyEngine, capabilities_for_actor, load_policy
 from harness.todos import TodoManager
@@ -126,6 +131,11 @@ AUDIT = AuditLogger(
 EVOLUTION_GATE = EvolutionGate(
     audit_path=PROJECT_ROOT / ".audit" / "evolution.jsonl",
     promotion_candidates_path=GLOBAL_SKILL_MEMORY_DIR / "PROMOTION_CANDIDATES.md",
+)
+PROMOTIONS = PromotionBrowser(
+    skills_dir=SKILLS_DIR,
+    global_memory_dir=GLOBAL_SKILL_MEMORY_DIR,
+    project_root=PROJECT_ROOT,
 )
 TASK_MGR = TaskManager(BACKEND.task_store)
 BG = BackgroundManager(BACKEND.job_queue)
@@ -279,12 +289,46 @@ def approve_review(review_id: str) -> str:
     )
 
 
+def apply_review(review_id: str) -> str:
+    try:
+        item, message = BACKEND.review_store.apply_review(review_id)
+    except ValueError as e:
+        return f"Error: {e}"
+    return f"Review {item['review_id']} applied. {message}"
+
+
 def reject_review(review_id: str) -> str:
     try:
         item = BACKEND.review_store.reject_review(review_id)
     except ValueError as e:
         return f"Error: {e}"
     return f"Review {item['review_id']} rejected."
+
+
+def format_promotions() -> str:
+    return format_promotion_list(PROMOTIONS.list_candidates())
+
+
+def show_promotion(promo_id: str) -> str:
+    return format_promotion_detail(PROMOTIONS.get_candidate(promo_id), promo_id)
+
+
+def propose_skill_patch(promo_id: str) -> str:
+    result = propose_skill_patch_from_promotion(
+        browser=PROMOTIONS,
+        review_store=BACKEND.review_store,
+        promo_id=promo_id,
+    )
+    return result.message
+
+
+def propose_regression_case(promo_id: str) -> str:
+    result = propose_regression_case_from_promotion(
+        browser=PROMOTIONS,
+        review_store=BACKEND.review_store,
+        promo_id=promo_id,
+    )
+    return result.message
 
 
 # === SECTION: repl ===
@@ -325,8 +369,23 @@ if __name__ == "__main__":
         if query.strip().startswith("/approve "):
             print(approve_review(query.strip().split(maxsplit=1)[1]))
             continue
+        if query.strip().startswith("/apply "):
+            print(apply_review(query.strip().split(maxsplit=1)[1]))
+            continue
         if query.strip().startswith("/reject "):
             print(reject_review(query.strip().split(maxsplit=1)[1]))
+            continue
+        if query.strip() == "/promotions":
+            print(format_promotions())
+            continue
+        if query.strip().startswith("/promotion "):
+            print(show_promotion(query.strip().split(maxsplit=1)[1]))
+            continue
+        if query.strip().startswith("/propose-skill-patch "):
+            print(propose_skill_patch(query.strip().split(maxsplit=1)[1]))
+            continue
+        if query.strip().startswith("/propose-regression-case "):
+            print(propose_regression_case(query.strip().split(maxsplit=1)[1]))
             continue
         history.append({"role": "user", "content": query})
         agent_loop(

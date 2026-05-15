@@ -10,6 +10,22 @@ from .learning_signal import (
 )
 from .skill_memory import LearningSignal, PromotionCandidate, SkillMemoryManager
 from .review_queue import ReviewItem, ReviewQueue
+from .promotion_browser import (
+    PromotionBrowser,
+    PromotionCandidateView,
+    format_promotion_detail,
+    format_promotion_list,
+)
+from .skill_patch_proposal import (
+    SkillPatchProposalResult,
+    evaluate_skill_patch_candidate,
+    propose_skill_patch_from_promotion,
+)
+from .regression_case_proposal import (
+    RegressionCaseProposalResult,
+    build_regression_cases_yaml,
+    propose_regression_case_from_promotion,
+)
 
 __all__ = [
     "LocalBackend",
@@ -25,4 +41,14 @@ __all__ = [
     "EvolutionGate",
     "ReviewItem",
     "ReviewQueue",
+    "PromotionBrowser",
+    "PromotionCandidateView",
+    "format_promotion_detail",
+    "format_promotion_list",
+    "SkillPatchProposalResult",
+    "evaluate_skill_patch_candidate",
+    "propose_skill_patch_from_promotion",
+    "RegressionCaseProposalResult",
+    "build_regression_cases_yaml",
+    "propose_regression_case_from_promotion",
 ]

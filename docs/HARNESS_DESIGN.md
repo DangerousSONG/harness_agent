@@ -128,7 +128,9 @@ The REPL exits on `q`, `exit`, or empty input. Local review commands are:
 - `/reviews`: list pending human-review items.
 - `/review <id>`: show review details.
 - `/approve <id>`: mark a review approved and write a patch preview without applying any file change.
+- `/apply <id>`: apply only supported approved review types. `skill.regression_case` writes reviewed eval cases; `skill.promotion` writes the reviewed `SKILL.md` rule only after matching positive and negative regression coverage exists.
 - `/reject <id>`: reject a review.
+- `/promotions`, `/promotion <id>`, `/propose-skill-patch <id>`, and `/propose-regression-case <id>`: inspect promotion candidates and create pending reviews for skill-rule and regression-case changes. Review approval still only writes patch previews.
 
 ## Design Constraints
 

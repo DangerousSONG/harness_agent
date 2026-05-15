@@ -345,6 +345,10 @@ class LocalReviewStore(ReviewStore):
         patch_path = self.review_queue.write_patch_preview(item)
         return item.to_dict(), str(patch_path)
 
+    def apply_review(self, review_id: str) -> tuple[dict, str]:
+        item, message = self.review_queue.apply(review_id)
+        return item.to_dict(), message
+
     def reject_review(self, review_id: str) -> dict:
         return self.review_queue.reject(review_id).to_dict()
 

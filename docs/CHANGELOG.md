@@ -12,6 +12,9 @@ This file records meaningful project iterations. When judging current state, rea
 - Kept `/approve` behavior preview-only; approved reviews still do not modify target files.
 - Made approval-required tool stops print a structured waiting-for-approval message with the review id, guarded tool, target files, severity, reason, and `/review` / `/approve` / `/reject` commands.
 - Skipped automatic memory capture for assistant explanations that only restate a pending approval requirement, preventing approval flow from becoming `tool_usage` errors, `tool_modification` feature requests, or policy candidates.
+- Added read-only promotion browsing through `/promotions` and `/promotion <id>` with a markdown parser for existing `PROMO-*` records and source memory metadata.
+- Added `/propose-skill-patch <id>` to validate recurring, safe promotion candidates and create pending `skill.promotion` review items for `skills/<target_skill>/SKILL.md`; approvals still generate preview diffs only.
+- Added `/propose-regression-case <id>` and guarded `/apply <review_id>` so `skill.promotion` reviews cannot modify `SKILL.md` until approved positive and negative regression cases for the same promotion have been applied through ReviewQueue.
 
 ## 2026-05-14
 

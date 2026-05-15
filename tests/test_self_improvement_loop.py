@@ -10,7 +10,14 @@ from harness.loop import _auto_record_learning_signal, _evaluate, _event, agent_
 from runtime.backends.local import LocalReviewStore
 from runtime.evolution_gate import EvolutionCandidate, EvaluationResult, EvolutionGate
 from runtime.learning_signal import classify_and_record_learning_signal
+from runtime.promotion_browser import (
+    PromotionBrowser,
+    format_promotion_detail,
+    format_promotion_list,
+)
+from runtime.regression_case_proposal import propose_regression_case_from_promotion
 from runtime.review_queue import ReviewQueue
+from runtime.skill_patch_proposal import propose_skill_patch_from_promotion
 from runtime.skill_memory import SkillMemoryManager
 from safety.decisions import REQUIRE_APPROVAL
 from safety.policy_config import load_policy
@@ -539,6 +546,300 @@ class SelfImprovementLoopTests(unittest.TestCase):
             self.assertIn("+++ tools/handlers.py (proposed)", patch)
             self.assertIn("+# review queue test", patch)
             self.assertEqual(target.read_text(encoding="utf-8"), original)
+
+    def test_promotion_browser_lists_and_shows_existing_promo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memory_dir = root / "skills" / "python" / "memory"
+            memory_dir.mkdir(parents=True)
+            (memory_dir / "ERRORS.md").write_text(
+                "\n".join(
+                    [
+                        "# Errors",
+                        "",
+                        "## ERR-ABC12345 - OPENAI_API_KEY missing",
+                        "- Time: 2026-05-15T00:00:00+00:00",
+                        "- Priority: P1",
+                        "- Status: recurring",
+                        "- Domain: error",
+                        "- Source: test",
+                        "- Occurrence Count: 3",
+                        "- Target Skill: python",
+                        "",
+                        "### Details",
+                        "Validation failed because OPENAI_API_KEY is missing.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            global_dir = root / ".skills_memory"
+            global_dir.mkdir()
+            (global_dir / "PROMOTION_CANDIDATES.md").write_text(
+                "\n".join(
+                    [
+                        "# Promotion Candidates",
+                        "",
+                        "## PROMO-ABC12345 - Add setup guidance",
+                        "- Candidate ID: PROMO-ABC12345",
+                        "- Record ID: ERR-ABC12345",
+                        "- Target Skill: python",
+                        "- Proposed Change Summary: Add setup guidance",
+                        "- Target Files: README.md, .env.example",
+                        "- Expected Improvement: Reduce setup failures.",
+                        "- Risk Type: recurring_error",
+                        "- Severity: high",
+                        "- Created At: 2026-05-15T00:00:00+00:00",
+                        "- Status: proposed",
+                        "- Evaluation Plan: Review docs and run startup validation.",
+                        "- Rollback Plan: Revert the reviewed docs change.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            browser = PromotionBrowser(
+                skills_dir=root / "skills",
+                global_memory_dir=global_dir,
+                project_root=root,
+            )
+
+            listing = format_promotion_list(browser.list_candidates())
+            detail = format_promotion_detail(
+                browser.get_candidate("PROMO-ABC12345"),
+                "PROMO-ABC12345",
+            )
+
+            self.assertIn("PROMO-ABC12345", listing)
+            self.assertIn("target_skill=python", listing)
+            self.assertIn("source_memory_type=error", listing)
+            self.assertIn("occurrence_count=3", listing)
+            self.assertIn("suggested_target_files=README.md, .env.example", listing)
+            self.assertIn("summary=Add setup guidance", listing)
+            self.assertIn("promo_id: PROMO-ABC12345", detail)
+            self.assertIn("source_memory_ids: ERR-ABC12345", detail)
+            self.assertIn("source_memory_file: skills/python/memory/ERRORS.md", detail)
+            self.assertIn("evaluation_plan: Review docs and run startup validation.", detail)
+            self.assertIn("rollback_plan: Revert the reviewed docs change.", detail)
+            self.assertIn("status: proposed", detail)
+
+    def test_propose_skill_patch_creates_review_without_modifying_skill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            for _ in range(3):
+                manager.record_learning(
+                    "markdown_writer",
+                    "Use fenced markdown output",
+                    "For repeated markdown output corrections, use fenced code blocks consistently.",
+                    source="test",
+                )
+            browser = PromotionBrowser(
+                skills_dir=root / "skills",
+                global_memory_dir=root / ".skills_memory",
+                project_root=root,
+            )
+            promo = browser.list_candidates()[0]
+            skill_file = root / "skills" / "markdown_writer" / "SKILL.md"
+            original_skill = skill_file.read_text(encoding="utf-8")
+            review_store = LocalReviewStore(root / ".reviews", root)
+
+            result = propose_skill_patch_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id=promo.promo_id,
+            )
+
+            self.assertTrue(result.ok)
+            self.assertRegex(result.message, r"REV-[A-Z0-9]{8}")
+            reviews = review_store.list_reviews("pending")
+            self.assertEqual(len(reviews), 1)
+            review = reviews[0]
+            self.assertEqual(review["type"], "skill.promotion")
+            self.assertEqual(review["source"], "self_improvement")
+            self.assertEqual(review["candidate_id"], promo.promo_id)
+            self.assertEqual(review["target_skill"], "markdown_writer")
+            self.assertEqual(review["target_files"], ["skills/markdown_writer/SKILL.md"])
+            self.assertEqual(review["severity"], "medium")
+            self.assertEqual(review["metadata"]["source_memory_ids"], promo.source_memory_ids)
+            self.assertEqual(review["metadata"]["occurrence_count"], 3)
+            self.assertEqual(review["metadata"]["promotion_summary"], promo.summary)
+            self.assertIn("proposed_rule", review["metadata"])
+            self.assertEqual(skill_file.read_text(encoding="utf-8"), original_skill)
+
+            approved, patch_path = review_store.approve_review(review["review_id"])
+            patch = Path(patch_path).read_text(encoding="utf-8")
+            self.assertEqual(approved["status"], "approved")
+            self.assertIn("--- skills/markdown_writer/SKILL.md", patch)
+            self.assertIn("+++ skills/markdown_writer/SKILL.md (proposed)", patch)
+            self.assertIn("+## Memory-derived rules", patch)
+            self.assertIn("+- Apply this recurring guidance:", patch)
+            self.assertEqual(skill_file.read_text(encoding="utf-8"), original_skill)
+
+    def test_skill_promotion_apply_requires_regression_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            for _ in range(3):
+                manager.record_learning(
+                    "markdown_writer",
+                    "Use fenced markdown output",
+                    "For repeated markdown output corrections, use fenced code blocks consistently.",
+                    source="test",
+                )
+            browser = PromotionBrowser(
+                skills_dir=root / "skills",
+                global_memory_dir=root / ".skills_memory",
+                project_root=root,
+            )
+            promo = browser.list_candidates()[0]
+            review_store = LocalReviewStore(root / ".reviews", root)
+            skill_file = root / "skills" / "markdown_writer" / "SKILL.md"
+            original_skill = skill_file.read_text(encoding="utf-8")
+
+            skill_result = propose_skill_patch_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id=promo.promo_id,
+            )
+            self.assertTrue(skill_result.ok)
+            skill_review_id = skill_result.review_fields["review_id"]
+            review_store.approve_review(skill_review_id)
+            with self.assertRaisesRegex(ValueError, f"missing regression coverage for {promo.promo_id}"):
+                review_store.apply_review(skill_review_id)
+            self.assertEqual(skill_file.read_text(encoding="utf-8"), original_skill)
+
+            regression_result = propose_regression_case_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id=promo.promo_id,
+            )
+            self.assertTrue(regression_result.ok)
+            self.assertRegex(regression_result.message, r"REV-[A-Z0-9]{8}")
+            regression_review = review_store.get_review(regression_result.review_fields["review_id"])
+            self.assertEqual(regression_review["type"], "skill.regression_case")
+            self.assertEqual(regression_review["target_files"], ["skills/markdown_writer/eval/cases.yaml"])
+            self.assertEqual(regression_review["metadata"]["source_promo_id"], promo.promo_id)
+
+            cases_file = root / "skills" / "markdown_writer" / "eval" / "cases.yaml"
+            original_cases = cases_file.read_text(encoding="utf-8")
+            approved_regression, patch_path = review_store.approve_review(regression_review["review_id"])
+            patch = Path(patch_path).read_text(encoding="utf-8")
+            self.assertEqual(approved_regression["status"], "approved")
+            self.assertIn("--- skills/markdown_writer/eval/cases.yaml", patch)
+            self.assertIn("+++ skills/markdown_writer/eval/cases.yaml (proposed)", patch)
+            self.assertIn(f"+    source_promo_id: \"{promo.promo_id}\"", patch)
+            self.assertEqual(cases_file.read_text(encoding="utf-8"), original_cases)
+
+            applied_regression, message = review_store.apply_review(regression_review["review_id"])
+            self.assertEqual(applied_regression["status"], "applied")
+            self.assertIn("Applied regression cases", message)
+            cases_text = cases_file.read_text(encoding="utf-8")
+            self.assertIn(f"source_promo_id: \"{promo.promo_id}\"", cases_text)
+            self.assertIn("must_include:", cases_text)
+            self.assertIn("must_not_include:", cases_text)
+
+            applied_skill, message = review_store.apply_review(skill_review_id)
+            self.assertEqual(applied_skill["status"], "applied")
+            self.assertIn("Applied skill promotion", message)
+            skill_text = skill_file.read_text(encoding="utf-8")
+            self.assertIn("## Memory-derived rules", skill_text)
+            self.assertIn("- Apply this recurring guidance:", skill_text)
+            audit_text = (root / ".reviews" / "apply_audit.jsonl").read_text(encoding="utf-8")
+            self.assertIn(regression_review["review_id"], audit_text)
+            self.assertIn(skill_review_id, audit_text)
+
+    def test_regression_case_apply_rejects_missing_negative_case(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases_file = root / "skills" / "markdown_writer" / "eval" / "cases.yaml"
+            cases_file.parent.mkdir(parents=True)
+            original_cases = "skill: markdown_writer\ncases: []\n"
+            cases_file.write_text(original_cases, encoding="utf-8")
+            review_store = LocalReviewStore(root / ".reviews", root)
+            review = review_store.create_review(
+                type="skill.regression_case",
+                source="self_improvement",
+                candidate_id="PROMO-ABC12345",
+                target_skill="markdown_writer",
+                target_files=["skills/markdown_writer/eval/cases.yaml"],
+                severity="medium",
+                reason="test",
+                proposed_change="\n".join(
+                    [
+                        "cases:",
+                        "  - id: positive_only",
+                        "    input: \"Please write markdown\"",
+                        "    must_include:",
+                        "      - \"```\"",
+                        "    target_rule: \"Use fenced markdown output\"",
+                        "    source_promo_id: \"PROMO-ABC12345\"",
+                        "",
+                    ]
+                ),
+                evaluation_plan="test",
+                rollback_plan="test",
+                metadata={"source_promo_id": "PROMO-ABC12345"},
+            )
+
+            review_store.approve_review(review["review_id"])
+            with self.assertRaisesRegex(ValueError, "must include positive and negative cases"):
+                review_store.apply_review(review["review_id"])
+            self.assertEqual(cases_file.read_text(encoding="utf-8"), original_cases)
+
+    def test_propose_skill_patch_rejects_noncompliant_promo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memory_dir = root / "skills" / "markdown_writer" / "memory"
+            memory_dir.mkdir(parents=True)
+            (memory_dir / "LEARNINGS.md").write_text(
+                "\n".join(
+                    [
+                        "# Learnings",
+                        "",
+                        "## LRN-ABC12345 - Unsafe target",
+                        "- Occurrence Count: 3",
+                        "- Target Skill: markdown_writer",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            global_dir = root / ".skills_memory"
+            global_dir.mkdir()
+            (global_dir / "PROMOTION_CANDIDATES.md").write_text(
+                "\n".join(
+                    [
+                        "# Promotion Candidates",
+                        "",
+                        "## PROMO-BAD12345 - Update README guidance",
+                        "- Candidate ID: PROMO-BAD12345",
+                        "- Record ID: LRN-ABC12345",
+                        "- Target Skill: markdown_writer",
+                        "- Proposed Change Summary: Update README guidance",
+                        "- Target Files: README.md",
+                        "- Status: proposed",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            browser = PromotionBrowser(
+                skills_dir=root / "skills",
+                global_memory_dir=global_dir,
+                project_root=root,
+            )
+            review_store = LocalReviewStore(root / ".reviews", root)
+
+            result = propose_skill_patch_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id="PROMO-BAD12345",
+            )
+
+            self.assertFalse(result.ok)
+            self.assertIn("Rejected PROMO-BAD12345", result.message)
+            self.assertEqual(review_store.list_reviews("pending"), [])
 
 
 if __name__ == "__main__":

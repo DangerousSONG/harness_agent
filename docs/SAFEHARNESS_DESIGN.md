@@ -173,6 +173,7 @@ Current runtime behavior:
 - The user-facing response includes the `review_id`, and the guarded tool call is not executed.
 - Review items include the guarded tool name, tool arguments, target files, event type, source, reason, risk type, severity, proposed change, evaluation plan, rollback plan, status, and creation time.
 - Approving a review changes its status to `approved` and writes a patch preview. No patch is applied automatically.
+- `/apply` is limited to approved `skill.regression_case` and `skill.promotion` reviews. Regression-case apply writes reviewed eval cases and records `.reviews/apply_audit.jsonl`; skill-promotion apply is refused until `skills/<skill>/eval/cases.yaml` contains both positive and negative cases for the same `source_promo_id`.
 - Guarded edits include `SKILL.md`, `AGENTS.md`, `safety/**`, `tools/**`, and `harness/prompt.py`.
 
 ## Audit

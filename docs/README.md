@@ -48,7 +48,7 @@ Candidates are suggestions only. They do not edit README files, `.env.example`, 
 
 First-pass decisions are intentionally conservative: missing evaluation plans reject, guarded instruction or policy targets require human review after an evaluation plan exists, negative safety gain or high regression risk rejects, scores at or above the threshold return `approve`, and low scores reject. Evaluation never applies patches automatically.
 
-The local human approval queue is implemented. When a candidate needs human review, the tool creates a pending item in `.reviews/`. Use `/reviews` to list pending items, `/review <id>` to inspect one, `/approve <id>` to mark it approved and write a patch preview, and `/reject <id>` to reject it. Guarded files are never modified automatically.
+The local human approval queue is implemented. When a candidate needs human review, the tool creates a pending item in `.reviews/`. Use `/reviews` to list pending items, `/review <id>` to inspect one, `/approve <id>` to mark it approved and write a patch preview, `/apply <id>` for the small set of supported reviewed apply operations, and `/reject <id>` to reject it. Skill promotions require matching positive and negative regression cases before `/apply` can modify `SKILL.md`.
 
 ## Conflict Resolution
 

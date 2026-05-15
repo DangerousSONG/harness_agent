@@ -147,6 +147,10 @@ class ReviewStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def apply_review(self, review_id: str) -> tuple[dict, str]:
+        raise NotImplementedError
+
+    @abstractmethod
     def reject_review(self, review_id: str) -> dict:
         raise NotImplementedError
 
