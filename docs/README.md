@@ -52,6 +52,10 @@ First-pass decisions are intentionally conservative: missing evaluation plans re
 
 The local human approval queue is implemented. When a candidate needs human review, the tool creates a pending item in `.reviews/`. Use `/reviews` to list pending items, `/review <id>` to inspect one, `/approve <id>` to mark it approved and write a patch preview, `/apply <id>` for the small set of supported reviewed apply operations, and `/reject <id>` to reject it. Skill promotions require matching positive and negative regression cases before `/apply` can modify `SKILL.md`. Promotion proposals for `SKILL.md` must come from concrete `learning`, `feature_request`, or workflow-rule `error` memories; `policy_candidate` records are reserved for a separate policy review path.
 
+Successful `skill.promotion` applies are recorded by the runtime skill evolution registry in `.skills_versions/<skill>/`. Each version links the source memory ids, promotion id, regression review ids, skill review id, hashes, patch diff, snapshot, eval result, and audit event. Use `/skill-versions <skill>` and `/skill-version <skill> <version>` to inspect history. `/rollback-skill <skill> <version>` creates a review item only; it does not modify `SKILL.md`.
+
+Use `/evolve-skill <promo_id>` as a workflow guide when moving a promotion through regression coverage and skill-patch review. It may create the next missing review, but it never approves or applies anything; it prints the next `/review`, `/approve`, or `/apply` command to run.
+
 ## Conflict Resolution
 
 When documents disagree, use this order:

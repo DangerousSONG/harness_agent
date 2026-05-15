@@ -6,6 +6,9 @@ This file records meaningful project iterations. When judging current state, rea
 
 ### Review Queue Safety Follow-up
 
+- Added retry handling around the lead model request for retryable 502/503/internal server/timeout/connection failures; after retries the REPL prints a concise local error and remains usable without writing automatic memory.
+- Changed `load_skill` human review handling so approval only marks the review approved, `/apply` performs the reviewed skill load, successful apply updates `last_loaded_skill`, and later requests for the same already loaded skill return an `already loaded` message without creating another review.
+- Skipped patch-preview creation for `load_skill` reviews while preserving existing patch previews and apply semantics for `edit_file`, `write_file`, regression-case, and skill-promotion reviews.
 - Skipped `approval_required` / `require_approval` / `review_created` tool events in automatic error memory capture so approval gates are not recorded as ordinary `edit_file` failures.
 - Added review metadata for `edit_file` approvals with empty `old_text`, marking them as requiring a better anchor.
 - Changed `edit_file` patch previews with empty `old_text` to emit an explicit invalid-anchor warning instead of a unified diff that could look safely applicable.
@@ -18,6 +21,9 @@ This file records meaningful project iterations. When judging current state, rea
 - Tightened skill promotion proposal quality: `policy_candidate` records are refused for direct `SKILL.md` patches, proposed rules are extracted from concrete source memory details instead of promotion-summary templates, and regression cases reuse the same concrete target rule.
 - Made bare `/review` return `Usage: /review <review_id>` locally instead of falling through to the model/tool loop.
 - Skipped automatic long-term memory capture while a `load_skill` approval is pending and the skill has not loaded successfully.
+- Added `SkillEvolutionRegistry` under `runtime/skill_evolution_registry.py`; successful `skill.promotion` applies now create `.skills_versions/<skill>/versions.jsonl`, save a post-apply `SKILL.md` snapshot, patch diff, minimal eval result, and an audit event.
+- Added `/skill-versions <skill>`, `/skill-version <skill> <version>`, and preview-only `/rollback-skill <skill> <version>` commands for inspecting and reviewing skill evolution history.
+- Added `/evolve-skill <promo_id>` as a non-mutating flow guide that creates or reuses the next needed review and prints the required `/review`, `/approve`, and `/apply` commands without bypassing human confirmation.
 
 ## 2026-05-14
 

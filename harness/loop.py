@@ -1,9 +1,11 @@
 # harness/loop.py
 
 import json
+import time
 import uuid
 
 from runtime.learning_signal import classify_and_record_learning_signal
+from runtime.skill_memory import normalize_name
 from safety.decisions import BLOCK, REQUIRE_APPROVAL, SANITIZE
 from safety.events import RuntimeEvent
 
@@ -17,6 +19,15 @@ MEMORY_RECORD_TOOLS = {
     "evaluate_evolution_candidate",
     "classify_and_record_learning_signal",
     "classify_learning_signal",
+}
+
+RETRYABLE_MODEL_STATUS_CODES = {502, 503}
+RETRYABLE_MODEL_ERROR_NAMES = {
+    "apiconnectionerror",
+    "apitimeouterror",
+    "internalservererror",
+    "timeouterror",
+    "connectionerror",
 }
 
 def _event(
@@ -93,7 +104,7 @@ def _approval_message(decision) -> str:
                 f"severity: {severity}",
                 f"reason: {reason}"
                 + (
-                    f"\n\nload_skill is waiting for human approval. Run /approve {review_id} before treating this skill as loaded."
+                    f"\n\nload_skill is waiting for human approval. Run /approve {review_id}, then /apply {review_id}, before treating this skill as loaded."
                     if tool_name == "load_skill"
                     else ""
                 ),
@@ -221,6 +232,66 @@ def _auto_record_learning_signal(
     print(str(result.get("record_result", ""))[:200])
 
 
+def _is_retryable_model_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    if status_code is None and response is not None:
+        status_code = getattr(response, "status_code", None)
+    if status_code in RETRYABLE_MODEL_STATUS_CODES:
+        return True
+
+    name = type(exc).__name__.lower()
+    if name in RETRYABLE_MODEL_ERROR_NAMES:
+        return True
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    return any(token in name for token in ("timeout", "connection", "internalserver"))
+
+
+def _model_error_summary(exc: Exception) -> str:
+    status_code = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    if status_code is None and response is not None:
+        status_code = getattr(response, "status_code", None)
+    label = type(exc).__name__
+    if status_code:
+        label = f"{label} {status_code}"
+    return label
+
+
+def _create_chat_completion_with_retries(*, client, max_retries: int = 2, **kwargs):
+    attempts = 0
+    while True:
+        try:
+            return client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            if not _is_retryable_model_error(exc) or attempts >= max_retries:
+                raise
+            attempts += 1
+            print(f"> model request failed ({_model_error_summary(exc)}); retry {attempts}/{max_retries}")
+            time.sleep(0.2 * attempts)
+
+
+def _model_request_failed_message(exc: Exception) -> str:
+    return (
+        "Model request failed after retry "
+        f"({_model_error_summary(exc)}). No state was changed; you can continue with local commands."
+    )
+
+
+def _already_loaded_skill_message(tool_handlers: dict, tool_args: dict) -> str | None:
+    if not isinstance(tool_args, dict):
+        return None
+    skill_memory = tool_handlers.get("__skill_memory__")
+    last_loaded = getattr(skill_memory, "last_loaded_skill", None)
+    requested = str(tool_args.get("name") or "").strip()
+    if not last_loaded or not requested:
+        return None
+    if normalize_name(requested) != normalize_name(str(last_loaded)):
+        return None
+    return f"Skill '{normalize_name(requested)}' is already loaded."
+
+
 def agent_loop(
     *,
     messages: list,
@@ -323,16 +394,25 @@ def agent_loop(
             messages.append({"role": "assistant", "content": output})
             return
 
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system},
-                *messages,
-            ],
-            tools=tools,
-            tool_choice="auto",
-            max_tokens=8000,
-        )
+        try:
+            response = _create_chat_completion_with_retries(
+                client=client,
+                model=model,
+                messages=[
+                    {"role": "system", "content": system},
+                    *messages,
+                ],
+                tools=tools,
+                tool_choice="auto",
+                max_tokens=8000,
+            )
+        except Exception as exc:
+            if not _is_retryable_model_error(exc):
+                raise
+            output = _model_request_failed_message(exc)
+            print(output)
+            messages.append({"role": "assistant", "content": output})
+            return
 
         msg = response.choices[0].message
         response_event = _event(
@@ -437,6 +517,27 @@ def agent_loop(
                     "content": output,
                 })
                 continue
+
+            if tool_name == "load_skill":
+                output = _already_loaded_skill_message(tool_handlers, tool_args)
+                if output:
+                    latest_tool_events.append({
+                        "tool": tool_name,
+                        "arguments": tool_args,
+                        "status": "already_loaded",
+                        "result": output,
+                    })
+                    print(f"> {tool_name}:")
+                    print(output)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": output,
+                    })
+                    if tool_index == len(tool_calls) - 1:
+                        messages.append({"role": "assistant", "content": output})
+                        return
+                    continue
 
             call_event = _event(
                 run_id=run_id,

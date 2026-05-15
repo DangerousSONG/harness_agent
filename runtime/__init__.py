@@ -26,6 +26,12 @@ from .regression_case_proposal import (
     build_regression_cases_yaml,
     propose_regression_case_from_promotion,
 )
+from .skill_evolution_registry import (
+    SkillEvolutionRegistry,
+    format_skill_version_detail,
+    format_skill_versions,
+)
+from .skill_evolution_flow import SkillEvolutionFlowResult, evolve_skill_from_promotion
 
 __all__ = [
     "LocalBackend",
@@ -51,4 +57,9 @@ __all__ = [
     "RegressionCaseProposalResult",
     "build_regression_cases_yaml",
     "propose_regression_case_from_promotion",
+    "SkillEvolutionRegistry",
+    "format_skill_version_detail",
+    "format_skill_versions",
+    "SkillEvolutionFlowResult",
+    "evolve_skill_from_promotion",
 ]

@@ -31,6 +31,7 @@ build/
 # Local self-improvement runtime memory
 # =========================
 .skills_memory/
+.skills_versions/
 skills/*/memory/
 
 

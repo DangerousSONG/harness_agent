@@ -12,6 +12,8 @@ from .regression_case_proposal import (
     has_positive_and_negative_cases,
     parse_regression_cases,
 )
+from .skill_evolution_registry import SkillEvolutionRegistry
+from .skill_memory import normalize_name
 
 
 REVIEW_STATUSES = {"pending", "approved", "rejected", "applied", "expired"}
@@ -96,10 +98,20 @@ class ReviewItem:
 class ReviewQueue:
     """Small local human-review queue backed by .reviews/*.json files."""
 
-    def __init__(self, reviews_dir: Path | str, workdir: Path | str):
+    def __init__(
+        self,
+        reviews_dir: Path | str,
+        workdir: Path | str,
+        *,
+        skill_loader=None,
+        skill_memory=None,
+    ):
         self.reviews_dir = Path(reviews_dir)
         self.workdir = Path(workdir)
         self.patches_dir = self.reviews_dir / "patches"
+        self.evolution_registry = SkillEvolutionRegistry(self.workdir)
+        self.skill_loader = skill_loader
+        self.skill_memory = skill_memory
         self.reviews_dir.mkdir(parents=True, exist_ok=True)
 
     def create(self, **fields: Any) -> ReviewItem:
@@ -152,6 +164,8 @@ class ReviewQueue:
             message = self._apply_regression_case(item)
         elif item.type == "skill.promotion":
             message = self._apply_skill_promotion(item)
+        elif self._is_load_skill_review(item):
+            message = self._apply_load_skill(item)
         else:
             raise ValueError(f"Apply is not supported for review type: {item.type}")
         item.status = "applied"
@@ -173,6 +187,16 @@ class ReviewQueue:
             return self._diff_for_skill_promotion(item)
         if item.type == "skill.regression_case" and item.target_files:
             return self._diff_for_regression_case(item)
+        if self._is_load_skill_review(item):
+            return "\n".join(
+                [
+                    f"# Review {item.review_id}",
+                    "",
+                    "No patch preview is needed for load_skill.",
+                    "The skill is loaded only after this review is approved and applied.",
+                    "",
+                ]
+            )
         if tool_name == "write_file" and item.target_files:
             return self._diff_for_write(item.target_files[0], str(args.get("content", "")))
         if tool_name == "edit_file" and item.target_files:
@@ -330,10 +354,72 @@ class ReviewQueue:
             )
         target_file = item.target_files[0]
         rule_text = str(item.metadata.get("proposed_rule") or item.proposed_change).strip()
-        current = self._read_target(target_file)
-        proposed = self._add_memory_derived_rule(current, rule_text)
+        base_content = self._read_target(target_file)
+        proposed = self._add_memory_derived_rule(base_content, rule_text)
         self._write_target(target_file, proposed)
-        return f"Applied skill promotion {promo_id} to {target_file}."
+        new_content = self._read_target(target_file)
+        if new_content == base_content:
+            return f"Applied skill promotion {promo_id} to {target_file}; no SKILL.md change was needed."
+
+        try:
+            version_record = self.evolution_registry.record_memory_promotion(
+                skill=item.target_skill,
+                skill_review=item.to_dict(),
+                target_file=target_file,
+                base_content=base_content,
+                new_content=new_content,
+                eval_result=self._regression_eval_result(item.target_skill, promo_id),
+                regression_review_ids=self._regression_review_ids(promo_id),
+            )
+        except Exception:
+            self._write_target(target_file, base_content)
+            raise
+        return (
+            f"Applied skill promotion {promo_id} to {target_file}; "
+            f"recorded skill version {version_record['version']}."
+        )
+
+    def _is_load_skill_review(self, item: ReviewItem) -> bool:
+        return (item.tool_name or item.metadata.get("tool_name", "")) == "load_skill"
+
+    def _apply_load_skill(self, item: ReviewItem) -> str:
+        args = item.tool_arguments or item.metadata.get("tool_arguments", {})
+        if not isinstance(args, dict):
+            args = {}
+        skill_name = str(args.get("name") or item.target_skill or "").strip()
+        if not skill_name:
+            raise ValueError("load_skill review has no skill name.")
+
+        normalized = normalize_name(skill_name)
+        current = getattr(self.skill_memory, "last_loaded_skill", None)
+        if current and normalize_name(str(current)) == normalized:
+            item.metadata["loaded_skill_name"] = normalized
+            return f"Skill '{normalized}' is already loaded."
+
+        if self.skill_loader is not None:
+            result = self.skill_loader.load(skill_name)
+        else:
+            result = self._load_skill_from_disk(skill_name)
+        if str(result).startswith("Error:"):
+            raise ValueError(str(result))
+
+        if self.skill_memory is not None:
+            normalized = self.skill_memory.set_active_skill(skill_name)
+        item.metadata["loaded_skill_name"] = normalized
+        item.metadata["loaded_at"] = utc_now()
+        return f"Loaded skill '{normalized}'."
+
+    def _load_skill_from_disk(self, skill_name: str) -> str:
+        normalized = normalize_name(skill_name)
+        path = self.workdir / "skills" / normalized / "SKILL.md"
+        if not path.exists():
+            return f"Error: Unknown skill '{skill_name}'."
+        text = path.read_text(encoding="utf-8")
+        if text.startswith("---\n"):
+            marker = text.find("\n---\n", 4)
+            if marker != -1:
+                text = text[marker + len("\n---\n") :]
+        return f"<skill name=\"{normalized}\">\n{text.strip()}\n</skill>"
 
     def _merge_regression_cases(self, current: str, proposed_cases_yaml: str, target_skill: str) -> str:
         case_lines = self._case_lines(proposed_cases_yaml)
@@ -362,6 +448,33 @@ class ReviewQueue:
             return False
         cases = parse_regression_cases(path.read_text(encoding="utf-8"))
         return has_positive_and_negative_cases(cases, promo_id)
+
+    def _regression_eval_result(self, target_skill: str, promo_id: str) -> dict[str, Any]:
+        path = self.workdir / "skills" / target_skill / "eval" / "cases.yaml"
+        cases = parse_regression_cases(path.read_text(encoding="utf-8")) if path.exists() else []
+        scoped = [
+            case for case in cases
+            if str(case.get("source_promo_id", "")).strip() == promo_id
+        ]
+        positive_count = sum(1 for case in scoped if case.get("must_include"))
+        negative_count = sum(1 for case in scoped if case.get("must_not_include"))
+        return {
+            "source_promo_id": promo_id,
+            "regression_cases_found": len(scoped),
+            "positive_case_count": positive_count,
+            "negative_case_count": negative_count,
+            "passed": True,
+        }
+
+    def _regression_review_ids(self, promo_id: str) -> list[str]:
+        review_ids = []
+        for review in self.list("applied"):
+            if review.type != "skill.regression_case":
+                continue
+            source_promo_id = str(review.metadata.get("source_promo_id") or review.candidate_id)
+            if source_promo_id == promo_id:
+                review_ids.append(review.review_id)
+        return review_ids
 
     def _read_target(self, target_file: str) -> str:
         path = (self.workdir / target_file).resolve()

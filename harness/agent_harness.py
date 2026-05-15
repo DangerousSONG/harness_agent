@@ -60,12 +60,16 @@ from runtime import (
     EvolutionGate,
     LocalBackend,
     PromotionBrowser,
+    SkillEvolutionRegistry,
     SkillLoader,
     SkillMemoryManager,
     classify_and_record_learning_signal,
     classify_learning_signal,
+    evolve_skill_from_promotion,
     format_promotion_detail,
     format_promotion_list,
+    format_skill_version_detail,
+    format_skill_versions,
     propose_regression_case_from_promotion,
     propose_skill_patch_from_promotion,
 )
@@ -116,7 +120,13 @@ VALID_MSG_TYPES = {"message", "broadcast", "shutdown_request",
 TODO = TodoManager()
 SKILLS = SkillLoader(SKILLS_DIR)
 SKILL_MEMORY = SkillMemoryManager(SKILLS_DIR, GLOBAL_SKILL_MEMORY_DIR)
-BACKEND = LocalBackend(PROJECT_ROOT, WORKDIR)
+SKILL_EVOLUTION = SkillEvolutionRegistry(PROJECT_ROOT)
+BACKEND = LocalBackend(
+    PROJECT_ROOT,
+    WORKDIR,
+    skill_loader=SKILLS,
+    skill_memory=SKILL_MEMORY,
+)
 POLICY_CONFIG = load_policy()
 POLICY = PolicyEngine(policy=POLICY_CONFIG)
 print(f"[SafeHarness] policy={POLICY.policy.get('policy_name', 'unknown')}")
@@ -255,6 +265,7 @@ TOOL_HANDLERS = build_tool_handlers(
     classify_learning_signal_for_tool=classify_learning_signal_for_tool,
     classify_and_record_learning_signal_for_tool=classify_and_record_learning_signal_for_tool,
 )
+LAST_APPLIED_TOOL_CONTEXT = None
 
 
 def format_reviews() -> str:
@@ -283,6 +294,11 @@ def approve_review(review_id: str) -> str:
         item, patch_path = BACKEND.review_store.approve_review(review_id)
     except ValueError as e:
         return f"Error: {e}"
+    if not patch_path:
+        return (
+            f"Review {item['review_id']} approved. "
+            "No patch preview is needed. No target file was modified."
+        )
     return (
         f"Review {item['review_id']} approved. "
         f"Patch preview written to {patch_path}. No target file was modified."
@@ -290,10 +306,22 @@ def approve_review(review_id: str) -> str:
 
 
 def apply_review(review_id: str) -> str:
+    global LAST_APPLIED_TOOL_CONTEXT
+    LAST_APPLIED_TOOL_CONTEXT = None
     try:
         item, message = BACKEND.review_store.apply_review(review_id)
     except ValueError as e:
         return f"Error: {e}"
+    if item.get("tool_name") == "load_skill":
+        args = item.get("tool_arguments") or {}
+        skill_name = args.get("name") or item.get("target_skill") or ""
+        loaded = SKILLS.load(skill_name)
+        if not loaded.startswith("Error:"):
+            LAST_APPLIED_TOOL_CONTEXT = {
+                "review_id": item["review_id"],
+                "tool_name": "load_skill",
+                "content": loaded,
+            }
     return f"Review {item['review_id']} applied. {message}"
 
 
@@ -329,6 +357,36 @@ def propose_regression_case(promo_id: str) -> str:
         promo_id=promo_id,
     )
     return result.message
+
+
+def evolve_skill(promo_id: str) -> str:
+    result = evolve_skill_from_promotion(
+        browser=PROMOTIONS,
+        review_store=BACKEND.review_store,
+        promo_id=promo_id,
+        project_root=PROJECT_ROOT,
+    )
+    return result.message
+
+
+def list_skill_versions(skill: str) -> str:
+    return format_skill_versions(skill, SKILL_EVOLUTION.list_versions(skill))
+
+
+def show_skill_version(skill: str, version: str) -> str:
+    return format_skill_version_detail(skill, version, SKILL_EVOLUTION.get_version(skill, version))
+
+
+def rollback_skill(skill: str, version: str) -> str:
+    item = SKILL_EVOLUTION.create_rollback_review(
+        review_store=BACKEND.review_store,
+        skill=skill,
+        version=version,
+    )
+    return (
+        f"Created rollback review {item['review_id']} for {skill} {version}. "
+        "No skill file was modified."
+    )
 
 
 # === SECTION: repl ===
@@ -374,6 +432,17 @@ if __name__ == "__main__":
             continue
         if query.strip().startswith("/apply "):
             print(apply_review(query.strip().split(maxsplit=1)[1]))
+            if LAST_APPLIED_TOOL_CONTEXT:
+                history.append({
+                    "role": "user",
+                    "content": (
+                        "<approved-tool-result "
+                        f"review_id=\"{LAST_APPLIED_TOOL_CONTEXT['review_id']}\" "
+                        f"tool=\"{LAST_APPLIED_TOOL_CONTEXT['tool_name']}\">\n"
+                        f"{LAST_APPLIED_TOOL_CONTEXT['content']}\n"
+                        "</approved-tool-result>"
+                    ),
+                })
             continue
         if query.strip().startswith("/reject "):
             print(reject_review(query.strip().split(maxsplit=1)[1]))
@@ -389,6 +458,38 @@ if __name__ == "__main__":
             continue
         if query.strip().startswith("/propose-regression-case "):
             print(propose_regression_case(query.strip().split(maxsplit=1)[1]))
+            continue
+        if query.strip() == "/evolve-skill":
+            print("Usage: /evolve-skill <promo_id>")
+            continue
+        if query.strip().startswith("/evolve-skill "):
+            print(evolve_skill(query.strip().split(maxsplit=1)[1]))
+            continue
+        if query.strip() == "/skill-versions":
+            print("Usage: /skill-versions <skill>")
+            continue
+        if query.strip().startswith("/skill-versions "):
+            print(list_skill_versions(query.strip().split(maxsplit=1)[1]))
+            continue
+        if query.strip() == "/skill-version":
+            print("Usage: /skill-version <skill> <version>")
+            continue
+        if query.strip().startswith("/skill-version "):
+            parts = query.strip().split(maxsplit=2)
+            if len(parts) != 3:
+                print("Usage: /skill-version <skill> <version>")
+            else:
+                print(show_skill_version(parts[1], parts[2]))
+            continue
+        if query.strip() == "/rollback-skill":
+            print("Usage: /rollback-skill <skill> <version>")
+            continue
+        if query.strip().startswith("/rollback-skill "):
+            parts = query.strip().split(maxsplit=2)
+            if len(parts) != 3:
+                print("Usage: /rollback-skill <skill> <version>")
+            else:
+                print(rollback_skill(parts[1], parts[2]))
             continue
         history.append({"role": "user", "content": query})
         agent_loop(

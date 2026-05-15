@@ -13,3 +13,7 @@ Default behavior:
 - Keep wording formal and reusable.
 - Avoid decorative emoji.
 - When writing for leadership, use executive-ready language.
+
+## Memory-derived rules
+
+- User suggested that when dealing with book notes in Markdown, the content should be organized in the order of 'Title, Core Insights, Three Takeaways, Action List'.

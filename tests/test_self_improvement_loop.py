@@ -17,6 +17,13 @@ from runtime.promotion_browser import (
 )
 from runtime.regression_case_proposal import propose_regression_case_from_promotion
 from runtime.review_queue import ReviewQueue
+from runtime.skill_evolution_registry import (
+    SkillEvolutionRegistry,
+    format_skill_version_detail,
+    format_skill_versions,
+)
+from runtime.skill_evolution_flow import evolve_skill_from_promotion
+from runtime.skill_loader import SkillLoader
 from runtime.skill_patch_proposal import propose_skill_patch_from_promotion
 from runtime.skill_memory import SkillMemoryManager
 from safety.decisions import REQUIRE_APPROVAL
@@ -96,7 +103,10 @@ class FakeSequencedCompletions:
         self.calls.append(kwargs)
         if not self.responses:
             raise AssertionError("Unexpected extra model call")
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 class FakeSequencedChat:
@@ -122,6 +132,12 @@ class EmptyBg:
 class EmptyBus:
     def read_inbox(self, _name):
         return []
+
+
+class FakeRetryableModelError(Exception):
+    def __init__(self, status_code=502):
+        super().__init__(f"fake model status {status_code}")
+        self.status_code = status_code
 
 
 def read_file(root: Path, *parts: str) -> str:
@@ -428,6 +444,135 @@ class SelfImprovementLoopTests(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), original)
             self.assertEqual(len(review_store.list_reviews("pending")), 1)
             self.assertEqual(len(client.chat.completions.calls), 1)
+
+    def test_retryable_model_error_returns_to_repl_without_memory_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            client = FakeSequencedClient(
+                [
+                    FakeRetryableModelError(502),
+                    FakeRetryableModelError(503),
+                    FakeRetryableModelError(502),
+                ]
+            )
+            messages = [{"role": "user", "content": "hello"}]
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                agent_loop(
+                    messages=messages,
+                    client=client,
+                    model="fake",
+                    system="system",
+                    tools=[],
+                    tool_handlers={"__skill_memory__": manager},
+                    todo=EmptyTodo(),
+                    bg=EmptyBg(),
+                    bus=EmptyBus(),
+                    token_threshold=100000,
+                    transcript_dir=root,
+                    estimate_tokens=lambda _messages: 0,
+                    microcompact=lambda _messages: None,
+                    auto_compact=lambda **kwargs: kwargs["messages"],
+                )
+
+            output = out.getvalue()
+            self.assertIn("retry 1/2", output)
+            self.assertIn("retry 2/2", output)
+            self.assertIn("Model request failed after retry", output)
+            self.assertEqual(len(client.chat.completions.calls), 3)
+            self.assertEqual(messages[-1]["role"], "assistant")
+            self.assertIn("No state was changed", messages[-1]["content"])
+            self.assertFalse((root / "skills" / "self_improvement" / "memory" / "ERRORS.md").exists())
+
+    def test_load_skill_review_approve_then_apply_sets_active_skill_and_dedupes_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill_dir = root / "skills" / "markdown_writer"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: markdown_writer\ndescription: Markdown writer\n---\n\n# Markdown Writer\n",
+                encoding="utf-8",
+            )
+            manager = self.make_manager(root)
+            review_store = LocalReviewStore(
+                root / ".reviews",
+                root,
+                skill_loader=SkillLoader(root / "skills"),
+                skill_memory=manager,
+            )
+            policy_engine = PolicyEngine(policy=load_policy("high_security"))
+            event = _event(
+                run_id="test-run",
+                event_type="tool.call.before",
+                actor="lead",
+                source="llm",
+                target="load_skill",
+                payload={"arguments": {"name": "markdown_writer"}},
+            )
+
+            decision = _evaluate(policy_engine, None, event, review_store)
+
+            self.assertEqual(decision.action, REQUIRE_APPROVAL)
+            self.assertEqual(manager.last_loaded_skill, None)
+            reviews = review_store.list_reviews("pending")
+            self.assertEqual(len(reviews), 1)
+            review_id = reviews[0]["review_id"]
+
+            approved, patch_path = review_store.approve_review(review_id)
+            self.assertEqual(approved["status"], "approved")
+            self.assertEqual(patch_path, "")
+            self.assertEqual(manager.last_loaded_skill, None)
+            self.assertFalse((root / ".reviews" / "patches" / f"{review_id}.diff").exists())
+
+            applied, message = review_store.apply_review(review_id)
+            self.assertEqual(applied["status"], "applied")
+            self.assertIn("Loaded skill 'markdown_writer'", message)
+            self.assertEqual(manager.last_loaded_skill, "markdown_writer")
+
+            client = FakeSequencedClient(
+                [
+                    FakeToolResponse(
+                        FakeToolMessage(
+                            tool_calls=[
+                                FakeToolCall("load_skill", {"name": "markdown_writer"})
+                            ]
+                        )
+                    )
+                ]
+            )
+            messages = [{"role": "user", "content": "load markdown_writer again"}]
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                agent_loop(
+                    messages=messages,
+                    client=client,
+                    model="fake",
+                    system="system",
+                    tools=[],
+                    tool_handlers={
+                        "load_skill": lambda **_kwargs: (_ for _ in ()).throw(
+                            AssertionError("load_skill should not execute twice")
+                        ),
+                        "__skill_memory__": manager,
+                    },
+                    todo=EmptyTodo(),
+                    bg=EmptyBg(),
+                    bus=EmptyBus(),
+                    token_threshold=100000,
+                    transcript_dir=root,
+                    estimate_tokens=lambda _messages: 0,
+                    microcompact=lambda _messages: None,
+                    auto_compact=lambda **kwargs: kwargs["messages"],
+                    policy_engine=policy_engine,
+                    audit_logger=None,
+                    review_store=review_store,
+                )
+
+            self.assertIn("already loaded", out.getvalue())
+            self.assertEqual(review_store.list_reviews("pending"), [])
 
     def test_auto_memory_skips_post_approval_assistant_message(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -826,6 +971,7 @@ class SelfImprovementLoopTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, f"missing regression coverage for {promo.promo_id}"):
                 review_store.apply_review(skill_review_id)
             self.assertEqual(skill_file.read_text(encoding="utf-8"), original_skill)
+            self.assertFalse((root / ".skills_versions" / "markdown_writer" / "versions.jsonl").exists())
 
             regression_result = propose_regression_case_from_promotion(
                 browser=browser,
@@ -860,12 +1006,166 @@ class SelfImprovementLoopTests(unittest.TestCase):
             applied_skill, message = review_store.apply_review(skill_review_id)
             self.assertEqual(applied_skill["status"], "applied")
             self.assertIn("Applied skill promotion", message)
+            self.assertIn("recorded skill version v0.1.1", message)
             skill_text = skill_file.read_text(encoding="utf-8")
             self.assertIn("## Memory-derived rules", skill_text)
             self.assertIn("- When writing Markdown with code or structured output, use fenced code blocks consistently.", skill_text)
             audit_text = (root / ".reviews" / "apply_audit.jsonl").read_text(encoding="utf-8")
             self.assertIn(regression_review["review_id"], audit_text)
             self.assertIn(skill_review_id, audit_text)
+            versions_file = root / ".skills_versions" / "markdown_writer" / "versions.jsonl"
+            self.assertTrue(versions_file.exists())
+            records = [
+                json.loads(line)
+                for line in versions_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(records), 1)
+            version = records[0]
+            self.assertEqual(version["skill"], "markdown_writer")
+            self.assertEqual(version["version"], "v0.1.1")
+            self.assertEqual(version["previous_version"], "v0.1.0")
+            self.assertEqual(version["change_type"], "memory_promotion")
+            self.assertEqual(version["promotion_id"], promo.promo_id)
+            self.assertEqual(version["skill_review_id"], skill_review_id)
+            self.assertEqual(version["regression_review_ids"], [regression_review["review_id"]])
+            self.assertEqual(version["target_file"], "skills/markdown_writer/SKILL.md")
+            self.assertNotEqual(version["base_hash"], version["new_hash"])
+            snapshot = root / ".skills_versions" / "markdown_writer" / "v0.1.1" / "SKILL.md"
+            version_patch = root / ".skills_versions" / "markdown_writer" / "v0.1.1" / "patch.diff"
+            eval_result = root / ".skills_versions" / "markdown_writer" / "v0.1.1" / "eval_result.json"
+            self.assertTrue(snapshot.exists())
+            self.assertTrue(version_patch.exists())
+            self.assertTrue(eval_result.exists())
+            self.assertEqual(snapshot.read_text(encoding="utf-8"), skill_text)
+            self.assertIn("+## Memory-derived rules", version_patch.read_text(encoding="utf-8"))
+            eval_payload = json.loads(eval_result.read_text(encoding="utf-8"))
+            self.assertEqual(eval_payload["source_promo_id"], promo.promo_id)
+            self.assertEqual(eval_payload["regression_cases_found"], 2)
+            self.assertEqual(eval_payload["positive_case_count"], 1)
+            self.assertEqual(eval_payload["negative_case_count"], 1)
+            self.assertTrue(eval_payload["passed"])
+
+            registry = SkillEvolutionRegistry(root)
+            listing = format_skill_versions("markdown_writer", registry.list_versions("markdown_writer"))
+            detail = format_skill_version_detail(
+                "markdown_writer",
+                "v0.1.1",
+                registry.get_version("markdown_writer", "v0.1.1"),
+            )
+            self.assertIn("v0.1.1 [applied]", listing)
+            self.assertIn(skill_review_id, detail)
+            before_rollback = skill_file.read_text(encoding="utf-8")
+            rollback_review = registry.create_rollback_review(
+                review_store=review_store,
+                skill="markdown_writer",
+                version="v0.1.0",
+            )
+            self.assertEqual(rollback_review["type"], "skill.rollback")
+            self.assertEqual(rollback_review["status"], "pending")
+            self.assertEqual(rollback_review["target_files"], ["skills/markdown_writer/SKILL.md"])
+            self.assertEqual(skill_file.read_text(encoding="utf-8"), before_rollback)
+            registry_audit = (root / ".audit" / "events.jsonl").read_text(encoding="utf-8")
+            self.assertIn("skill.evolution.applied", registry_audit)
+            self.assertIn("v0.1.1", registry_audit)
+
+    def test_evolve_skill_guides_regression_then_skill_review_without_auto_apply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            for _ in range(3):
+                manager.record_learning(
+                    "markdown_writer",
+                    "Use fenced markdown output",
+                    "For repeated markdown output corrections, use fenced code blocks consistently.",
+                    source="test",
+                )
+            browser = PromotionBrowser(
+                skills_dir=root / "skills",
+                global_memory_dir=root / ".skills_memory",
+                project_root=root,
+            )
+            promo = browser.list_candidates()[0]
+            review_store = LocalReviewStore(root / ".reviews", root)
+            skill_file = root / "skills" / "markdown_writer" / "SKILL.md"
+            original_skill = skill_file.read_text(encoding="utf-8")
+
+            first = evolve_skill_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id=promo.promo_id,
+                project_root=root,
+            )
+
+            self.assertTrue(first.ok)
+            self.assertEqual(first.stage, "regression_review")
+            self.assertIn("Created regression coverage review", first.message)
+            self.assertIn(f"/review {first.review_id}", first.message)
+            self.assertIn(f"/approve {first.review_id}", first.message)
+            self.assertIn(f"/apply {first.review_id}", first.message)
+            self.assertEqual(skill_file.read_text(encoding="utf-8"), original_skill)
+            regression_reviews = review_store.list_reviews("pending")
+            self.assertEqual(len(regression_reviews), 1)
+            self.assertEqual(regression_reviews[0]["type"], "skill.regression_case")
+
+            repeated = evolve_skill_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id=promo.promo_id,
+                project_root=root,
+            )
+
+            self.assertEqual(repeated.review_id, first.review_id)
+            self.assertIn("waiting for review", repeated.message)
+            self.assertEqual(len(review_store.list_reviews("pending")), 1)
+            self.assertEqual(skill_file.read_text(encoding="utf-8"), original_skill)
+
+            review_store.approve_review(first.review_id)
+            regression_ready = evolve_skill_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id=promo.promo_id,
+                project_root=root,
+            )
+            self.assertEqual(regression_ready.stage, "regression_apply")
+            self.assertEqual(regression_ready.message.splitlines()[-1], f"/apply {first.review_id}")
+            self.assertEqual(skill_file.read_text(encoding="utf-8"), original_skill)
+
+            review_store.apply_review(first.review_id)
+            skill_step = evolve_skill_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id=promo.promo_id,
+                project_root=root,
+            )
+
+            self.assertTrue(skill_step.ok)
+            self.assertEqual(skill_step.stage, "skill_review")
+            self.assertIn("Created skill promotion review", skill_step.message)
+            self.assertIn(f"/review {skill_step.review_id}", skill_step.message)
+            self.assertEqual(skill_file.read_text(encoding="utf-8"), original_skill)
+
+            review_store.approve_review(skill_step.review_id)
+            apply_step = evolve_skill_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id=promo.promo_id,
+                project_root=root,
+            )
+
+            self.assertEqual(apply_step.stage, "skill_apply")
+            self.assertEqual(apply_step.message.splitlines()[-1], f"/apply {skill_step.review_id}")
+            self.assertEqual(skill_file.read_text(encoding="utf-8"), original_skill)
+
+            review_store.apply_review(skill_step.review_id)
+            done = evolve_skill_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id=promo.promo_id,
+                project_root=root,
+            )
+            self.assertEqual(done.stage, "complete")
+            self.assertIn("already applied", done.message)
 
     def test_regression_case_apply_rejects_missing_negative_case(self):
         with tempfile.TemporaryDirectory() as tmp:

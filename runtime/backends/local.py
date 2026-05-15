@@ -310,10 +310,22 @@ class LocalAgentRunner(AgentRunner):
 class LocalReviewStore(ReviewStore):
     """Local review state for shutdown, plan approval, and human patch gates."""
 
-    def __init__(self, reviews_dir: Path, workdir: Path):
+    def __init__(
+        self,
+        reviews_dir: Path,
+        workdir: Path,
+        *,
+        skill_loader=None,
+        skill_memory=None,
+    ):
         self.shutdown_requests = {}
         self.plan_requests = {}
-        self.review_queue = ReviewQueue(reviews_dir, workdir)
+        self.review_queue = ReviewQueue(
+            reviews_dir,
+            workdir,
+            skill_loader=skill_loader,
+            skill_memory=skill_memory,
+        )
 
     def create_shutdown_request(self, target: str) -> str:
         request_id = str(uuid.uuid4())[:8]
@@ -342,6 +354,8 @@ class LocalReviewStore(ReviewStore):
 
     def approve_review(self, review_id: str) -> tuple[dict, str]:
         item = self.review_queue.approve(review_id)
+        if item.tool_name == "load_skill":
+            return item.to_dict(), ""
         patch_path = self.review_queue.write_patch_preview(item)
         return item.to_dict(), str(patch_path)
 
@@ -356,12 +370,24 @@ class LocalReviewStore(ReviewStore):
 class LocalBackend:
     """Default backend that preserves the original single-machine behavior."""
 
-    def __init__(self, project_root: Path, workdir: Path):
+    def __init__(
+        self,
+        project_root: Path,
+        workdir: Path,
+        *,
+        skill_loader=None,
+        skill_memory=None,
+    ):
         self.task_store = LocalTaskStore(project_root / ".tasks")
         self.message_store = LocalMessageStore(project_root / ".team" / "inbox")
         self.job_queue = LocalJobQueue(workdir)
         self.agent_runner = LocalAgentRunner(project_root / ".team")
-        self.review_store = LocalReviewStore(project_root / ".reviews", workdir)
+        self.review_store = LocalReviewStore(
+            project_root / ".reviews",
+            workdir,
+            skill_loader=skill_loader,
+            skill_memory=skill_memory,
+        )
 
 
 class RedisMessageStore(MessageStore):
