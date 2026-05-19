@@ -5,6 +5,7 @@ const toneClass = {
   applied: "bg-emerald-50 text-emerald-700 border-emerald-100",
   approved: "bg-blue-50 text-blue-700 border-blue-100",
   pending: "bg-blue-50 text-blue-700 border-blue-100",
+  running: "bg-blue-50 text-blue-700 border-blue-100",
   waiting: "bg-zinc-50 text-zinc-500 border-zinc-200",
   rejected: "bg-red-50 text-red-700 border-red-100",
   failed: "bg-red-50 text-red-700 border-red-100",

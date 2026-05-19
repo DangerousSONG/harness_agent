@@ -298,7 +298,7 @@ export default function App() {
     setSending(true);
     setMessages((items) => [
       ...items,
-      { id: makeId(), role: "user", text: message, time: formatDate(new Date().toISOString()) },
+      { id: makeId(), role: "user", type: "user_message", text: message, time: formatDate(new Date().toISOString()) },
     ]);
     try {
       const payload = await api.chatSend(message, {
@@ -314,10 +314,12 @@ export default function App() {
           role: "agent",
           text: payload.message || payload.data?.message || "Done.",
           type: payload.type || "answer",
+          run_id: payload.run_id || "",
           used_skill: payload.used_skill || "",
           why: payload.why || "",
           memory_record_id: payload.memory_record_id || "",
           actions: payload.actions || [],
+          trace: payload.trace || [],
           data: payload.data || {},
           time: formatDate(new Date().toISOString()),
         },
@@ -545,6 +547,11 @@ export default function App() {
     const approveMatch = path.match(/^\/api\/reviews\/([^/]+)\/approve$/);
     if (method === "POST" && approveMatch) {
       await approveReview(decodeURIComponent(approveMatch[1]));
+      return;
+    }
+    const rejectMatch = path.match(/^\/api\/reviews\/([^/]+)\/reject$/);
+    if (method === "POST" && rejectMatch) {
+      await rejectReview(decodeURIComponent(rejectMatch[1]));
       return;
     }
     const applyMatch = path.match(/^\/api\/reviews\/([^/]+)\/apply$/);

@@ -101,7 +101,20 @@ Conversational evolution operations stay behind existing APIs:
 - Apply responses include diff-preview data before the UI calls the review apply API.
 - Rollback is routed through the version rollback API and creates a review only.
 
-The Chat response shape includes `type`, `message`, `used_skill`, `why`, `memory_record_id`, `actions`, and `data`, allowing the UI to render normal answers, skill results, memory captures, proposed actions, tool results, approval-required states, and errors differently. Ordinary `answer` messages keep `message` as natural-language content and do not force a skill attribution.
+The Chat response shape includes `run_id`, `type`, `message`, `used_skill`, `why`, `memory_record_id`, `trace`, `actions`, and `data`, allowing the UI to render normal answers, skill results, memory captures, proposed actions, tool results, approval-required states, and errors differently. Ordinary `answer` messages keep `message` as natural-language content and do not force a skill attribution.
+
+`trace[]` is an auditable external execution trace, not hidden chain-of-thought. It may include:
+
+- `reasoning_summary`: a short visible work summary such as intent understanding.
+- `skill_route`: selected skill, reason, confidence, and memory-capture candidacy.
+- `tool_call`: safeharness API calls, memory-tool calls, or unavailable tool notices.
+- `command_trace`: shell command summaries when commands are actually run.
+- `file_trace`: file read/write summaries, including memory writes.
+- `approval_event`: review id, type, severity, and target asset when human approval is required.
+- `final_result`: the user-facing outcome.
+- `next_action`: review/evolution actions that the user can explicitly confirm.
+
+The Chat UI renders each run as a work-assistant block: user message, visible trace cards, approval events/actions where needed, and the final natural-language result.
 
 ## Evolution Gate
 

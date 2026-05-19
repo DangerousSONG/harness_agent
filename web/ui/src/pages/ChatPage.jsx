@@ -1,8 +1,26 @@
-import { Send, Paperclip, Wrench, Check, Brain, AlertCircle, ShieldCheck, Sparkles } from "lucide-react";
+import {
+  Send,
+  Paperclip,
+  Wrench,
+  Check,
+  Brain,
+  AlertCircle,
+  ShieldCheck,
+  Sparkles,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Route,
+  Terminal,
+  ClipboardCheck,
+  Activity,
+  Database,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import ReviewCard from "../components/ReviewCard";
 import EmptyState from "../components/EmptyState";
 import { formatDate } from "../lib/format";
+import StatusPill from "../components/StatusPill";
 
 const TYPE_STYLES = {
   answer: { label: "Answer", icon: Sparkles, className: "bg-zinc-100 text-zinc-700" },
@@ -19,7 +37,9 @@ function Bubble({ role, message, children, time, onAction }) {
   const typeStyle = TYPE_STYLES[message?.type] || TYPE_STYLES.answer;
   const TypeIcon = typeStyle.icon;
   const actions = message?.actions || [];
-  const showMeta = !user && message?.type && message.type !== "answer";
+  const trace = message?.trace || [];
+  const showHeader = !user && message?.type;
+  const showSkillMeta = showHeader && message.type !== "answer";
   return (
     <div className={`flex gap-3 ${user ? "justify-end" : "justify-start"}`}>
       {!user ? (
@@ -34,13 +54,13 @@ function Bubble({ role, message, children, time, onAction }) {
             user ? "bg-zinc-950 text-white" : "border border-line bg-white text-zinc-900",
           ].join(" ")}
         >
-          {showMeta ? (
+          {showHeader ? (
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <span className={`inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium ${typeStyle.className}`}>
                 <TypeIcon className="h-3.5 w-3.5" />
                 {typeStyle.label}
               </span>
-              {message.used_skill ? (
+              {showSkillMeta && message.used_skill ? (
                 <span className="rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-600">
                   {message.used_skill}
                 </span>
@@ -52,10 +72,16 @@ function Bubble({ role, message, children, time, onAction }) {
               ) : null}
             </div>
           ) : null}
-          {showMeta && message?.why ? (
+          {showSkillMeta && message?.why ? (
             <p className="mb-2 text-xs leading-5 text-zinc-500">{message.why}</p>
           ) : null}
-          <div className="whitespace-pre-wrap break-words">{children}</div>
+          {!user && trace.length ? <TraceList trace={trace} /> : null}
+          <div className={trace.length && !user ? "mt-3 border-t border-line pt-3" : ""}>
+            {trace.length && !user ? (
+              <p className="muted-label mb-2">Final Result</p>
+            ) : null}
+            <MarkdownText text={children} />
+          </div>
           {!user && actions.length ? (
             <div className="mt-3 flex flex-wrap gap-2">
               {actions.map((action) => (
@@ -78,6 +104,161 @@ function Bubble({ role, message, children, time, onAction }) {
           U
         </span>
       ) : null}
+    </div>
+  );
+}
+
+const TRACE_ICONS = {
+  reasoning_summary: Activity,
+  skill_route: Route,
+  tool_call: Wrench,
+  command_trace: Terminal,
+  file_trace: FileText,
+  approval_event: ClipboardCheck,
+  final_result: Check,
+  next_action: ShieldCheck,
+};
+
+const TRACE_LABELS = {
+  reasoning_summary: "Analyze",
+  skill_route: "Skill route",
+  tool_call: "Tool call",
+  command_trace: "Bash",
+  file_trace: "File",
+  approval_event: "Approval",
+  final_result: "Final",
+  next_action: "Next action",
+};
+
+function TraceList({ trace }) {
+  const visible = (trace || []).filter((item) => item.type !== "final_result");
+  if (!visible.length) return null;
+  return (
+    <div className="mt-3 space-y-2">
+      {visible.map((item, index) => (
+        <TraceCard key={`${item.type}-${item.title}-${index}`} item={item} />
+      ))}
+    </div>
+  );
+}
+
+function TraceCard({ item }) {
+  const [open, setOpen] = useState(false);
+  const Icon = TRACE_ICONS[item.type] || Database;
+  const label = traceTitle(item);
+  const code = traceCode(item);
+  const details = traceDetails(item);
+  const hasDetails = Boolean(code || details);
+  const attention = item.type === "approval_event";
+  return (
+    <div className={[
+      "rounded-lg border shadow-hairline",
+      attention ? "border-amber-200 bg-amber-50/60" : "border-line bg-zinc-50/80",
+    ].join(" ")}>
+      <button
+        type="button"
+        className="flex w-full items-center gap-3 px-3 py-2.5 text-left"
+        onClick={() => hasDetails && setOpen((value) => !value)}
+      >
+        <span className={[
+          "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white shadow-hairline",
+          attention ? "text-risk" : "text-zinc-600",
+        ].join(" ")}>
+          <Icon className="h-4 w-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium text-zinc-900">{label}</span>
+            {code ? <code className="truncate rounded bg-white px-1.5 py-0.5 text-xs text-zinc-600">{code}</code> : null}
+          </div>
+          {item.summary ? (
+            <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-zinc-500">{item.summary}</p>
+          ) : null}
+        </div>
+        <StatusPill status={item.status || "completed"} />
+        {hasDetails ? (
+          open ? <ChevronDown className="h-4 w-4 text-zinc-400" /> : <ChevronRight className="h-4 w-4 text-zinc-400" />
+        ) : null}
+      </button>
+      {open ? (
+        <div className="border-t border-line px-3 py-3">
+          {code ? (
+            <pre className="overflow-auto rounded-lg bg-white p-3 font-mono text-xs leading-6 text-zinc-700 shadow-hairline">
+              {code}
+            </pre>
+          ) : null}
+          {details ? (
+            <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+              {details.map(([key, value]) => (
+                <div key={key}>
+                  <dt className="muted-label">{key}</dt>
+                  <dd className="mt-1 break-words text-zinc-700">{String(value)}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function traceTitle(item) {
+  if (item.type === "file_trace") {
+    const op = String(item.operation || "").toLowerCase();
+    if (op === "read") return "Read";
+    if (op === "write") return "Write";
+  }
+  return item.title || TRACE_LABELS[item.type] || "Trace";
+}
+
+function traceCode(item) {
+  if (item.command) return item.command;
+  if (item.path && item.method) return `${item.method} ${item.path}`;
+  if (item.path) return item.path;
+  if (item.api_path) return item.api_path;
+  return "";
+}
+
+function traceDetails(item) {
+  const keys = [
+    "tool_name",
+    "skill_name",
+    "reason",
+    "confidence",
+    "operation",
+    "review_id",
+    "review_type",
+    "severity",
+    "target_asset",
+    "started_at",
+    "ended_at",
+    "duration",
+    "suggested_fix",
+  ];
+  return keys
+    .filter((key) => item[key])
+    .map((key) => [titleLabel(key), item[key]]);
+}
+
+function titleLabel(value) {
+  return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function MarkdownText({ text }) {
+  const lines = String(text || "").split("\n");
+  return (
+    <div className="space-y-1">
+      {lines.map((line, index) => {
+        if (line.startsWith("# ")) {
+          return <h2 key={index} className="pt-1 text-base font-semibold text-zinc-950">{line.slice(2)}</h2>;
+        }
+        if (line.startsWith("## ")) {
+          return <h3 key={index} className="pt-2 text-sm font-semibold text-zinc-900">{line.slice(3)}</h3>;
+        }
+        if (!line.trim()) return <div key={index} className="h-1" />;
+        return <p key={index} className="whitespace-pre-wrap break-words text-sm leading-6">{line}</p>;
+      })}
     </div>
   );
 }

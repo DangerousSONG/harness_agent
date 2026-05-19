@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 import json
 import re
+import uuid
 from typing import Any
 
 try:
@@ -125,6 +127,8 @@ def chat_ok(
     why: str = "",
     memory_record_id: str = "",
     actions: list[dict[str, Any]] | None = None,
+    trace: list[dict[str, Any]] | None = None,
+    run_id: str = "",
     data: Any = None,
     status_code: int = 200,
 ) -> JSONResponse:
@@ -132,12 +136,14 @@ def chat_ok(
         status_code=status_code,
         content={
             "ok": True,
+            "run_id": run_id,
             "type": response_type,
             "message": message,
             "used_skill": used_skill,
             "why": why,
             "memory_record_id": memory_record_id,
             "actions": actions or [],
+            "trace": trace or [],
             "data": {} if data is None else data,
             "next_actions": [action.get("path", "") for action in actions or [] if action.get("path")],
             "errors": [],
@@ -596,6 +602,8 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             why=data.get("why", ""),
             memory_record_id=data.get("memory_record_id", ""),
             actions=data.get("actions", []),
+            trace=data.get("trace", []),
+            run_id=data.get("run_id", ""),
             data=data.get("data", {}),
             status_code=data.get("status_code", 200),
         )
@@ -617,6 +625,8 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             why=data.get("why", ""),
             memory_record_id=data.get("memory_record_id", ""),
             actions=data.get("actions", []),
+            trace=data.get("trace", []),
+            run_id=data.get("run_id", ""),
             data=data.get("data", {}),
             status_code=data.get("status_code", 200),
         )
@@ -1043,6 +1053,7 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
 
     intent = _chat_intent(message)
     used_skill, skill_reason = _route_skill(ctx, message, context, intent)
+    base_trace = [_reasoning_trace(_intent_summary(intent))]
 
     if intent == "greeting":
         return _chat_result(
@@ -1050,6 +1061,7 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
             used_skill,
             skill_reason,
             "\u4f60\u597d\uff01\u6211\u5728\u3002\u4f60\u53ef\u4ee5\u76f4\u63a5\u8ddf\u6211\u804a\uff0c\u4e5f\u53ef\u4ee5\u8ba9\u6211\u5199\u5185\u5bb9\u3001\u770b workspace \u72b6\u6001\u3001\u5904\u7406 skills \u548c reviews\u3002",
+            trace=base_trace,
         )
     if intent == "weather":
         return _chat_result(
@@ -1057,6 +1069,17 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
             used_skill,
             skill_reason,
             "\u6211\u53ef\u4ee5\u5e2e\u4f60\u67e5\u5929\u6c14\uff0c\u4f46\u9700\u8981\u4f60\u5148\u544a\u8bc9\u6211\u57ce\u5e02\u6216\u5730\u533a\u3002\u8fd9\u7c7b\u95ee\u9898\u9700\u8981\u5b9e\u65f6\u5929\u6c14\u67e5\u8be2\u5de5\u5177\uff1b\u53ea\u9760\u5f53\u524d workspace \u72b6\u6001\u4e0d\u80fd\u51c6\u786e\u56de\u7b54\u3002",
+            trace=[
+                _reasoning_trace("\u6211\u8bc6\u522b\u5230\u8fd9\u662f\u5b9e\u65f6\u5929\u6c14\u67e5\u8be2\uff1b\u5f53\u524d\u8bf7\u6c42\u6ca1\u6709\u57ce\u5e02\u4fe1\u606f\uff0c\u4e14 Chat API \u672a\u63a5\u5165\u5929\u6c14\u5de5\u5177\u3002"),
+                _trace(
+                    "tool_call",
+                    "Weather tool",
+                    status="waiting",
+                    tool_name="weather",
+                    method="GET",
+                    summary="\u9700\u8981\u57ce\u5e02\u548c\u5b9e\u65f6\u5929\u6c14\u5de5\u5177\u540e\u624d\u80fd\u67e5\u8be2\u3002",
+                ),
+            ],
         )
     if intent == "memory_capture":
         return _capture_learning_memory(ctx, message, used_skill, skill_reason)
@@ -1070,6 +1093,18 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
             f"Workspace skills: {names}.",
             "No durable memory was captured.",
             data={"skills": skills},
+            trace=[
+                *base_trace,
+                _trace(
+                    "tool_call",
+                    "API request",
+                    tool_name="safeharness",
+                    method="GET",
+                    path="/api/skills",
+                    status="completed",
+                    summary=f"Loaded {len(skills)} workspace skills.",
+                ),
+            ],
         )
     if intent == "workspace_status":
         return _chat_workspace_status(ctx, context, used_skill, skill_reason)
@@ -1085,25 +1120,20 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
                 "I could not find a current promotion candidate to generate regression coverage for.",
                 "No durable memory was captured.",
                 actions=[_action("Open promotions", "GET", "/api/promotions", False)],
+                trace=[
+                    *base_trace,
+                    _trace(
+                        "tool_call",
+                        "API request",
+                        tool_name="safeharness",
+                        method="GET",
+                        path="/api/promotions",
+                        status="completed",
+                        summary="No current promotion candidate was selected or actionable.",
+                    ),
+                ],
             )
-        action = _action(
-            "Generate or continue regression review",
-            "POST",
-            f"/api/promotions/{promo['promo_id']}/evolve",
-            True,
-        )
-        return _chat_result(
-            "proposed_action",
-            used_skill,
-            skill_reason,
-            (
-                f"Ready to generate the next review for {promo['promo_id']}. "
-                "This will go through the promotion evolution API and will not modify skill files."
-            ),
-            "No durable memory was captured.",
-            actions=[action],
-            data={"promotion": promo},
-        )
+        return _chat_continue_promotion(ctx, promo, used_skill, skill_reason, base_trace)
     if intent == "continue_promo":
         promo = _current_promo(ctx, context)
         if not promo:
@@ -1114,23 +1144,20 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
                 "I could not find a current PROMO. Choose one from Promotions, then ask me to continue it.",
                 "No durable memory was captured.",
                 actions=[_action("Open promotions", "GET", "/api/promotions", False)],
+                trace=[
+                    *base_trace,
+                    _trace(
+                        "tool_call",
+                        "API request",
+                        tool_name="safeharness",
+                        method="GET",
+                        path="/api/promotions",
+                        status="completed",
+                        summary="No current promotion candidate was selected or actionable.",
+                    ),
+                ],
             )
-        return _chat_result(
-            "proposed_action",
-            used_skill,
-            skill_reason,
-            f"The controlled next step for {promo['promo_id']} is available.",
-            "No durable memory was captured.",
-            actions=[
-                _action(
-                    "Continue promotion flow",
-                    "POST",
-                    f"/api/promotions/{promo['promo_id']}/evolve",
-                    True,
-                )
-            ],
-            data={"promotion": promo},
-        )
+        return _chat_continue_promotion(ctx, promo, used_skill, skill_reason, base_trace)
     if intent == "review_explain":
         return _chat_review_explain(ctx, message, context, used_skill, skill_reason)
     if intent == "approve_review":
@@ -1145,6 +1172,15 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
             "Rollback must be created through the skill version rollback API after you choose a concrete version.",
             "No durable memory was captured.",
             actions=[_action("Open versions", "GET", "/api/skills", False)],
+            trace=[
+                *base_trace,
+                _trace(
+                    "approval_event",
+                    "Human approval required",
+                    status="waiting",
+                    summary="Rollback is review-only and must be created for a concrete skill version.",
+                ),
+            ],
         )
 
     answer = _draft_answer(message, intent)
@@ -1154,6 +1190,7 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
         skill_reason,
         answer,
         "No durable memory was captured.",
+        trace=base_trace,
     )
 
 
@@ -1165,26 +1202,115 @@ def _chat_result(
     memory_note: str = "",
     *,
     actions: list[dict[str, Any]] | None = None,
+    trace: list[dict[str, Any]] | None = None,
     data: Any = None,
     memory_record_id: str = "",
 ) -> dict[str, Any]:
     payload_data = data or {}
     if memory_note and isinstance(payload_data, dict):
         payload_data = {**payload_data, "memory_note": memory_note}
+    run_id = _run_id()
+    trace_items = list(trace or [])
+    if not any(item.get("type") == "reasoning_summary" for item in trace_items):
+        trace_items.insert(0, _reasoning_trace(skill_reason or "Handled the request."))
+    if used_skill and not any(item.get("type") == "skill_route" for item in trace_items):
+        trace_items.insert(
+            1,
+            _trace(
+                "skill_route",
+                "Selected skill",
+                skill_name=used_skill,
+                reason=skill_reason,
+                confidence="medium",
+                memory_capture_candidate=response_type == "memory_captured",
+                status="completed",
+                summary=skill_reason,
+            ),
+        )
+    trace_items.extend(_next_action_traces(actions or []))
+    if not any(item.get("type") == "final_result" for item in trace_items):
+        trace_items.append(_trace("final_result", "Final result", status="completed", summary=output))
     return {
+        "run_id": run_id,
         "type": response_type,
         "message": output,
         "used_skill": used_skill,
         "why": skill_reason,
         "memory_record_id": memory_record_id,
         "actions": actions or [],
+        "trace": trace_items,
         "data": payload_data,
     }
 
 
+def _run_id() -> str:
+    return f"RUN-{uuid.uuid4().hex[:8].upper()}"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _trace(trace_type: str, title: str, **fields: Any) -> dict[str, Any]:
+    status = fields.pop("status", "completed")
+    item = {
+        "type": trace_type,
+        "title": title,
+        "status": status,
+        "started_at": fields.pop("started_at", _now_iso()),
+        "ended_at": fields.pop("ended_at", _now_iso() if status in {"completed", "failed"} else ""),
+        "duration": fields.pop("duration", "0ms" if status in {"completed", "failed"} else ""),
+    }
+    item.update({key: value for key, value in fields.items() if value not in (None, "")})
+    return item
+
+
+def _reasoning_trace(summary: str) -> dict[str, Any]:
+    return _trace(
+        "reasoning_summary",
+        "Analyze",
+        status="completed",
+        summary=summary,
+    )
+
+
+def _next_action_traces(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    traces = []
+    for action in actions:
+        traces.append(
+            _trace(
+                "next_action",
+                str(action.get("label", "Next action")),
+                method=str(action.get("method", "")),
+                path=str(action.get("path", "")),
+                status="waiting" if action.get("requires_confirmation") else "completed",
+                summary="Requires explicit confirmation." if action.get("requires_confirmation") else "Available action.",
+            )
+        )
+    return traces
+
+
+def _intent_summary(intent: str) -> str:
+    summaries = {
+        "greeting": "I recognized a greeting and prepared a direct assistant response.",
+        "weather": "I recognized a realtime weather request and checked whether enough information/tooling is available.",
+        "memory_capture": "I recognized an explicit long-term preference that should be captured as a learning signal.",
+        "list_skills": "I recognized a workspace skills query and will read the skill registry.",
+        "workspace_status": "I recognized a workspace progress query and will summarize reviews, promotions, and versions.",
+        "evolution_status": "I recognized a self-evolution progress query and will inspect the current promotion flow.",
+        "generate_regression_review": "I recognized a request to generate regression review coverage through the controlled evolution API.",
+        "continue_promo": "I recognized a request to continue the current promotion through the controlled evolution API.",
+        "review_explain": "I recognized a request to inspect a review and explain the proposed change.",
+        "approve_review": "I recognized a review approval request; confirmation is required before preview generation.",
+        "apply_review": "I recognized a review apply request; confirmation and diff inspection are required.",
+        "writing": "I recognized a writing request and will route to the appropriate writing skill.",
+    }
+    return summaries.get(intent, "I classified the request and selected the safest available response path.")
+
+
 def _chat_intent(message: str) -> str:
     text = message.lower()
-    compact = re.sub(r"[\s\uff01!,.，。？?]+", "", message).lower()
+    compact = re.sub(r"[\s\uff01!,.\uff0c\u3002\uff1f?]+", "", message).lower()
     if compact in {"hi", "hello", "hey", "\u4f60\u597d", "\u55e8", "\u54c8\u55bd"}:
         return "greeting"
     if _looks_like_memory_request(message):
@@ -1265,7 +1391,7 @@ def _looks_like_memory_request(message: str) -> bool:
 def _capture_learning_memory(
     ctx: WebContext,
     message: str,
-    used_skill: str,
+    used_skill: str | None,
     skill_reason: str,
 ) -> dict[str, Any]:
     skill_name = used_skill or "self_improvement"
@@ -1312,6 +1438,7 @@ def _capture_learning_memory(
             )
         ]
     promo_note = f" Promotion candidate: {new_promos[0]['promo_id']}." if new_promos else ""
+    memory_path = f"skills/{skill_name}/memory/LEARNINGS.md"
     return _chat_result(
         "memory_captured",
         used_skill,
@@ -1321,6 +1448,25 @@ def _capture_learning_memory(
         memory_record_id=record_id,
         actions=actions,
         data={"record_message": result, "new_promotions": new_promos},
+        trace=[
+            _reasoning_trace(_intent_summary("memory_capture")),
+            _trace(
+                "tool_call",
+                "Tool call: skill memory",
+                tool_name="record_learning",
+                method="internal",
+                status="completed",
+                summary=result,
+            ),
+            _trace(
+                "file_trace",
+                "Write",
+                operation="write",
+                path=memory_path,
+                status="completed",
+                summary=f"Recorded learning memory {record_id or 'by updating a similar record'}.",
+            ),
+        ],
     )
 
 
@@ -1356,12 +1502,50 @@ def _chat_evolution_status(
             f"No current PROMO is selected. Workspace has {len(promos)} promotion candidates, "
             f"{len(pending)} not applied."
         )
-        return _chat_result("skill_result", used_skill, skill_reason, output, "No durable memory was captured.", data={"promotions": promos})
+        return _chat_result(
+            "skill_result",
+            used_skill,
+            skill_reason,
+            output,
+            "No durable memory was captured.",
+            data={"promotions": promos},
+            trace=[
+                _reasoning_trace(_intent_summary("evolution_status")),
+                _trace(
+                    "tool_call",
+                    "API request",
+                    tool_name="safeharness",
+                    method="GET",
+                    path="/api/promotions",
+                    status="completed",
+                    summary=f"Loaded {len(promos)} promotion candidates.",
+                ),
+            ],
+        )
     state = _evolution_state_for_promo(ctx, promo["promo_id"])
     next_action = state.get("next_action", "waiting")
     steps = ", ".join(f"{step['name']}={step['status']}" for step in state.get("steps", []))
     output = f"{promo['promo_id']} is at next_action={next_action}. Steps: {steps}."
-    return _chat_result("skill_result", used_skill, skill_reason, output, "No durable memory was captured.", data=state)
+    return _chat_result(
+        "skill_result",
+        used_skill,
+        skill_reason,
+        output,
+        "No durable memory was captured.",
+        data=state,
+        trace=[
+            _reasoning_trace(_intent_summary("evolution_status")),
+            _trace(
+                "tool_call",
+                "API request",
+                tool_name="safeharness",
+                method="GET",
+                path=f"/api/evolution/{promo['promo_id']}/state",
+                status="completed",
+                summary=f"Next action is {next_action}.",
+            ),
+        ],
+    )
 
 
 def _chat_workspace_status(
@@ -1402,6 +1586,27 @@ def _chat_workspace_status(
                 },
                 "evolution": state,
             },
+            trace=[
+                _reasoning_trace(_intent_summary("workspace_status")),
+                _trace(
+                    "tool_call",
+                    "API request",
+                    tool_name="safeharness",
+                    method="GET",
+                    path="/api/dashboard",
+                    status="completed",
+                    summary="Loaded dashboard counts from reviews, promotions, and versions.",
+                ),
+                _trace(
+                    "tool_call",
+                    "API request",
+                    tool_name="safeharness",
+                    method="GET",
+                    path=f"/api/evolution/{promo['promo_id']}/state",
+                    status="completed",
+                    summary=f"Current promotion next action is {next_action}.",
+                ),
+            ],
         )
     output = (
         f"\u5f53\u524d\u6ca1\u6709\u53ef\u63a8\u8fdb\u7684 PROMO\u3002"
@@ -1424,6 +1629,18 @@ def _chat_workspace_status(
                 "versions": len(versions),
             }
         },
+        trace=[
+            _reasoning_trace(_intent_summary("workspace_status")),
+            _trace(
+                "tool_call",
+                "API request",
+                tool_name="safeharness",
+                method="GET",
+                path="/api/dashboard",
+                status="completed",
+                summary="Loaded dashboard counts from reviews, promotions, and versions.",
+            ),
+        ],
     )
 
 
@@ -1450,6 +1667,27 @@ def _chat_review_explain(
         output,
         "No durable memory was captured.",
         data={"review": review, "patch": patch},
+        trace=[
+            _reasoning_trace(_intent_summary("review_explain")),
+            _trace(
+                "tool_call",
+                "API request",
+                tool_name="safeharness",
+                method="GET",
+                path=f"/api/reviews/{review['review_id']}",
+                status="completed",
+                summary=f"Loaded {review['review_id']} with status={review.get('status', '')}.",
+            ),
+            _trace(
+                "tool_call",
+                "API request",
+                tool_name="safeharness",
+                method="GET",
+                path=f"/api/reviews/{review['review_id']}/patch",
+                status="completed" if patch.get("has_patch") else "waiting",
+                summary="Loaded diff preview." if patch.get("has_patch") else "No diff preview is available yet.",
+            ),
+        ],
     )
 
 
@@ -1467,7 +1705,19 @@ def _chat_review_action(
     if action_name == "approve":
         action = _action("Approve and generate preview", "POST", f"/api/reviews/{review['review_id']}/approve", True)
         output = f"{review['review_id']} can be approved after confirmation. Approval only generates a patch preview."
-        return _chat_result("approval_required", used_skill, skill_reason, output, "No durable memory was captured.", actions=[action], data={"review": review})
+        return _chat_result(
+            "approval_required",
+            used_skill,
+            skill_reason,
+            output,
+            "No durable memory was captured.",
+            actions=[action],
+            data={"review": review},
+            trace=[
+                _reasoning_trace(_intent_summary("approve_review")),
+                _approval_trace(review, "Approve Preview"),
+            ],
+        )
     patch = _patch_for_review(ctx, review["review_id"])
     action = _action("Apply reviewed change", "POST", f"/api/reviews/{review['review_id']}/apply", True)
     output = (
@@ -1482,6 +1732,19 @@ def _chat_review_action(
         "No durable memory was captured.",
         actions=[action],
         data={"review": review, "patch": patch},
+        trace=[
+            _reasoning_trace(_intent_summary("apply_review")),
+            _trace(
+                "tool_call",
+                "API request",
+                tool_name="safeharness",
+                method="GET",
+                path=f"/api/reviews/{review['review_id']}/patch",
+                status="completed" if patch.get("has_patch") else "waiting",
+                summary="Loaded diff preview for apply confirmation." if patch.get("has_patch") else "Apply requires approval and a diff preview.",
+            ),
+            _approval_trace(review, "Apply Change"),
+        ],
     )
 
 
@@ -1605,6 +1868,105 @@ def _patch_for_review(ctx: WebContext, review_id: str) -> dict[str, Any]:
         except ValueError:
             pass
     return {"has_patch": False, "patch_path": "", "patch": ""}
+
+
+def _chat_continue_promotion(
+    ctx: WebContext,
+    promo: dict[str, Any],
+    used_skill: str | None,
+    skill_reason: str,
+    base_trace: list[dict[str, Any]],
+) -> dict[str, Any]:
+    promo_id = promo["promo_id"]
+    try:
+        result = evolve_skill_from_promotion(
+            browser=ctx.promotions,
+            review_store=ctx.review_store,
+            promo_id=promo_id,
+            project_root=ctx.project_root,
+        )
+    except Exception as exc:
+        action = _action("Open promotions", "GET", "/api/promotions", False)
+        return _chat_result(
+            "error",
+            used_skill,
+            skill_reason,
+            f"Failed to continue {promo_id}: {exc}",
+            "No durable memory was captured.",
+            actions=[action],
+            data={"promotion": promo, "error": str(exc)},
+            trace=[
+                *base_trace,
+                _trace(
+                    "tool_call",
+                    "API request",
+                    tool_name="safeharness",
+                    method="POST",
+                    path=f"/api/promotions/{promo_id}/evolve",
+                    status="failed",
+                    summary=str(exc),
+                ),
+            ],
+        )
+
+    ctx.promotions = PromotionBrowser(
+        skills_dir=ctx.skills_dir,
+        global_memory_dir=ctx.global_memory_dir,
+        project_root=ctx.project_root,
+    )
+    stage = _api_stage(result.stage)
+    review = ctx.review_store.get_review(result.review_id) if result.review_id else None
+    actions = []
+    if review and review.get("status") == "pending":
+        actions = [
+            _action("View Diff", "GET", f"/api/reviews/{result.review_id}", False),
+            _action("Approve Preview", "POST", f"/api/reviews/{result.review_id}/approve", True),
+            _action("Reject", "POST", f"/api/reviews/{result.review_id}/reject", True),
+        ]
+    elif review and review.get("status") == "approved":
+        actions = [
+            _action("View Diff", "GET", f"/api/reviews/{result.review_id}/patch", False),
+            _action("Apply Change", "POST", f"/api/reviews/{result.review_id}/apply", True),
+        ]
+
+    trace = [
+        *base_trace,
+        _trace(
+            "tool_call",
+            "API request",
+            tool_name="safeharness",
+            method="POST",
+            path=f"/api/promotions/{promo_id}/evolve",
+            status="completed" if result.ok else "failed",
+            summary=result.message,
+        ),
+    ]
+    if review:
+        trace.append(_approval_trace(review, "Human approval required"))
+    response_type = "approval_required" if review else ("tool_result" if result.ok else "error")
+    return _chat_result(
+        response_type,
+        used_skill,
+        skill_reason,
+        result.message,
+        "No durable memory was captured.",
+        actions=actions,
+        data={"ok": result.ok, "stage": stage, "review_id": result.review_id, "promotion": promo, "review": review or {}},
+        trace=trace,
+    )
+
+
+def _approval_trace(review: dict[str, Any], title: str) -> dict[str, Any]:
+    return _trace(
+        "approval_event",
+        title,
+        status="waiting" if review.get("status") in {"pending", "approved"} else review.get("status", "waiting"),
+        review_id=review.get("review_id", ""),
+        review_type=review.get("type", ""),
+        severity=review.get("severity", ""),
+        target_asset=", ".join(review.get("target_files", [])),
+        summary=review.get("reason", "") or review.get("proposed_change", ""),
+    )
 
 
 def _extract_record_id(text: str, prefix: str) -> str:

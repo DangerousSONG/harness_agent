@@ -258,13 +258,21 @@ Dangling PROMOs are candidates whose source memory record is missing. They are n
 
 1. In Chat, type "你好". Confirm the response is a direct Chinese greeting, with no `Used skill / Why / Output / Memory` template and no forced `self_improvement` attribution.
 2. Ask "今天天气怎样？用中文回答". Confirm Chat asks for a city and says realtime weather lookup is needed instead of returning a generic capability template.
-1. In Chat, ask for a book-note template. Confirm the response is a normal answer, uses `markdown_writer`, and does not contain `Only command-mode chat is implemented`.
-2. In Chat, state a durable book-note preference such as "from now on, book notes should use title, core idea, three insights, and action checklist". Confirm Chat creates an `LRN-*` learning signal under `markdown_writer` memory and returns `type=memory_captured`.
-3. Ask for current workspace skills. Confirm Chat returns the available skill list from `/api/skills`.
-4. Ask where self-evolution is currently blocked. Confirm Chat returns the selected PROMO state when context has `current_promo_id`, or a workspace-level promotion summary when none is selected.
-5. Ask Chat to generate a regression review. Confirm it returns a proposed `POST /api/promotions/{promo_id}/evolve` action, or creates the review through that same existing API, and does not modify files.
-6. Ask Chat to apply a review. Confirm it returns `type=approval_required`, includes a diff preview in `data.patch`, and requires a confirmation action before calling `/api/reviews/{review_id}/apply`.
-7. Ask a normal question. Confirm Chat gives a real answer and never falls back to `Only command-mode chat is implemented`.
+3. In Chat, ask for a book-note template. Confirm the response uses `markdown_writer`, shows a `skill_route` trace, returns the template, and does not contain `Only command-mode chat is implemented`.
+4. In Chat, state a durable book-note preference such as "from now on, book notes should use title, core idea, three insights, and action checklist". Confirm Chat creates an `LRN-*` learning signal under `markdown_writer` memory, returns `type=memory_captured`, and shows a memory/file write trace.
+5. Ask for current workspace skills. Confirm Chat returns the available skill list from `/api/skills` and shows a completed API trace card.
+6. Ask where self-evolution is currently blocked. Confirm Chat returns the selected PROMO state when context has `current_promo_id`, or a workspace-level promotion summary when none is selected, with dashboard/evolution trace cards.
+7. Ask Chat to generate a regression review or continue the current PROMO. Confirm it calls the existing `POST /api/promotions/{promo_id}/evolve` flow, shows a tool-call trace, creates or reuses an approval review, and does not modify `SKILL.md`.
+8. Ask Chat to apply a review. Confirm it returns `type=approval_required`, includes a diff preview in `data.patch`, shows an approval-event trace card, and requires a confirmation action before calling `/api/reviews/{review_id}/apply`.
+9. Ask a normal question. Confirm Chat gives a real answer and never falls back to `Only command-mode chat is implemented`.
+
+## Chat Trace Visual Acceptance
+
+1. Every Chat response includes a `RUN-*` id and visible trace cards for the external work performed.
+2. Trace cards are compact by default and can expand to show command/API/path metadata.
+3. Status badges are visually distinct: completed green, running/pending blue, failed red, waiting neutral.
+4. Approval events are more prominent than ordinary traces and expose review id, type, severity, target asset, and explicit action buttons.
+5. Final answers appear after trace cards as the clear conclusion of the run.
 
 ## Actual Result
 

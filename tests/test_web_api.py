@@ -311,10 +311,13 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertEqual(payload["type"], "answer")
+            self.assertRegex(payload["run_id"], r"RUN-[A-Z0-9]{8}")
             self.assertIsNone(payload["used_skill"])
             self.assertIn("\u4f60\u597d", payload["message"])
             self.assertNotIn("Used skill:", payload["message"])
             self.assertNotIn("self_improvement", payload["message"])
+            self.assertTrue(any(item["type"] == "reasoning_summary" for item in payload["trace"]))
+            self.assertTrue(any(item["type"] == "final_result" for item in payload["trace"]))
 
     def test_chat_weather_requests_city_and_realtime_tool(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -329,6 +332,7 @@ class WebApiTests(unittest.TestCase):
             self.assertIn("\u57ce\u5e02", payload["message"])
             self.assertIn("\u5b9e\u65f6\u5929\u6c14", payload["message"])
             self.assertNotIn("I can help with writing", payload["message"])
+            self.assertTrue(any(item.get("tool_name") == "weather" for item in payload["trace"]))
 
     def test_chat_captures_explicit_memory_signal(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -343,6 +347,7 @@ class WebApiTests(unittest.TestCase):
             payload = response.json()
             self.assertEqual(payload["type"], "memory_captured")
             self.assertRegex(payload["memory_record_id"], r"LRN-[A-Z0-9]{8}")
+            self.assertTrue(any(item["type"] == "file_trace" and item.get("operation") == "write" for item in payload["trace"]))
             memory_text = (root / "skills" / "markdown_writer" / "memory" / "LEARNINGS.md").read_text(encoding="utf-8")
             self.assertIn(payload["memory_record_id"], memory_text)
 
@@ -358,6 +363,7 @@ class WebApiTests(unittest.TestCase):
             self.assertIn("markdown_writer", payload["message"])
             self.assertIn("registry", payload["why"])
             self.assertEqual(payload["data"]["skills"][0]["name"], "markdown_writer")
+            self.assertTrue(any(item["type"] == "tool_call" and item.get("path") == "/api/skills" for item in payload["trace"]))
 
     def test_chat_workspace_status_reads_progress_state(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -405,3 +411,26 @@ class WebApiTests(unittest.TestCase):
             self.assertTrue(payload["actions"][0]["requires_confirmation"])
             self.assertIn("/apply", payload["actions"][0]["path"])
             self.assertTrue(payload["data"]["patch"]["has_patch"])
+            self.assertTrue(any(item["type"] == "approval_event" for item in payload["trace"]))
+
+    def test_chat_continue_promo_creates_review_trace_without_applying_skill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            promo_id = self.make_promo(root)
+            skill_file = root / "skills" / "markdown_writer" / "SKILL.md"
+            before = skill_file.read_text(encoding="utf-8")
+            client = self.make_client(root)
+            response = client.post(
+                "/api/chat",
+                json={
+                    "message": "\u7ee7\u7eed\u63a8\u8fdb\u5f53\u524d PROMO",
+                    "context": {"current_promo_id": promo_id},
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["type"], "approval_required")
+            self.assertRegex(payload["data"]["review_id"], r"REV-[A-Z0-9]{8}")
+            self.assertTrue(any(item["type"] == "tool_call" and item.get("method") == "POST" for item in payload["trace"]))
+            self.assertTrue(any(item["type"] == "approval_event" for item in payload["trace"]))
+            self.assertEqual(skill_file.read_text(encoding="utf-8"), before)

@@ -13,6 +13,8 @@ This file records meaningful project iterations. When judging current state, rea
 - Updated the Chat UI placeholder, message types, skill/memory badges, proposed-action buttons, and approval/apply confirmation flow; apply confirmation now displays the diff preview.
 - Added API tests for natural-language answers, memory capture, skill listing, and apply-confirmation diff exposure.
 - Refined the Chat response contract so ordinary answers return only natural-language `message` content with `used_skill=null`, while skill/workspace results carry separate `used_skill` and `why` metadata; added baseline greeting, weather/current-info, and workspace-status handling.
+- Added auditable Chat action traces with `run_id` and `trace[]` entries for visible external work: intent summaries, skill routing, API/tool calls, file/memory writes, approval events, final results, and next actions.
+- Upgraded the Chat UI into a compact work-assistant timeline with collapsible trace cards, status badges, monospace command/API/path previews, approval-event cards, and natural final results.
 
 ### SafeHarness Console V0.1 UI
 
