@@ -1,0 +1,22 @@
+skill: markdown_writer
+cases:
+  - id: from_now_on_when_markdown_writer_writes_book_note_markdown_always_use_title_core_positive
+    input: "请写《被讨厌的勇气》读书笔记"
+    must_include:
+      - "书名"
+      - "核心观点"
+      - "三条启发"
+      - "行动清单"
+    must_not_include: []
+    target_rule: "From now on, when markdown_writer writes book-note Markdown, always use Title / Core Insights / Three Takeaways / Action List."
+    source_promo_id: "PROMO-5B9D9A9D"
+  - id: from_now_on_when_markdown_writer_writes_book_note_markdown_always_use_title_core_not_polluted
+    input: "请写一个项目简介"
+    must_include: []
+    must_not_include:
+      - "书名"
+      - "核心观点"
+      - "三条启发"
+      - "行动清单"
+    target_rule: "From now on, when markdown_writer writes book-note Markdown, always use Title / Core Insights / Three Takeaways / Action List."
+    source_promo_id: "PROMO-5B9D9A9D"

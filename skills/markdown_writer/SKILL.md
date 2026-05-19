@@ -17,3 +17,4 @@ Default behavior:
 ## Memory-derived rules
 
 - User suggested that when dealing with book notes in Markdown, the content should be organized in the order of 'Title, Core Insights, Three Takeaways, Action List'.
+- From now on, when markdown_writer writes book-note Markdown, always use Title / Core Insights / Three Takeaways / Action List.
