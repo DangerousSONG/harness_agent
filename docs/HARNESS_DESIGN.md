@@ -101,7 +101,7 @@ Conversational evolution operations stay behind existing APIs:
 - Apply responses include diff-preview data before the UI calls the review apply API.
 - Rollback is routed through the version rollback API and creates a review only.
 
-The Chat response shape includes `type`, `message`, `used_skill`, `memory_record_id`, `actions`, and `data`, allowing the UI to render normal answers, skill results, memory captures, proposed actions, tool results, approval-required states, and errors differently.
+The Chat response shape includes `type`, `message`, `used_skill`, `why`, `memory_record_id`, `actions`, and `data`, allowing the UI to render normal answers, skill results, memory captures, proposed actions, tool results, approval-required states, and errors differently. Ordinary `answer` messages keep `message` as natural-language content and do not force a skill attribution.
 
 ## Evolution Gate
 

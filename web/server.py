@@ -121,7 +121,8 @@ def chat_ok(
     *,
     response_type: str,
     message: str,
-    used_skill: str = "",
+    used_skill: str | None = None,
+    why: str = "",
     memory_record_id: str = "",
     actions: list[dict[str, Any]] | None = None,
     data: Any = None,
@@ -134,6 +135,7 @@ def chat_ok(
             "type": response_type,
             "message": message,
             "used_skill": used_skill,
+            "why": why,
             "memory_record_id": memory_record_id,
             "actions": actions or [],
             "data": {} if data is None else data,
@@ -591,6 +593,7 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             response_type=data.get("type", "answer"),
             message=data.get("message", ""),
             used_skill=data.get("used_skill", ""),
+            why=data.get("why", ""),
             memory_record_id=data.get("memory_record_id", ""),
             actions=data.get("actions", []),
             data=data.get("data", {}),
@@ -611,6 +614,7 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             response_type=data.get("type", "answer"),
             message=data.get("message", ""),
             used_skill=data.get("used_skill", ""),
+            why=data.get("why", ""),
             memory_record_id=data.get("memory_record_id", ""),
             actions=data.get("actions", []),
             data=data.get("data", {}),
@@ -1040,6 +1044,20 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
     intent = _chat_intent(message)
     used_skill, skill_reason = _route_skill(ctx, message, context, intent)
 
+    if intent == "greeting":
+        return _chat_result(
+            "answer",
+            used_skill,
+            skill_reason,
+            "\u4f60\u597d\uff01\u6211\u5728\u3002\u4f60\u53ef\u4ee5\u76f4\u63a5\u8ddf\u6211\u804a\uff0c\u4e5f\u53ef\u4ee5\u8ba9\u6211\u5199\u5185\u5bb9\u3001\u770b workspace \u72b6\u6001\u3001\u5904\u7406 skills \u548c reviews\u3002",
+        )
+    if intent == "weather":
+        return _chat_result(
+            "answer",
+            used_skill,
+            skill_reason,
+            "\u6211\u53ef\u4ee5\u5e2e\u4f60\u67e5\u5929\u6c14\uff0c\u4f46\u9700\u8981\u4f60\u5148\u544a\u8bc9\u6211\u57ce\u5e02\u6216\u5730\u533a\u3002\u8fd9\u7c7b\u95ee\u9898\u9700\u8981\u5b9e\u65f6\u5929\u6c14\u67e5\u8be2\u5de5\u5177\uff1b\u53ea\u9760\u5f53\u524d workspace \u72b6\u6001\u4e0d\u80fd\u51c6\u786e\u56de\u7b54\u3002",
+        )
     if intent == "memory_capture":
         return _capture_learning_memory(ctx, message, used_skill, skill_reason)
     if intent == "list_skills":
@@ -1053,6 +1071,8 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
             "No durable memory was captured.",
             data={"skills": skills},
         )
+    if intent == "workspace_status":
+        return _chat_workspace_status(ctx, context, used_skill, skill_reason)
     if intent == "evolution_status":
         return _chat_evolution_status(ctx, context, used_skill, skill_reason)
     if intent == "generate_regression_review":
@@ -1128,42 +1148,53 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
         )
 
     answer = _draft_answer(message, intent)
-    return _chat_result("answer", used_skill, skill_reason, answer, "No durable memory was captured.")
+    return _chat_result(
+        "skill_result" if used_skill else "answer",
+        used_skill,
+        skill_reason,
+        answer,
+        "No durable memory was captured.",
+    )
 
 
 def _chat_result(
     response_type: str,
-    used_skill: str,
+    used_skill: str | None,
     skill_reason: str,
     output: str,
-    memory_note: str,
+    memory_note: str = "",
     *,
     actions: list[dict[str, Any]] | None = None,
     data: Any = None,
     memory_record_id: str = "",
 ) -> dict[str, Any]:
-    sections = [
-        f"Used skill: {used_skill or 'none'}",
-        f"Why: {skill_reason or 'No specialized skill was needed.'}",
-        f"Output: {output}",
-        f"Memory: {memory_note}",
-    ]
+    payload_data = data or {}
+    if memory_note and isinstance(payload_data, dict):
+        payload_data = {**payload_data, "memory_note": memory_note}
     return {
         "type": response_type,
-        "message": "\n".join(sections),
+        "message": output,
         "used_skill": used_skill,
+        "why": skill_reason,
         "memory_record_id": memory_record_id,
         "actions": actions or [],
-        "data": data or {},
+        "data": payload_data,
     }
 
 
 def _chat_intent(message: str) -> str:
     text = message.lower()
+    compact = re.sub(r"[\s\uff01!,.，。？?]+", "", message).lower()
+    if compact in {"hi", "hello", "hey", "\u4f60\u597d", "\u55e8", "\u54c8\u55bd"}:
+        return "greeting"
     if _looks_like_memory_request(message):
         return "memory_capture"
+    if _has_any(message, ["\u5929\u6c14", "weather", "\u4e0b\u96e8", "\u6c14\u6e29", "\u51e0\u5ea6"]):
+        return "weather"
     if _has_any(message, ["\u5f53\u524d\u6709\u54ea\u4e9b skills", "\u6709\u54ea\u4e9b skills", "\u6709\u54ea\u4e9b\u6280\u80fd", "\u5f53\u524d\u6280\u80fd"]) or "available skills" in text:
         return "list_skills"
+    if _has_any(message, ["\u7cfb\u7edf\u5361\u5728\u54ea", "\u5361\u5728\u54ea", "\u5361\u54ea\u4e00\u6b65", "\u5f53\u524d\u8fdb\u5ea6", "\u7cfb\u7edf\u72b6\u6001", "workspace status"]):
+        return "workspace_status"
     if ("self-evolution" in text or "evolution" in text or "\u8fdb\u5316" in message) and _has_any(message, ["\u5361", "\u72b6\u6001", "\u8fdb\u5ea6", "\u54ea\u4e00\u6b65"]):
         return "evolution_status"
     if "regression review" in text or "\u56de\u5f52 review" in message or "\u56de\u5f52\u8bc4\u5ba1" in message:
@@ -1187,22 +1218,28 @@ def _chat_intent(message: str) -> str:
     return "general"
 
 
-def _route_skill(ctx: WebContext, message: str, context: dict[str, Any], intent: str) -> tuple[str, str]:
+def _route_skill(ctx: WebContext, message: str, context: dict[str, Any], intent: str) -> tuple[str | None, str]:
     current = normalize_name(str(context.get("current_skill", "") or ""))
     available = {skill["name"] for skill in _skills(ctx)}
+    if intent == "list_skills":
+        return None, "Read the workspace skill registry."
+    if intent == "workspace_status":
+        return "self_improvement", "Read dashboard, promotion, review, and version state."
+    if intent in {"greeting", "weather", "general"}:
+        return None, "General assistant answer; no workspace skill is needed."
     if current in available and intent in {"memory_capture", "continue_promo", "review_explain", "approve_review", "apply_review"}:
         return current, "The page context names this as the current skill."
     if intent in {"memory_capture", "writing"} or _has_any(message, ["markdown", "\u8bfb\u4e66\u7b14\u8bb0", "PRD", "\u6a21\u677f", "\u5927\u7eb2", "\u6b63\u5f0f"]):
         return _first_available(available, ["markdown_writer", current, "self_improvement"]), "The request is about writing or reusable markdown structure."
     if intent in {"continue_promo", "evolution_status", "generate_regression_review", "approve_review", "apply_review", "review_explain", "rollback"}:
-        return _first_available(available, ["self_improvement", current]), "The request touches promotion, review, memory, version, or self-evolution workflow."
+        return "self_improvement", "The request touches promotion, review, memory, version, or self-evolution workflow."
     if _has_any(message, ["\u6587\u4ef6", "\u4fee\u6539", "patch", "diff", "\u7f16\u8f91"]):
         return _first_available(available, ["file_editing", "file_modification", current, "self_improvement"]), "The request is about file editing or patch advice."
     if _has_any(message, ["\u5de5\u5177", "\u547d\u4ee4", "tool", "api", "\u63a5\u53e3"]) or intent == "explain_error":
         return _first_available(available, ["tool_usage", current, "self_improvement"]), "The request is about tools, commands, APIs, or error diagnosis."
     if intent == "self_evolving_explain":
-        return _first_available(available, ["self_improvement", current]), "The request asks about self-evolving skills."
-    return _first_available(available, [current, "self_improvement"]), "General assistant response using workspace context."
+        return "self_improvement", "The request asks about self-evolving skills."
+    return None, "General assistant answer; no workspace skill is needed."
 
 
 def _first_available(available: set[str], candidates: list[str]) -> str:
@@ -1308,7 +1345,7 @@ def _memory_content(message: str, skill_name: str) -> str:
 def _chat_evolution_status(
     ctx: WebContext,
     context: dict[str, Any],
-    used_skill: str,
+    used_skill: str | None,
     skill_reason: str,
 ) -> dict[str, Any]:
     promo = _current_promo(ctx, context)
@@ -1327,11 +1364,74 @@ def _chat_evolution_status(
     return _chat_result("skill_result", used_skill, skill_reason, output, "No durable memory was captured.", data=state)
 
 
+def _chat_workspace_status(
+    ctx: WebContext,
+    context: dict[str, Any],
+    used_skill: str | None,
+    skill_reason: str,
+) -> dict[str, Any]:
+    reviews = _reviews(ctx)
+    promos = _promotions(ctx)
+    versions = _all_versions(ctx)
+    pending_reviews = [review for review in reviews if review.get("status") == "pending"]
+    approved_reviews = [review for review in reviews if review.get("status") == "approved"]
+    promo = _current_promo(ctx, context)
+    if promo:
+        state = _evolution_state_for_promo(ctx, promo["promo_id"])
+        next_action = state.get("next_action", "waiting")
+        output = (
+            f"\u5f53\u524d\u6700\u53ef\u64cd\u4f5c\u7684\u8fdb\u5ea6\u5728 {promo['promo_id']}: "
+            f"next_action={next_action}\u3002"
+            f"\u5f85\u5ba1 review {len(pending_reviews)} \u4e2a\uff0c"
+            f"\u5df2\u6279\u51c6\u5f85 apply review {len(approved_reviews)} \u4e2a\uff0c"
+            f"promotion candidates {len(promos)} \u4e2a\uff0c"
+            f"\u5df2\u8bb0\u5f55\u7248\u672c {len(versions)} \u4e2a\u3002"
+        )
+        return _chat_result(
+            "skill_result",
+            used_skill,
+            skill_reason,
+            output,
+            "No durable memory was captured.",
+            data={
+                "dashboard": {
+                    "pending_reviews": len(pending_reviews),
+                    "approved_reviews": len(approved_reviews),
+                    "promotions": len(promos),
+                    "versions": len(versions),
+                },
+                "evolution": state,
+            },
+        )
+    output = (
+        f"\u5f53\u524d\u6ca1\u6709\u53ef\u63a8\u8fdb\u7684 PROMO\u3002"
+        f"\u5f85\u5ba1 review {len(pending_reviews)} \u4e2a\uff0c"
+        f"\u5df2\u6279\u51c6\u5f85 apply review {len(approved_reviews)} \u4e2a\uff0c"
+        f"promotion candidates {len(promos)} \u4e2a\uff0c"
+        f"\u5df2\u8bb0\u5f55\u7248\u672c {len(versions)} \u4e2a\u3002"
+    )
+    return _chat_result(
+        "skill_result",
+        used_skill,
+        skill_reason,
+        output,
+        "No durable memory was captured.",
+        data={
+            "dashboard": {
+                "pending_reviews": len(pending_reviews),
+                "approved_reviews": len(approved_reviews),
+                "promotions": len(promos),
+                "versions": len(versions),
+            }
+        },
+    )
+
+
 def _chat_review_explain(
     ctx: WebContext,
     message: str,
     context: dict[str, Any],
-    used_skill: str,
+    used_skill: str | None,
     skill_reason: str,
 ) -> dict[str, Any]:
     review = _current_review(ctx, message, context)
@@ -1357,7 +1457,7 @@ def _chat_review_action(
     ctx: WebContext,
     message: str,
     context: dict[str, Any],
-    used_skill: str,
+    used_skill: str | None,
     skill_reason: str,
     action_name: str,
 ) -> dict[str, Any]:
@@ -1528,7 +1628,7 @@ def _handle_command(ctx: WebContext, message: str) -> dict[str, Any]:
         return _chat_result("tool_result", "self_improvement", "Slash command requested promotion candidates.", "Promotion candidates.", "No durable memory was captured.", data=_promotions(ctx))
     if command == "/reviews":
         return _chat_result("tool_result", "self_improvement", "Slash command requested reviews.", "Reviews.", "No durable memory was captured.", data=[_review_summary(item) for item in _reviews(ctx)])
-    if command == "/evolve-skill" and len(parts) == 2:
+    if command in {"/evolve-skill", "/evolve"} and len(parts) == 2:
         result = evolve_skill_from_promotion(
             browser=ctx.promotions,
             review_store=ctx.review_store,

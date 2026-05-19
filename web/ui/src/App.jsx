@@ -315,6 +315,7 @@ export default function App() {
           text: payload.message || payload.data?.message || "Done.",
           type: payload.type || "answer",
           used_skill: payload.used_skill || "",
+          why: payload.why || "",
           memory_record_id: payload.memory_record_id || "",
           actions: payload.actions || [],
           data: payload.data || {},

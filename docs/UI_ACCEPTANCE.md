@@ -256,6 +256,8 @@ Dangling PROMOs are candidates whose source memory record is missing. They are n
 
 ## Skill-aware Chat Acceptance Steps
 
+1. In Chat, type "你好". Confirm the response is a direct Chinese greeting, with no `Used skill / Why / Output / Memory` template and no forced `self_improvement` attribution.
+2. Ask "今天天气怎样？用中文回答". Confirm Chat asks for a city and says realtime weather lookup is needed instead of returning a generic capability template.
 1. In Chat, ask for a book-note template. Confirm the response is a normal answer, uses `markdown_writer`, and does not contain `Only command-mode chat is implemented`.
 2. In Chat, state a durable book-note preference such as "from now on, book notes should use title, core idea, three insights, and action checklist". Confirm Chat creates an `LRN-*` learning signal under `markdown_writer` memory and returns `type=memory_captured`.
 3. Ask for current workspace skills. Confirm Chat returns the available skill list from `/api/skills`.

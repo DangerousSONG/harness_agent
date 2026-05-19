@@ -19,6 +19,7 @@ function Bubble({ role, message, children, time, onAction }) {
   const typeStyle = TYPE_STYLES[message?.type] || TYPE_STYLES.answer;
   const TypeIcon = typeStyle.icon;
   const actions = message?.actions || [];
+  const showMeta = !user && message?.type && message.type !== "answer";
   return (
     <div className={`flex gap-3 ${user ? "justify-end" : "justify-start"}`}>
       {!user ? (
@@ -33,7 +34,7 @@ function Bubble({ role, message, children, time, onAction }) {
             user ? "bg-zinc-950 text-white" : "border border-line bg-white text-zinc-900",
           ].join(" ")}
         >
-          {!user && message?.type ? (
+          {showMeta ? (
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <span className={`inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium ${typeStyle.className}`}>
                 <TypeIcon className="h-3.5 w-3.5" />
@@ -50,6 +51,9 @@ function Bubble({ role, message, children, time, onAction }) {
                 </span>
               ) : null}
             </div>
+          ) : null}
+          {showMeta && message?.why ? (
+            <p className="mb-2 text-xs leading-5 text-zinc-500">{message.why}</p>
           ) : null}
           <div className="whitespace-pre-wrap break-words">{children}</div>
           {!user && actions.length ? (

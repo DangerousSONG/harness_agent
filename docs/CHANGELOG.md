@@ -12,6 +12,7 @@ This file records meaningful project iterations. When judging current state, rea
 - Changed conversational approve/apply handling to return confirmation-required actions; apply responses include diff-preview data before the UI can call the existing review apply API.
 - Updated the Chat UI placeholder, message types, skill/memory badges, proposed-action buttons, and approval/apply confirmation flow; apply confirmation now displays the diff preview.
 - Added API tests for natural-language answers, memory capture, skill listing, and apply-confirmation diff exposure.
+- Refined the Chat response contract so ordinary answers return only natural-language `message` content with `used_skill=null`, while skill/workspace results carry separate `used_skill` and `why` metadata; added baseline greeting, weather/current-info, and workspace-status handling.
 
 ### SafeHarness Console V0.1 UI
 

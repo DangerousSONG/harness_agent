@@ -295,10 +295,40 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertTrue(payload["ok"])
-            self.assertEqual(payload["type"], "answer")
+            self.assertEqual(payload["type"], "skill_result")
             self.assertEqual(payload["used_skill"], "markdown_writer")
+            self.assertIn("writing", payload["why"])
             self.assertIn("\u4e66\u540d", payload["message"])
+            self.assertNotIn("Used skill:", payload["message"])
             self.assertNotIn("Only command-mode", payload["message"])
+
+    def test_chat_greeting_is_direct_answer_without_skill_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "\u4f60\u597d"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["type"], "answer")
+            self.assertIsNone(payload["used_skill"])
+            self.assertIn("\u4f60\u597d", payload["message"])
+            self.assertNotIn("Used skill:", payload["message"])
+            self.assertNotIn("self_improvement", payload["message"])
+
+    def test_chat_weather_requests_city_and_realtime_tool(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "\u4eca\u5929\u5929\u6c14\u600e\u6837\uff1f\u7528\u4e2d\u6587\u56de\u7b54"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["type"], "answer")
+            self.assertIsNone(payload["used_skill"])
+            self.assertIn("\u57ce\u5e02", payload["message"])
+            self.assertIn("\u5b9e\u65f6\u5929\u6c14", payload["message"])
+            self.assertNotIn("I can help with writing", payload["message"])
 
     def test_chat_captures_explicit_memory_signal(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -326,7 +356,21 @@ class WebApiTests(unittest.TestCase):
             payload = response.json()
             self.assertEqual(payload["type"], "skill_result")
             self.assertIn("markdown_writer", payload["message"])
+            self.assertIn("registry", payload["why"])
             self.assertEqual(payload["data"]["skills"][0]["name"], "markdown_writer")
+
+    def test_chat_workspace_status_reads_progress_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "\u73b0\u5728\u7cfb\u7edf\u5361\u5728\u54ea\u4e00\u6b65\uff1f"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["type"], "skill_result")
+            self.assertEqual(payload["used_skill"], "self_improvement")
+            self.assertIn("dashboard", payload["data"])
+            self.assertIn("review", payload["message"])
 
     def test_chat_apply_requires_confirmation_and_includes_diff(self):
         with tempfile.TemporaryDirectory() as tmp:
