@@ -4,6 +4,12 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-19
 
+### SafeHarness Console V0.1 UI
+
+- Added a React + Tailwind frontend under `web/ui` for the local SafeHarness Console.
+- Built the Apple-like minimal three-column Agent Chat workspace with sidebar navigation, chat stream review cards, review details diff modal, context panel, promotions, evolution, assets, reviews, and versions views.
+- Kept all approval, preview, apply, reject, evolve, and rollback actions routed through the existing FastAPI endpoints and ReviewQueue; the UI does not read or write local asset files directly, and apply actions require a second confirmation.
+
 ### Local Asset Governance API
 
 - Added `web/server.py`, a local FastAPI interface for Agent asset governance across skills, tools, memories, knowledge-base placeholders, reviews, promotions, versions, dashboard state, and command-mode chat.
