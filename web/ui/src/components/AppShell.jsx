@@ -32,7 +32,7 @@ function StepDot({ status, active }) {
         "relative z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px]",
         completed ? "border-emerald-500 bg-emerald-500 text-white" : "",
         failed ? "border-danger bg-danger text-white" : "",
-        active && !completed && !failed ? "border-appleBlue bg-appleBlue text-white" : "",
+        active && !completed && !failed ? "border-appleBlue bg-appleBlue text-white shadow-[0_0_0_4px_rgba(0,122,255,0.12)]" : "",
         waiting && !active ? "border-zinc-300 bg-white text-zinc-400" : "",
       ].join(" ")}
     >
@@ -59,48 +59,54 @@ function ContextPanel({
     : nextActionLabel(nextAction);
 
   return (
-    <aside className="hidden min-h-0 w-80 shrink-0 overflow-auto border-l border-line bg-white/55 px-4 py-5 xl:block">
-      <div className="space-y-4">
-        <section className="card p-5">
-          <p className="text-sm font-semibold text-zinc-950">1. Current Asset</p>
-          <div className="mt-5 space-y-4 text-sm">
-            <div className="flex justify-between gap-4">
-              <span className="text-zinc-500">Asset type:</span>
-              <span className="font-semibold">Skill</span>
+    <aside className="hidden min-h-0 w-72 shrink-0 overflow-auto border-l border-line bg-white/70 px-3 py-4 xl:block 2xl:w-80">
+      <div className="space-y-3">
+        <section className="section-panel p-4">
+          <p className="muted-label">Current Asset</p>
+          <div className="mt-4 space-y-3 text-sm">
+            <div>
+              <span className="text-xs font-medium text-zinc-500">Asset type</span>
+              <p className="mt-1 font-semibold text-zinc-950">Skill</p>
             </div>
-            <div className="flex justify-between gap-4">
-              <span className="text-zinc-500">Name:</span>
-              <span className="font-semibold">{currentSkill?.name || "-"}</span>
+            <div>
+              <span className="text-xs font-medium text-zinc-500">Name</span>
+              <p className="mt-1 font-semibold text-zinc-950">{currentSkill?.name || "-"}</p>
             </div>
-            <div className="flex justify-between gap-4">
-              <span className="text-zinc-500">Active source:</span>
-              <span className="text-right font-semibold">
+            <div>
+              <span className="text-xs font-medium text-zinc-500">Active source</span>
+              <p className="mt-1 break-words font-mono text-xs font-semibold leading-5 text-zinc-800">
                 {currentSkill?.name ? `skills/${currentSkill.name}/SKILL.md` : "-"}
-              </span>
+              </p>
             </div>
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-zinc-500">Latest snapshot:</span>
-              <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-semibold">
+            <div>
+              <span className="text-xs font-medium text-zinc-500">Latest snapshot</span>
+              <div className="mt-1">
+                <span className="mono-badge">
                 {currentSkill?.latest_version || "No snapshot"}
-              </span>
+                </span>
+              </div>
             </div>
           </div>
-          <p className="mt-4 text-xs leading-5 text-zinc-500">
-            Active source is the runtime current loaded source. Latest snapshot is a version
-            record, not the default loaded source.
-          </p>
         </section>
 
-        <section className="card p-5">
-          <p className="text-sm font-semibold text-zinc-950">2. Evolution Progress</p>
-          <div className="relative mt-5 space-y-6">
+        <section className="section-panel p-4">
+          <p className="muted-label">Skill Evolution Progress</p>
+          <div className="relative mt-5 space-y-5">
             <div className="absolute left-2.5 top-2 h-[calc(100%-1rem)] w-px bg-line" />
             {steps.map((step) => (
-              <div className="relative flex gap-4" key={step.name}>
+              <div
+                className={[
+                  "relative flex gap-3 rounded-lg px-1 py-1",
+                  step.active ? "bg-blue-50/70" : "",
+                ].join(" ")}
+                key={step.name}
+              >
                 <StepDot status={step.status} active={step.active} />
-                <div>
-                  <p className="text-sm font-semibold text-zinc-900">{step.label}</p>
-                  <div className="mt-2">
+                <div className="min-w-0">
+                  <p className={["text-sm font-semibold", step.active ? "text-appleBlue" : "text-zinc-900"].join(" ")}>
+                    {step.label}
+                  </p>
+                  <div className="mt-1.5">
                     <StatusPill status={step.status} tone={step.active ? "approved" : undefined} />
                   </div>
                 </div>
@@ -109,14 +115,9 @@ function ContextPanel({
           </div>
         </section>
 
-        <section className="card p-5">
-          <p className="text-sm font-semibold text-zinc-950">3. Next Action</p>
-          <div className="mt-4 flex gap-3">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-appleBlue">
-              <Sparkles className="h-4 w-4" />
-            </span>
-            <p className="text-sm leading-6 text-zinc-700">{actionLabel}</p>
-          </div>
+        <section className="section-panel p-4">
+          <p className="muted-label">Next Action</p>
+          <p className="mt-3 text-sm font-semibold leading-6 text-zinc-900">{actionLabel}</p>
           {requiresRegeneration ? (
             <div className="mt-4 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
               Missing promotion_decision, promotion_score, or eligible_target. Requires regeneration.

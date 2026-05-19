@@ -4,6 +4,17 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-19
 
+### Console UI Polish
+
+- Polished the SafeHarness Console frontend into a denser three-column approval workbench without changing backend business logic or `/api/...` contracts.
+- Widened the main workspace, tightened the right context rail, and standardized panel, badge, button, monospace label, and section styling across Chat, Reviews, Assets, and Versions.
+- Reworked Reviews into a wider table with lighter headers, stronger row hover, wrapping target/candidate/type fields, monospace review/candidate labels, and refined action buttons.
+- Expanded Review Details into a larger review modal with Overview, Proposed Change, Evaluation, Rollback, and Diff Preview sections, clearer code-review diff highlighting, and fixed footer actions.
+- Improved Chat as a conversational approval workbench with richer approval cards, method/path/status tool-call cards, wider message flow, and a wider command input using the requested placeholder.
+- Increased Assets density with responsive 2-3 column grids, richer skill cards, natural fallback descriptions, and compact memory/promotion/version metrics.
+- Improved Versions with a wider version table, refined detail panel, product-like Snapshot/Patch/Eval tabs, tuned code blocks, and a secondary rollback-review button.
+- Validation: `npm.cmd --prefix web/ui run build`.
+
 ### Skill-aware Chat Runtime Pipeline
 
 - Reworked `POST /api/chat` around an explicit runtime pipeline: intent routing, intent-scoped context loading, skill selection, planning/safety decisions, and response composition.

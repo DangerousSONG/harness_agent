@@ -5,21 +5,32 @@ import { compact, formatDate, titleize } from "../lib/format";
 
 export default function ReviewsPage({ reviews, actionProps }) {
   return (
-    <section className="min-h-0 flex-1 overflow-auto px-6 py-6">
-      <div className="mx-auto max-w-6xl">
+    <section className="workbench-section">
+      <div className="workbench-container">
         <div className="mb-6">
-          <h1 className="text-xl font-semibold text-zinc-950">Reviews</h1>
-          <p className="mt-1 text-sm text-zinc-500">
+          <h1 className="page-title">Reviews</h1>
+          <p className="page-subtitle">
             Approval, preview, apply, and reject actions stay behind the backend review queue.
           </p>
         </div>
         {!reviews?.length ? (
           <EmptyState title="No reviews waiting for approval." />
         ) : (
-          <div className="card overflow-hidden">
-            <div className="overflow-auto">
-              <table className="min-w-full divide-y divide-line text-sm">
-                <thead className="bg-zinc-50 text-left text-xs font-semibold uppercase tracking-normal text-zinc-500">
+          <div className="section-panel overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full table-fixed divide-y divide-line text-sm">
+                <colgroup>
+                  <col className="w-[9.5rem]" />
+                  <col className="w-[10rem]" />
+                  <col className="w-[7rem]" />
+                  <col className="w-[6rem]" />
+                  <col />
+                  <col className="w-[10rem]" />
+                  <col className="w-[8.5rem]" />
+                  <col className="w-[10rem]" />
+                  <col className="w-[13rem]" />
+                </colgroup>
+                <thead className="bg-zinc-50/80 text-left text-[11px] font-semibold uppercase tracking-normal text-zinc-500">
                   <tr>
                     {[
                       "review_id",
@@ -32,7 +43,7 @@ export default function ReviewsPage({ reviews, actionProps }) {
                       "next_action",
                       "",
                     ].map((header) => (
-                      <th className="whitespace-nowrap px-4 py-3" key={header}>
+                      <th className="px-4 py-3.5" key={header}>
                         {header}
                       </th>
                     ))}
@@ -40,24 +51,28 @@ export default function ReviewsPage({ reviews, actionProps }) {
                 </thead>
                 <tbody className="divide-y divide-line bg-white">
                   {reviews.map((review) => (
-                    <tr key={review.review_id} className="align-top">
-                      <td className="px-4 py-4 font-semibold">{review.review_id}</td>
-                      <td className="px-4 py-4">{titleize(review.type)}</td>
+                    <tr key={review.review_id} className="align-top transition hover:bg-blue-50/35">
+                      <td className="px-4 py-4">
+                        <span className="mono-badge">{review.review_id}</span>
+                      </td>
+                      <td className="break-words px-4 py-4 font-medium text-zinc-900">{titleize(review.type)}</td>
                       <td className="px-4 py-4"><StatusPill status={review.status} /></td>
-                      <td className="px-4 py-4">{titleize(review.severity)}</td>
-                      <td className="max-w-xs px-4 py-4 text-zinc-600">{compact(review.target_files)}</td>
-                      <td className="px-4 py-4">{compact(review.candidate_id)}</td>
-                      <td className="px-4 py-4 text-zinc-500">{formatDate(review.created_at)}</td>
-                      <td className="px-4 py-4 text-zinc-600">{compact(review.next_actions?.[0], "-")}</td>
+                      <td className="px-4 py-4 text-zinc-700">{titleize(review.severity)}</td>
+                      <td className="break-words px-4 py-4 font-mono text-xs leading-5 text-zinc-600">{compact(review.target_files)}</td>
+                      <td className="px-4 py-4">
+                        <span className="mono-badge break-all">{compact(review.candidate_id)}</span>
+                      </td>
+                      <td className="px-4 py-4 text-xs leading-5 text-zinc-500">{formatDate(review.created_at)}</td>
+                      <td className="break-words px-4 py-4 font-mono text-xs leading-5 text-zinc-600">{compact(review.next_actions?.[0], "-")}</td>
                       <td className="px-4 py-4">
                         <div className="flex flex-wrap justify-end gap-2">
-                          <button className="secondary-button" onClick={() => actionProps.onDetails(review.review_id)}>
+                          <button className="secondary-button px-3 py-1.5" onClick={() => actionProps.onDetails(review.review_id)}>
                             <Eye className="h-4 w-4" />
                             Details
                           </button>
                           {review.status === "pending" ? (
                             <button
-                              className="secondary-button"
+                              className="subprimary-button px-3 py-1.5"
                               disabled={actionProps.busyReviewId === review.review_id}
                               onClick={() => actionProps.onApprove(review.review_id)}
                             >
@@ -66,7 +81,7 @@ export default function ReviewsPage({ reviews, actionProps }) {
                           ) : null}
                           {review.status === "approved" ? (
                             <button
-                              className="primary-button"
+                              className="primary-button px-3 py-1.5"
                               disabled={actionProps.busyReviewId === review.review_id}
                               onClick={() => actionProps.onApply(review.review_id)}
                             >
@@ -75,7 +90,7 @@ export default function ReviewsPage({ reviews, actionProps }) {
                           ) : null}
                           {review.status === "pending" ? (
                             <button
-                              className="danger-button"
+                              className="danger-button px-3 py-1.5"
                               disabled={actionProps.busyReviewId === review.review_id}
                               onClick={() => actionProps.onReject(review.review_id)}
                             >

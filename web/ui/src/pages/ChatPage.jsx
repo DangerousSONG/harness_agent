@@ -2,7 +2,6 @@ import {
   Send,
   Paperclip,
   Wrench,
-  Check,
   Brain,
   AlertCircle,
   ShieldCheck,
@@ -43,15 +42,15 @@ function Bubble({ role, message, children, time, onAction }) {
   return (
     <div className={`flex gap-3 ${user ? "justify-end" : "justify-start"}`}>
       {!user ? (
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-950 text-xs font-semibold text-white">
+        <span className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-950 text-xs font-semibold text-white">
           A
         </span>
       ) : null}
-      <div className={`max-w-xl ${user ? "items-end" : "items-start"}`}>
+      <div className={`${user ? "max-w-[70%] items-end" : "max-w-[78%] items-start"}`}>
         <div
           className={[
-            "rounded-lg px-4 py-3 text-sm leading-6 shadow-hairline",
-            user ? "bg-zinc-950 text-white" : "border border-line bg-white text-zinc-900",
+            "rounded-lg px-4 py-3 text-sm leading-6",
+            user ? "bg-zinc-950 text-white shadow-hairline" : "border border-line bg-white text-zinc-900 shadow-soft",
           ].join(" ")}
         >
           {showHeader ? (
@@ -110,7 +109,7 @@ function Bubble({ role, message, children, time, onAction }) {
         <p className="mt-1 text-xs text-zinc-400">{time || formatDate(new Date().toISOString())}</p>
       </div>
       {user ? (
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-xs font-semibold text-zinc-700">
+        <span className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-xs font-semibold text-zinc-700">
           U
         </span>
       ) : null}
@@ -276,20 +275,35 @@ function MarkdownText({ text }) {
 }
 
 function ToolStatus({ name, status }) {
+  const parsed = parseToolName(name);
   return (
-    <div className="ml-12 flex max-w-md items-center justify-between rounded-lg border border-line bg-white px-4 py-3 shadow-hairline">
-      <div className="flex items-center gap-3">
-        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 text-appleBlue">
+    <div className="ml-10 flex max-w-2xl items-center justify-between gap-4 rounded-lg border border-blue-100 bg-white px-4 py-3 shadow-hairline">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-appleBlue">
           <Wrench className="h-4 w-4" />
         </span>
-        <span className="text-sm text-zinc-700">Tool call: {name}</span>
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase tracking-normal text-zinc-500">Tool call</p>
+          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
+            {parsed.method ? (
+              <span className="rounded bg-blue-50 px-2 py-0.5 font-mono text-[11px] font-semibold text-appleBlue">
+                {parsed.method}
+              </span>
+            ) : null}
+            <code className="truncate text-xs font-semibold text-zinc-700">{parsed.path || parsed.label}</code>
+          </div>
+        </div>
       </div>
-      <span className="flex items-center gap-1 text-xs font-medium text-emerald-600">
-        <Check className="h-3.5 w-3.5" />
-        {status}
-      </span>
+      <StatusPill status={status} />
     </div>
   );
+}
+
+function parseToolName(name) {
+  const text = String(name || "");
+  const match = text.match(/^(GET|POST|PUT|PATCH|DELETE)\s+(.+)$/i);
+  if (!match) return { label: text, method: "", path: text };
+  return { label: text, method: match[1].toUpperCase(), path: match[2] };
 }
 
 export default function ChatPage({
@@ -331,11 +345,12 @@ export default function ChatPage({
 
   return (
     <section className="flex min-h-0 flex-1 flex-col">
-      <div className="border-b border-line bg-white/55 px-5 py-4">
-        <h1 className="text-lg font-semibold text-zinc-950">Chat</h1>
+      <div className="border-b border-line bg-white/65 px-6 py-4">
+        <h1 className="page-title">Chat</h1>
+        <p className="page-subtitle">Conversation, workspace actions, and approval cards in one flow.</p>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-5 py-6">
-        <div className="mx-auto max-w-3xl space-y-5">
+      <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
+        <div className="mx-auto max-w-5xl space-y-5">
           {(messages || []).map((message) => (
             message.role === "tool" ? (
               <ToolStatus
@@ -361,7 +376,7 @@ export default function ChatPage({
           ))}
 
           {activeReviews.map((review) => (
-            <div className="ml-0 md:ml-12" key={review.review_id}>
+            <div className="ml-0 max-w-3xl md:ml-10" key={review.review_id}>
               <ReviewCard
                 review={review}
                 busy={actionProps.busyReviewId === review.review_id}
@@ -378,14 +393,14 @@ export default function ChatPage({
           ) : null}
         </div>
       </div>
-      <form className="border-t border-line bg-white/70 px-5 py-4" onSubmit={submit}>
-        <div className="mx-auto flex max-w-3xl items-end gap-3 rounded-lg border border-line bg-white p-3 shadow-soft">
+      <form className="border-t border-line bg-white/80 px-6 py-4" onSubmit={submit}>
+        <div className="mx-auto flex max-w-5xl items-end gap-3 rounded-lg border border-line bg-white p-3 shadow-soft">
           <button type="button" className="icon-button" aria-label="Attach context">
             <Paperclip className="h-4 w-4" />
           </button>
           <textarea
             className="max-h-36 min-h-12 flex-1 resize-none bg-transparent px-1 py-2 text-sm outline-none placeholder:text-zinc-400"
-            placeholder="Ask, write, improve, or run a workspace command..."
+            placeholder="Ask, write, improve, or run a workspace command…"
             value={value}
             onChange={(event) => setValue(event.target.value)}
             onKeyDown={(event) => {

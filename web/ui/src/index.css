@@ -41,6 +41,30 @@ button:disabled {
     @apply rounded-lg border border-line bg-white/80 shadow-hairline;
   }
 
+  .workbench-section {
+    @apply min-h-0 flex-1 overflow-auto px-4 py-5 sm:px-6 lg:px-7;
+  }
+
+  .workbench-container {
+    @apply w-full max-w-none;
+  }
+
+  .page-title {
+    @apply text-lg font-semibold tracking-tight text-zinc-950;
+  }
+
+  .page-subtitle {
+    @apply mt-1 text-sm leading-6 text-zinc-500;
+  }
+
+  .mono-badge {
+    @apply inline-flex max-w-full items-center rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 font-mono text-[11px] font-semibold leading-4 text-zinc-700;
+  }
+
+  .section-panel {
+    @apply rounded-lg border border-line bg-white shadow-hairline;
+  }
+
   .icon-button {
     @apply inline-flex h-9 w-9 items-center justify-center rounded-lg border border-line bg-white text-zinc-700 transition hover:border-zinc-300 hover:bg-zinc-50 disabled:opacity-40;
   }
@@ -51,6 +75,10 @@ button:disabled {
 
   .secondary-button {
     @apply inline-flex items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 py-2 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-50 disabled:opacity-40;
+  }
+
+  .subprimary-button {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-semibold text-appleBlue transition hover:border-blue-300 hover:bg-blue-100 disabled:opacity-40;
   }
 
   .danger-button {
