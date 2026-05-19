@@ -3,7 +3,7 @@ import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import { compact } from "../lib/format";
 
-export default function PromotionsPage({ promotions, busyPromoId, onView, onEvolve }) {
+export default function PromotionsPage({ promotions, busyPromoId, onView, onEvolve, onRegenerate }) {
   return (
     <section className="min-h-0 flex-1 overflow-auto px-6 py-6">
       <div className="mx-auto max-w-6xl">
@@ -56,10 +56,14 @@ export default function PromotionsPage({ promotions, busyPromoId, onView, onEvol
                           <button
                             className="primary-button"
                             disabled={busyPromoId === promo.promo_id}
-                            onClick={() => onEvolve(promo.promo_id)}
+                            onClick={() =>
+                              promo.requires_regeneration
+                                ? onRegenerate(promo.promo_id)
+                                : onEvolve(promo.promo_id)
+                            }
                           >
                             <Rocket className="h-4 w-4" />
-                            Evolve
+                            {promo.requires_regeneration ? "Regenerate" : "Evolve"}
                           </button>
                         </div>
                       </td>

@@ -48,6 +48,10 @@ class PromotionCandidateView:
     eligible_target: str = ""
     safety_risk: str = ""
     attribution_confidence: str = ""
+    source_memory_exists: bool = True
+    missing_source_memory_ids: list[str] | None = None
+    error_code: str = ""
+    suggested_action: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -132,6 +136,11 @@ class PromotionBrowser:
             )
         )
         source = self._find_source_memory(source_ids)
+        missing_source_ids = [
+            source_id
+            for source_id in source_ids
+            if source_id not in set(source.get("found_ids", []))
+        ]
         suggested_files = _split_csv(
             _first_field(fields, "Suggested Target Files", "Target Files", "Target File")
         )
@@ -162,6 +171,14 @@ class PromotionBrowser:
             eligible_target=_first_field(fields, "Eligible Target") or ("legacy" if is_legacy else ""),
             safety_risk=_first_field(fields, "Safety Risk") or "",
             attribution_confidence=_first_field(fields, "Attribution Confidence") or "",
+            source_memory_exists=not missing_source_ids,
+            missing_source_memory_ids=missing_source_ids,
+            error_code="SOURCE_MEMORY_NOT_FOUND" if missing_source_ids else "",
+            suggested_action=(
+                "archive_stale_promo_or_generate_new_candidate"
+                if missing_source_ids
+                else ""
+            ),
         )
 
     def _find_source_memory(self, source_ids: list[str]) -> dict[str, Any]:
@@ -183,9 +200,10 @@ class PromotionBrowser:
                         "file": self._display_path(path),
                         "type": MEMORY_TYPE_BY_FILE.get(path.name, path.stem.lower()),
                         "occurrence_count": _parse_int(fields.get("Occurrence Count"), 0),
+                        "found_ids": sorted(wanted & {item for item in candidates if item}),
                     }
         prefix = source_ids[0].split("-", 1)[0].upper()
-        return {"type": MEMORY_TYPE_BY_ID_PREFIX.get(prefix, "")}
+        return {"type": MEMORY_TYPE_BY_ID_PREFIX.get(prefix, ""), "found_ids": []}
 
     def _memory_paths(self) -> list[Path]:
         paths = list(self.skills_dir.glob("*/memory/*.md"))

@@ -11,6 +11,9 @@ This file records meaningful project iterations. When judging current state, rea
 - Kept all approval, preview, apply, reject, evolve, and rollback actions routed through the existing FastAPI endpoints and ReviewQueue; the UI does not read or write local asset files directly, and apply actions require a second confirmation.
 - Fixed the UI operation layer so PROMO evolve, Evolution next action, ReviewQueue actions, and rollback review creation call the real backend APIs with loading, Chat feedback, refresh, and explicit error status handling.
 - Added `docs/UI_ACCEPTANCE.md` with progression endpoints, expected responses, acceptance steps, actual validation results, and known limitations.
+- Added a legacy PROMO regeneration path that keeps `/evolve` safely rejecting incomplete candidates while `POST /api/promotions/{promo_id}/regenerate` creates a new Promotion Eligibility candidate and marks the old candidate `legacy_rejected`.
+- Fixed PROMO ID selection so the UI resets stale selections to IDs returned by `/api/promotions`, reports missing candidates explicitly, and avoids using documentation example IDs.
+- Added `scripts/seed_self_evolution_demo.py` to create healthy local self-evolution demo data from a real learning record, and changed `smoke_self_evolution.py --clean` so it does not restore stale pre-clean PROMO snapshots.
 
 ### Local Asset Governance API
 

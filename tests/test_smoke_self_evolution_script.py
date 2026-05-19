@@ -66,6 +66,26 @@ class SmokeSelfEvolutionScriptTests(unittest.TestCase):
             self.assertFalse((root / "skills" / "markdown_writer" / "memory").exists())
             self.assertFalse((root / "skills" / "markdown_writer" / "eval" / "cases.yaml").exists())
 
+    def test_clean_does_not_restore_stale_promotion_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_project_root(root)
+            stale_dir = root / ".skills_memory"
+            stale_dir.mkdir()
+            stale_file = stale_dir / "PROMOTION_CANDIDATES.md"
+            stale_file.write_text(
+                "# Promotion Candidates\n\n"
+                "## PROMO-F2C535BB - Stale\n"
+                "- Candidate ID: PROMO-F2C535BB\n"
+                "- Record ID: LRN-MISSING\n"
+                "- Target Skill: markdown_writer\n",
+                encoding="utf-8",
+            )
+
+            run_smoke(SmokeOptions(root=root, clean=True))
+
+            self.assertFalse(stale_file.exists())
+
     def test_keep_artifacts_preserves_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

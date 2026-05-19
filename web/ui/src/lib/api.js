@@ -48,6 +48,8 @@ export const api = {
   promotion: (id) => request(`/api/promotions/${encodeURIComponent(id)}`),
   evolvePromotion: (id) =>
     request(`/api/promotions/${encodeURIComponent(id)}/evolve`, { method: "POST" }),
+  regeneratePromotion: (id) =>
+    request(`/api/promotions/${encodeURIComponent(id)}/regenerate`, { method: "POST" }),
   evolutionState: (id) => request(`/api/evolution/${encodeURIComponent(id)}/state`),
   assets: () => request("/api/assets"),
   skills: () => request("/api/skills"),

@@ -512,6 +512,34 @@ class SkillMemoryManager:
             return f"Error: Memory record '{record_id}' was not found for '{normalize_name(skill_name)}'"
         return self._create_or_get_promotion_candidate(record)
 
+    def regenerate_promotion_candidate(
+        self,
+        skill_name: str,
+        record_id: str,
+        *,
+        legacy_promo_id: str = "",
+    ) -> dict[str, object]:
+        self.ensure_memory(skill_name)
+        record = self._find_record_by_id(skill_name, record_id)
+        if not record:
+            return {
+                "ok": False,
+                "message": f"Memory record '{record_id}' was not found for '{normalize_name(skill_name)}'",
+            }
+
+        candidate = self._build_promotion_candidate(record)
+        self._write_promotion_candidate(candidate)
+        if legacy_promo_id:
+            self._mark_promotion_candidate_legacy_rejected(
+                legacy_promo_id,
+                candidate.candidate_id,
+            )
+        return {
+            "ok": True,
+            "candidate": candidate.to_dict(),
+            "message": f"{candidate.candidate_id}: {candidate.proposed_change_summary}",
+        }
+
     def _record(
         self,
         skill_name: str,
@@ -992,6 +1020,12 @@ class SkillMemoryManager:
             for record in self._read_records(path):
                 if str(record["record_id"]).strip() == wanted:
                     return record
+        for path in sorted(self.global_memory_dir.glob("*.md")):
+            if path.name == GLOBAL_MEMORY_FILES["promotion_candidate"]:
+                continue
+            for record in self._read_records(path):
+                if str(record["record_id"]).strip() == wanted:
+                    return record
         return None
 
     def _create_or_get_promotion_candidate(self, record: dict[str, object]) -> str:
@@ -1127,6 +1161,40 @@ class SkillMemoryManager:
         )
         with open(path, "a", encoding="utf-8") as f:
             f.write(block)
+
+    def _mark_promotion_candidate_legacy_rejected(
+        self,
+        legacy_promo_id: str,
+        superseded_by: str,
+    ) -> None:
+        path = self._promotion_candidates_path()
+        records = self._read_records(path)
+        for record in records:
+            fields = dict(record["fields"])
+            candidate_id = fields.get("Candidate ID", str(record["record_id"]))
+            if candidate_id != legacy_promo_id:
+                continue
+            block = str(record["block"])
+            if "- Status:" in block:
+                block = re.sub(
+                    r"(?m)^- Status: .*$",
+                    "- Status: legacy_rejected",
+                    block,
+                    count=1,
+                )
+            else:
+                block = block.rstrip() + "\n- Status: legacy_rejected\n"
+            if "- Superseded By:" not in block:
+                block = block.rstrip() + f"\n- Superseded By: {superseded_by}\n"
+            if "- Regeneration Reason:" not in block:
+                block = (
+                    block.rstrip()
+                    + "\n- Regeneration Reason: Missing Promotion Eligibility fields.\n"
+                )
+            text = path.read_text(encoding="utf-8")
+            updated = text[: int(record["start"])] + block + text[int(record["end"]) :]
+            path.write_text(updated, encoding="utf-8")
+            return
 
     def _suggest_promotion_change(
         self,

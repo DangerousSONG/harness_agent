@@ -253,7 +253,8 @@ def run_smoke(options: SmokeOptions) -> SmokeContext:
         if not options.keep_artifacts:
             restore_skill_file(skill_file, original_skill_existed, original_skill_text)
             clean_artifacts(root, skill)
-            restore_artifacts(ctx.artifact_snapshot, root)
+            if not options.clean:
+                restore_artifacts(ctx.artifact_snapshot, root)
 
     return ctx
 

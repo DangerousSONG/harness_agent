@@ -19,10 +19,13 @@ export default function EvolutionPage({
   onSelectPromo,
   evolutionState,
   onContinue,
+  currentPromotion,
   busyPromoId,
 }) {
   const hasPromos = Boolean(promotions?.length);
   const steps = expandSteps(evolutionState);
+  const requiresRegeneration = Boolean(currentPromotion?.requires_regeneration);
+  const candidateMissing = Boolean(selectedPromoId && hasPromos && !currentPromotion);
 
   return (
     <section className="min-h-0 flex-1 overflow-auto px-6 py-6">
@@ -51,6 +54,11 @@ export default function EvolutionPage({
 
         {!hasPromos ? (
           <EmptyState title="No promotion candidates yet." />
+        ) : candidateMissing ? (
+          <EmptyState
+            title="Promotion candidate not found"
+            detail="Refresh promotions and select an existing local candidate."
+          />
         ) : (
           <div className="grid gap-5 lg:grid-cols-[1fr_18rem]">
             <section className="card p-6">
@@ -86,14 +94,20 @@ export default function EvolutionPage({
             <aside className="card p-5">
               <p className="text-sm font-semibold text-zinc-950">Next Action</p>
               <p className="mt-3 text-sm leading-6 text-zinc-600">
-                {nextActionLabel(evolutionState?.next_action)}
+                {requiresRegeneration
+                  ? "Regenerate with Promotion Eligibility"
+                  : nextActionLabel(evolutionState?.next_action)}
               </p>
               <button
                 className="primary-button mt-5 w-full"
                 disabled={!selectedPromoId || busyPromoId === selectedPromoId}
                 onClick={() => onContinue(selectedPromoId)}
               >
-                {busyPromoId === selectedPromoId ? "Working..." : "Continue Evolution"}
+                {busyPromoId === selectedPromoId
+                  ? "Working..."
+                  : requiresRegeneration
+                    ? "Regenerate with Promotion Eligibility"
+                    : "Continue Evolution"}
               </button>
               <div className="mt-5 space-y-2 text-xs text-zinc-500">
                 {steps.map((step) => (

@@ -11,8 +11,18 @@ function Row({ label, value }) {
   );
 }
 
-export default function PromotionModal({ open, promotion, loading, onClose, onEvolve, busy }) {
+export default function PromotionModal({
+  open,
+  promotion,
+  loading,
+  onClose,
+  onEvolve,
+  onRegenerate,
+  busy,
+}) {
   if (!open) return null;
+  const missingFields = promotion?.missing_fields || [];
+  const requiresRegeneration = Boolean(promotion?.requires_regeneration || missingFields.length);
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-zinc-950/20 px-4 py-8 backdrop-blur-sm">
       <section className="card flex max-h-[86vh] w-full max-w-2xl flex-col overflow-hidden">
@@ -40,10 +50,24 @@ export default function PromotionModal({ open, promotion, loading, onClose, onEv
                 <Row label="Target Skill" value={promotion?.target_skill} />
                 <Row label="Source Memory Type" value={promotion?.source_memory_type} />
                 <Row label="Occurrence Count" value={promotion?.occurrence_count} />
-                <Row label="Promotion Score" value={promotion?.promotion_score} />
-                <Row label="Promotion Decision" value={promotion?.promotion_decision} />
-                <Row label="Eligible Target" value={promotion?.eligible_target} />
+                <Row
+                  label="Promotion Score"
+                  value={missingFields.includes("promotion_score") ? "Missing promotion_score" : promotion?.promotion_score}
+                />
+                <Row
+                  label="Promotion Decision"
+                  value={missingFields.includes("promotion_decision") ? "Missing promotion_decision" : promotion?.promotion_decision}
+                />
+                <Row
+                  label="Eligible Target"
+                  value={missingFields.includes("eligible_target") ? "Missing eligible_target" : promotion?.eligible_target}
+                />
               </div>
+              {requiresRegeneration ? (
+                <div className="rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+                  Requires regeneration
+                </div>
+              ) : null}
               <Row label="Summary" value={promotion?.summary} />
               <Row label="Proposed Change" value={promotion?.proposed_change} />
               <Row label="Evaluation Plan" value={promotion?.evaluation_plan} />
@@ -58,9 +82,17 @@ export default function PromotionModal({ open, promotion, loading, onClose, onEv
           <button
             className="primary-button"
             disabled={!promotion?.promo_id || busy}
-            onClick={() => onEvolve(promotion.promo_id)}
+            onClick={() =>
+              requiresRegeneration
+                ? onRegenerate(promotion.promo_id)
+                : onEvolve(promotion.promo_id)
+            }
           >
-            {busy ? "Evolving..." : "Evolve"}
+            {busy
+              ? "Working..."
+              : requiresRegeneration
+                ? "Regenerate with Promotion Eligibility"
+                : "Evolve"}
           </button>
         </footer>
       </section>

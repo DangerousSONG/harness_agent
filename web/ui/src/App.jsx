@@ -71,7 +71,11 @@ export default function App() {
     if (promosResult.status === "fulfilled") {
       promoItems = promosResult.value.data || [];
       setPromotions(promoItems);
-      setSelectedPromoId((current) => current || promoItems[0]?.promo_id || "");
+      setSelectedPromoId((current) =>
+        promoItems.some((promo) => promo.promo_id === current)
+          ? current
+          : promoItems[0]?.promo_id || "",
+      );
     }
     if (skillsResult.status === "fulfilled") {
       skillItems = skillsResult.value.data || [];
@@ -130,6 +134,10 @@ export default function App() {
   const activeReview = useMemo(
     () => reviewDetail || reviews.find((review) => review.review_id === selectedReviewId),
     [reviewDetail, reviews, selectedReviewId],
+  );
+  const currentPromotion = useMemo(
+    () => promotions.find((promo) => promo.promo_id === selectedPromoId) || null,
+    [promotions, selectedPromoId],
   );
 
   function appendToolCall(name, status = "running") {
@@ -312,6 +320,13 @@ export default function App() {
 
   async function evolvePromotion(promoId) {
     if (!promoId) return;
+    const promo = promotions.find((item) => item.promo_id === promoId);
+    if (!promo) {
+      const message = "Promotion candidate not found";
+      setToast(message);
+      appendAgentResult(message);
+      return;
+    }
     setBusyPromoId(promoId);
     const toolId = appendToolCall(`POST /api/promotions/${promoId}/evolve`);
     try {
@@ -322,6 +337,40 @@ export default function App() {
       setSelectedPromoId(promoId);
       setPage("evolution");
       await refreshAfterOperation(promoId);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      finishToolCall(toolId, "failed");
+      appendAgentResult(message);
+      setToast(message);
+    } finally {
+      setBusyPromoId("");
+    }
+  }
+
+  async function regeneratePromotion(promoId) {
+    if (!promoId) return;
+    const promo = promotions.find((item) => item.promo_id === promoId);
+    if (!promo) {
+      const message = "Promotion candidate not found";
+      setToast(message);
+      appendAgentResult(message);
+      return;
+    }
+    setBusyPromoId(promoId);
+    const toolId = appendToolCall(`POST /api/promotions/${promoId}/regenerate`);
+    try {
+      const payload = await api.regeneratePromotion(promoId);
+      const newPromoId = payload.data?.new_promo_id;
+      setToast(payload.message || "Promotion regenerated.");
+      finishToolCall(toolId, "completed");
+      appendAgentResult(payload.message || `Promotion ${promoId} regenerated.`);
+      if (newPromoId) {
+        setSelectedPromoId(newPromoId);
+        if (selectedPromotion?.promo_id === promoId) {
+          setSelectedPromotion(payload.data?.new_promo || null);
+        }
+      }
+      await refreshAfterOperation(newPromoId || promoId);
     } catch (error) {
       const message = getErrorMessage(error);
       finishToolCall(toolId, "failed");
@@ -366,6 +415,17 @@ export default function App() {
 
   async function continueEvolution(promoId) {
     if (!promoId) return;
+    const promo = promotions.find((item) => item.promo_id === promoId);
+    if (!promo) {
+      const message = "Promotion candidate not found";
+      setToast(message);
+      appendAgentResult(message);
+      return;
+    }
+    if (promo?.requires_regeneration) {
+      await regeneratePromotion(promoId);
+      return;
+    }
     let state = evolutionState;
     if (!state || state.promo_id !== promoId) {
       try {
@@ -421,6 +481,7 @@ export default function App() {
         skills={skills}
         reviews={reviews}
         evolutionState={evolutionState}
+        currentPromotion={currentPromotion}
         onNextAction={continueEvolution}
         nextActionBusy={Boolean(busyPromoId || busyReviewId)}
       >
@@ -450,6 +511,7 @@ export default function App() {
             busyPromoId={busyPromoId}
             onView={viewPromotion}
             onEvolve={evolvePromotion}
+            onRegenerate={regeneratePromotion}
           />
         ) : null}
         {page === "evolution" ? (
@@ -458,6 +520,7 @@ export default function App() {
             selectedPromoId={selectedPromoId}
             onSelectPromo={setSelectedPromoId}
             evolutionState={evolutionState}
+            currentPromotion={currentPromotion}
             busyPromoId={busyPromoId}
             onContinue={continueEvolution}
           />
@@ -492,6 +555,7 @@ export default function App() {
         busy={Boolean(busyPromoId)}
         onClose={() => setSelectedPromotion(null)}
         onEvolve={evolvePromotion}
+        onRegenerate={regeneratePromotion}
       />
       <ConfirmDialog
         open={Boolean(confirmAction)}

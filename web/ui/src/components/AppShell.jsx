@@ -41,11 +41,22 @@ function StepDot({ status, active }) {
   );
 }
 
-function ContextPanel({ skills, evolutionState, reviews, onNextAction, nextActionBusy }) {
+function ContextPanel({
+  skills,
+  evolutionState,
+  reviews,
+  currentPromotion,
+  onNextAction,
+  nextActionBusy,
+}) {
   const currentSkill =
     skills?.find((skill) => skill.name === evolutionState?.target_skill) || skills?.[0] || null;
   const steps = buildPanelSteps(evolutionState, reviews);
   const nextAction = evolutionState?.next_action || inferNextAction(reviews);
+  const requiresRegeneration = Boolean(currentPromotion?.requires_regeneration);
+  const actionLabel = requiresRegeneration
+    ? "Regenerate with Promotion Eligibility"
+    : nextActionLabel(nextAction);
 
   return (
     <aside className="hidden min-h-0 w-80 shrink-0 overflow-auto border-l border-line bg-white/55 px-4 py-5 xl:block">
@@ -104,14 +115,23 @@ function ContextPanel({ skills, evolutionState, reviews, onNextAction, nextActio
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-appleBlue">
               <Sparkles className="h-4 w-4" />
             </span>
-            <p className="text-sm leading-6 text-zinc-700">{nextActionLabel(nextAction)}</p>
+            <p className="text-sm leading-6 text-zinc-700">{actionLabel}</p>
           </div>
+          {requiresRegeneration ? (
+            <div className="mt-4 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+              Missing promotion_decision, promotion_score, or eligible_target. Requires regeneration.
+            </div>
+          ) : null}
           <button
             className="primary-button mt-5 w-full"
-            disabled={!evolutionState?.promo_id || nextAction === "completed" || nextActionBusy}
-            onClick={() => onNextAction?.(evolutionState?.promo_id)}
+            disabled={
+              !currentPromotion?.promo_id
+              || (!requiresRegeneration && nextAction === "completed")
+              || nextActionBusy
+            }
+            onClick={() => onNextAction?.(currentPromotion?.promo_id)}
           >
-            {nextActionBusy ? "Working..." : nextActionLabel(nextAction)}
+            {nextActionBusy ? "Working..." : actionLabel}
           </button>
         </section>
       </div>
@@ -161,6 +181,7 @@ export default function AppShell({
   skills,
   reviews,
   evolutionState,
+  currentPromotion,
   onNextAction,
   nextActionBusy,
 }) {
@@ -226,6 +247,7 @@ export default function AppShell({
         skills={skills}
         reviews={reviews}
         evolutionState={evolutionState}
+        currentPromotion={currentPromotion}
         onNextAction={onNextAction}
         nextActionBusy={nextActionBusy}
       />

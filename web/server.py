@@ -458,6 +458,49 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
         }
         return ok(data, result.message, _flow_next_actions(result.review_id, stage)) if result.ok else fail(result.message)
 
+    @app.post("/api/promotions/{promo_id}/regenerate")
+    def regenerate_promotion(promo_id: str) -> JSONResponse:
+        promo = ctx.promotions.get_candidate(promo_id)
+        if not promo:
+            return fail(f"Unknown promo_id: {promo_id}", status_code=404)
+        missing = _missing_promotion_eligibility(promo)
+        if not missing:
+            return ok(
+                {"old_promo_id": promo_id, "new_promo": _promotion_view(ctx, promo), "missing_fields": []},
+                "Promotion candidate already has Promotion Eligibility fields.",
+            )
+        if not promo.source_memory_ids:
+            return fail(
+                f"Cannot regenerate {promo_id}: source memory id is missing.",
+                errors=["Legacy PROMO must include a source memory id before eligibility can be regenerated."],
+            )
+        record_id = promo.source_memory_ids[0]
+        result = ctx.skill_memory.regenerate_promotion_candidate(
+            promo.target_skill or "self_improvement",
+            record_id,
+            legacy_promo_id=promo_id,
+        )
+        if not result.get("ok"):
+            return fail(str(result.get("message", "Promotion regeneration failed.")))
+        new_promo_id = str(result["candidate"].get("candidate_id", ""))
+        ctx.promotions = PromotionBrowser(
+            skills_dir=ctx.skills_dir,
+            global_memory_dir=ctx.global_memory_dir,
+            project_root=ctx.project_root,
+        )
+        new_promo = ctx.promotions.get_candidate(new_promo_id)
+        return ok(
+            {
+                "old_promo_id": promo_id,
+                "old_status": "legacy_rejected",
+                "new_promo_id": new_promo_id,
+                "new_promo": _promotion_view(ctx, new_promo) if new_promo else result["candidate"],
+                "missing_fields": missing,
+            },
+            f"Regenerated {promo_id} with Promotion Eligibility as {new_promo_id}.",
+            [f"/api/promotions/{new_promo_id}", f"/api/promotions/{new_promo_id}/evolve"],
+        )
+
     @app.get("/api/skills/{skill}/versions")
     def skill_versions(skill: str) -> JSONResponse:
         return ok(ctx.versions.list_versions(skill))
@@ -636,6 +679,8 @@ def _promotions(ctx: WebContext) -> list[dict[str, Any]]:
 def _promotion_view(ctx: WebContext, candidate: Any) -> dict[str, Any]:
     data = candidate.to_dict() if hasattr(candidate, "to_dict") else asdict(candidate)
     promo_id = data.get("promo_id", "")
+    missing_fields = _missing_promotion_eligibility(candidate)
+    schema_status = "legacy" if missing_fields else "eligible"
     linked_reviews = [
         review.get("review_id")
         for review in _reviews(ctx)
@@ -652,6 +697,16 @@ def _promotion_view(ctx: WebContext, candidate: Any) -> dict[str, Any]:
         "promotion_score": data.get("promotion_score", "legacy"),
         "promotion_decision": data.get("promotion_decision", ""),
         "eligible_target": data.get("eligible_target", ""),
+        "schema_status": schema_status,
+        "is_legacy": bool(missing_fields),
+        "missing_fields": missing_fields,
+        "requires_regeneration": bool(missing_fields),
+        "source_memory_exists": data.get("source_memory_exists", True),
+        "missing_source_memory_ids": data.get("missing_source_memory_ids") or [],
+        "source_memory_id": (data.get("missing_source_memory_ids") or data.get("source_memory_ids") or [""])[0],
+        "error_code": data.get("error_code", ""),
+        "suggested_action": data.get("suggested_action", ""),
+        "is_dangling": data.get("error_code") == "SOURCE_MEMORY_NOT_FOUND",
         "status": "applied" if linked_version else data.get("status", "proposed"),
         "summary": data.get("summary", ""),
         "proposed_change": data.get("proposed_change", ""),
@@ -660,6 +715,18 @@ def _promotion_view(ctx: WebContext, candidate: Any) -> dict[str, Any]:
         "linked_reviews": linked_reviews,
         "linked_version": linked_version,
     }
+
+
+def _missing_promotion_eligibility(candidate: Any) -> list[str]:
+    data = candidate.to_dict() if hasattr(candidate, "to_dict") else dict(candidate)
+    missing = []
+    if data.get("promotion_decision") in {"", None, "legacy"}:
+        missing.append("promotion_decision")
+    if data.get("promotion_score") in {"", None, "legacy"}:
+        missing.append("promotion_score")
+    if data.get("eligible_target") in {"", None, "legacy"}:
+        missing.append("eligible_target")
+    return missing
 
 
 def _tool_views(ctx: WebContext) -> list[dict[str, Any]]:

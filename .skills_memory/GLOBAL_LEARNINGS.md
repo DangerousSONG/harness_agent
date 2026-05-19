@@ -13,3 +13,12 @@ Records use the following required fields:
 - Attribution Reason
 - Attribution Confidence
 - Needs Attribution Review
+- Transferability Score
+- Impact Score
+- Testability Score
+- User Correction Strength
+- Safety Risk
+- Promotion Score
+- Promotion Decision
+- Promotion Reason
+- Eligible Target

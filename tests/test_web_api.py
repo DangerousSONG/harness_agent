@@ -99,6 +99,80 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(len(reviews), 1)
             self.assertEqual(reviews[0]["type"], "skill.regression_case")
 
+    def test_legacy_promo_regeneration_creates_eligible_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            memory_dir = root / "skills" / "markdown_writer" / "memory"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            (memory_dir / "LEARNINGS.md").write_text(
+                "\n".join(
+                    [
+                        "# Learnings",
+                        "",
+                        "## LRN-LEGACY1 - Prefer fenced markdown",
+                        "- Time: 2026-05-19T00:00:00+00:00",
+                        "- Priority: P2",
+                        "- Status: open",
+                        "- Domain: markdown",
+                        "- Source: test",
+                        "- Occurrence Count: 3",
+                        "- Target Skill: markdown_writer",
+                        "- Attribution Confidence: high",
+                        "",
+                        "### Details",
+                        "Always use fenced code blocks when returning reusable Markdown examples.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            promo_dir = root / ".skills_memory"
+            promo_dir.mkdir(parents=True, exist_ok=True)
+            (promo_dir / "PROMOTION_CANDIDATES.md").write_text(
+                "\n".join(
+                    [
+                        "# Promotion Candidates",
+                        "",
+                        "## PROMO-LEGACY1 - Old candidate",
+                        "- Candidate ID: PROMO-LEGACY1",
+                        "- Record ID: LRN-LEGACY1",
+                        "- Target Skill: markdown_writer",
+                        "- Proposed Change Summary: Old candidate",
+                        "- Target Files: skills/markdown_writer/SKILL.md",
+                        "- Occurrence Count: 3",
+                        "- Status: proposed",
+                        "- Evaluation Plan: test",
+                        "- Rollback Plan: test",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            client = self.make_client(root)
+            legacy = client.get("/api/promotions/PROMO-LEGACY1").json()["data"]
+            self.assertTrue(legacy["is_legacy"])
+            self.assertEqual(
+                legacy["missing_fields"],
+                ["promotion_decision", "promotion_score", "eligible_target"],
+            )
+
+            rejected = client.post("/api/promotions/PROMO-LEGACY1/evolve")
+            self.assertEqual(rejected.status_code, 400)
+
+            response = client.post("/api/promotions/PROMO-LEGACY1/regenerate")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            new_promo = payload["data"]["new_promo"]
+            self.assertNotEqual(new_promo["promo_id"], "PROMO-LEGACY1")
+            self.assertFalse(new_promo["is_legacy"])
+            self.assertIn(new_promo["promotion_decision"], {"promote", "wait", "reject", "policy_review"})
+            self.assertNotEqual(new_promo["promotion_score"], "legacy")
+            self.assertNotEqual(new_promo["eligible_target"], "legacy")
+            old = client.get("/api/promotions/PROMO-LEGACY1").json()["data"]
+            self.assertEqual(old["status"], "legacy_rejected")
+
     def test_approve_does_not_modify_target_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
