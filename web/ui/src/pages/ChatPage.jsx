@@ -1,11 +1,24 @@
-import { Send, Paperclip, Wrench, Check } from "lucide-react";
+import { Send, Paperclip, Wrench, Check, Brain, AlertCircle, ShieldCheck, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 import ReviewCard from "../components/ReviewCard";
 import EmptyState from "../components/EmptyState";
 import { formatDate } from "../lib/format";
 
-function Bubble({ role, children, time }) {
+const TYPE_STYLES = {
+  answer: { label: "Answer", icon: Sparkles, className: "bg-zinc-100 text-zinc-700" },
+  skill_result: { label: "Skill result", icon: Brain, className: "bg-blue-50 text-appleBlue" },
+  memory_captured: { label: "Memory captured", icon: Brain, className: "bg-emerald-50 text-emerald-700" },
+  proposed_action: { label: "Proposed action", icon: ShieldCheck, className: "bg-amber-50 text-risk" },
+  tool_result: { label: "Tool result", icon: Wrench, className: "bg-zinc-100 text-zinc-700" },
+  approval_required: { label: "Approval required", icon: ShieldCheck, className: "bg-amber-50 text-risk" },
+  error: { label: "Error", icon: AlertCircle, className: "bg-red-50 text-red-700" },
+};
+
+function Bubble({ role, message, children, time, onAction }) {
   const user = role === "user";
+  const typeStyle = TYPE_STYLES[message?.type] || TYPE_STYLES.answer;
+  const TypeIcon = typeStyle.icon;
+  const actions = message?.actions || [];
   return (
     <div className={`flex gap-3 ${user ? "justify-end" : "justify-start"}`}>
       {!user ? (
@@ -20,7 +33,39 @@ function Bubble({ role, children, time }) {
             user ? "bg-zinc-950 text-white" : "border border-line bg-white text-zinc-900",
           ].join(" ")}
         >
-          {children}
+          {!user && message?.type ? (
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <span className={`inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium ${typeStyle.className}`}>
+                <TypeIcon className="h-3.5 w-3.5" />
+                {typeStyle.label}
+              </span>
+              {message.used_skill ? (
+                <span className="rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-600">
+                  {message.used_skill}
+                </span>
+              ) : null}
+              {message.memory_record_id ? (
+                <span className="rounded bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+                  {message.memory_record_id}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="whitespace-pre-wrap break-words">{children}</div>
+          {!user && actions.length ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {actions.map((action) => (
+                <button
+                  key={`${action.method}-${action.path}-${action.label}`}
+                  type="button"
+                  className={action.requires_confirmation ? "primary-button" : "secondary-button"}
+                  onClick={() => onAction?.(action, message)}
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
         <p className="mt-1 text-xs text-zinc-400">{time || formatDate(new Date().toISOString())}</p>
       </div>
@@ -59,6 +104,7 @@ export default function ChatPage({
   input,
   onInput,
   actionProps,
+  onChatAction,
 }) {
   const activeReviews = useMemo(
     () => (reviews || []).filter((review) => ["pending", "approved"].includes(review.status)),
@@ -101,7 +147,13 @@ export default function ChatPage({
                 status={message.status || "completed"}
               />
             ) : (
-              <Bubble key={message.id} role={message.role} time={message.time}>
+              <Bubble
+                key={message.id}
+                role={message.role}
+                message={message}
+                time={message.time}
+                onAction={onChatAction}
+              >
                 {message.text}
               </Bubble>
             )
@@ -136,7 +188,7 @@ export default function ChatPage({
           </button>
           <textarea
             className="max-h-36 min-h-12 flex-1 resize-none bg-transparent px-1 py-2 text-sm outline-none placeholder:text-zinc-400"
-            placeholder="Message Agent..."
+            placeholder="Ask, write, improve, or run a workspace command..."
             value={value}
             onChange={(event) => setValue(event.target.value)}
             onKeyDown={(event) => {

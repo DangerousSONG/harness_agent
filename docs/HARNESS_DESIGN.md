@@ -86,6 +86,23 @@ Stage 1 skill memory support now lives in `runtime/skill_memory.py`.
 - `propose_memory_promotion(skill_name, record_id)` exposes the same candidate creation path through the OpenAI tool surface.
 - Skill memory is exposed through the OpenAI tool surface, but applying long-term changes remains separate from recording.
 
+## Web Chat Assistant
+
+`web/server.py` exposes the local asset-governance API and a skill-aware Chat entry point at `POST /api/chat`. The older `/api/chat/send` path remains as a compatible alias.
+
+Chat is not only a command console. It routes ordinary natural-language requests to the relevant workspace skill context, returns structured response types, and can read current workspace state including skills, memories, promotions, reviews, and versions. Deterministic routing currently covers writing/markdown requests, file editing advice, tool/error questions, and self-improvement workflows.
+
+When Chat sees an explicit long-term preference or correction, it records a learning signal through `SkillMemoryManager.record_learning` and returns the resulting `LRN-*` id. Promotion candidates remain separate suggestions: Chat may surface a proposed promotion or evolution action, but it does not edit `SKILL.md`.
+
+Conversational evolution operations stay behind existing APIs:
+
+- Review generation is proposed or created through promotion evolution endpoints.
+- Approve and apply actions are returned as confirmation-required actions.
+- Apply responses include diff-preview data before the UI calls the review apply API.
+- Rollback is routed through the version rollback API and creates a review only.
+
+The Chat response shape includes `type`, `message`, `used_skill`, `memory_record_id`, `actions`, and `data`, allowing the UI to render normal answers, skill results, memory captures, proposed actions, tool results, approval-required states, and errors differently.
+
 ## Evolution Gate
 
 `runtime/evolution_gate.py` defines the first structural gate for deciding whether a candidate improvement looks like evolution or regression.

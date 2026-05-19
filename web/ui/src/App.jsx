@@ -155,10 +155,10 @@ export default function App() {
     );
   }
 
-  function appendAgentResult(text) {
+  function appendAgentResult(text, extra = {}) {
     setMessages((items) => [
       ...items,
-      { id: makeId(), role: "agent", text, time: formatDate(new Date().toISOString()) },
+      { id: makeId(), role: "agent", text, time: formatDate(new Date().toISOString()), ...extra },
     ]);
   }
 
@@ -192,6 +192,15 @@ export default function App() {
   }
 
   async function approveReview(reviewId) {
+    setConfirmAction({
+      kind: "approve_review",
+      reviewId,
+      title: "Approve review?",
+      message: "This will generate a patch preview through the review API. It will not modify target files.",
+    });
+  }
+
+  async function confirmApproveReview(reviewId) {
     setBusyReviewId(reviewId);
     const toolId = appendToolCall(`POST /api/reviews/${reviewId}/approve`);
     try {
@@ -199,6 +208,7 @@ export default function App() {
       setToast(payload.message || "Preview generated.");
       finishToolCall(toolId, "completed");
       appendAgentResult(payload.message || `Review ${reviewId} approved.`);
+      setConfirmAction(null);
       await refreshAfterOperation();
       if (selectedReviewId === reviewId) await openReview(reviewId);
     } catch (error) {
@@ -212,16 +222,28 @@ export default function App() {
   }
 
   async function applyReview(reviewId) {
+    let patch = null;
+    try {
+      const payload = await api.reviewPatch(reviewId);
+      patch = payload.data;
+    } catch {
+      patch = null;
+    }
     setConfirmAction({
       kind: "apply_review",
       reviewId,
       title: "Apply change?",
-      message: "This will modify the active file. Continue?",
+      message: "This will modify the active file. Inspect the diff preview before continuing.",
+      patch: patch?.patch || "",
     });
   }
 
   async function confirmApply() {
     if (!confirmAction) return;
+    if (confirmAction.kind === "approve_review") {
+      await confirmApproveReview(confirmAction.reviewId);
+      return;
+    }
     if (confirmAction.kind === "apply_review") {
       await confirmApplyReview(confirmAction.reviewId);
       return;
@@ -279,13 +301,23 @@ export default function App() {
       { id: makeId(), role: "user", text: message, time: formatDate(new Date().toISOString()) },
     ]);
     try {
-      const payload = await api.chatSend(message);
+      const payload = await api.chatSend(message, {
+        current_skill: currentPromotion?.target_skill || "",
+        current_promo_id: selectedPromoId || "",
+        current_review_id: selectedReviewId || activeReview?.review_id || "",
+        page,
+      });
       setMessages((items) => [
         ...items,
         {
           id: makeId(),
           role: "agent",
           text: payload.message || payload.data?.message || "Done.",
+          type: payload.type || "answer",
+          used_skill: payload.used_skill || "",
+          memory_record_id: payload.memory_record_id || "",
+          actions: payload.actions || [],
+          data: payload.data || {},
           time: formatDate(new Date().toISOString()),
         },
       ]);
@@ -465,6 +497,75 @@ export default function App() {
     await evolvePromotion(promoId);
   }
 
+  async function handleChatAction(action, sourceMessage) {
+    const path = action?.path || "";
+    const method = action?.method || "GET";
+    if (method === "GET") {
+      if (path === "/api/promotions") {
+        setPage("promotions");
+        return;
+      }
+      if (path === "/api/skills") {
+        setPage("versions");
+        return;
+      }
+      const reviewMatch = path.match(/^\/api\/reviews\/([^/]+)(?:\/patch)?$/);
+      if (reviewMatch) {
+        await openReview(decodeURIComponent(reviewMatch[1]));
+        return;
+      }
+    }
+    const evolveMatch = path.match(/^\/api\/promotions\/([^/]+)\/evolve$/);
+    if (method === "POST" && evolveMatch) {
+      await evolvePromotion(decodeURIComponent(evolveMatch[1]));
+      return;
+    }
+    const promoteMatch = path.match(/^\/api\/memories\/([^/]+)\/promote$/);
+    if (method === "POST" && promoteMatch) {
+      const memoryId = decodeURIComponent(promoteMatch[1]);
+      const toolId = appendToolCall(`POST /api/memories/${memoryId}/promote`);
+      try {
+        const payload = await api.promoteMemory(memoryId);
+        finishToolCall(toolId, "completed");
+        appendAgentResult(payload.message || `Promotion requested for ${memoryId}.`, {
+          type: "tool_result",
+          used_skill: "self_improvement",
+        });
+        await refreshAfterOperation();
+        setPage("promotions");
+      } catch (error) {
+        const message = getErrorMessage(error);
+        finishToolCall(toolId, "failed");
+        appendAgentResult(message, { type: "error" });
+        setToast(message);
+      }
+      return;
+    }
+    const approveMatch = path.match(/^\/api\/reviews\/([^/]+)\/approve$/);
+    if (method === "POST" && approveMatch) {
+      await approveReview(decodeURIComponent(approveMatch[1]));
+      return;
+    }
+    const applyMatch = path.match(/^\/api\/reviews\/([^/]+)\/apply$/);
+    if (method === "POST" && applyMatch) {
+      const reviewId = decodeURIComponent(applyMatch[1]);
+      const patch = sourceMessage?.data?.patch?.patch;
+      if (patch) {
+        setConfirmAction({
+          kind: "apply_review",
+          reviewId,
+          title: "Apply change?",
+          message: "This will modify the active file. Inspect the diff preview before continuing.",
+          patch,
+        });
+      } else {
+        await applyReview(reviewId);
+      }
+      return;
+    }
+    appendAgentResult(`Action is not wired in the UI yet: ${method} ${path}`);
+  }
+
   const actionProps = {
     busyReviewId,
     onDetails: openReview,
@@ -493,6 +594,7 @@ export default function App() {
             onSend={sendChat}
             sending={sending}
             actionProps={actionProps}
+            onChatAction={handleChatAction}
           />
         ) : null}
         {page === "reviews" ? <ReviewsPage reviews={reviews} actionProps={actionProps} /> : null}
@@ -561,6 +663,7 @@ export default function App() {
         open={Boolean(confirmAction)}
         title={confirmAction?.title || "Continue?"}
         message={confirmAction?.message || "Continue?"}
+        patch={confirmAction?.patch || ""}
         busy={Boolean(busyReviewId || busyVersionKey)}
         onCancel={() => setConfirmAction(null)}
         onConfirm={confirmApply}

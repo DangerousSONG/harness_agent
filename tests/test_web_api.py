@@ -285,3 +285,79 @@ class WebApiTests(unittest.TestCase):
             payload = response.json()
             self.assertRegex(payload["data"]["review_id"], r"REV-[A-Z0-9]{8}")
             self.assertEqual(skill_file.read_text(encoding="utf-8"), before)
+
+    def test_chat_answers_natural_language_with_skill_routing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "\u5e2e\u6211\u5199\u4e00\u4e2a\u8bfb\u4e66\u7b14\u8bb0\u6a21\u677f"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["type"], "answer")
+            self.assertEqual(payload["used_skill"], "markdown_writer")
+            self.assertIn("\u4e66\u540d", payload["message"])
+            self.assertNotIn("Only command-mode", payload["message"])
+
+    def test_chat_captures_explicit_memory_signal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            client = self.make_client(root)
+            response = client.post(
+                "/api/chat",
+                json={"message": "\u4ee5\u540e\u8bfb\u4e66\u7b14\u8bb0\u90fd\u6309\u4e66\u540d\u3001\u6838\u5fc3\u89c2\u70b9\u3001\u4e09\u6761\u542f\u53d1\u3001\u884c\u52a8\u6e05\u5355\u6765\u5199"},
+            )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["type"], "memory_captured")
+            self.assertRegex(payload["memory_record_id"], r"LRN-[A-Z0-9]{8}")
+            memory_text = (root / "skills" / "markdown_writer" / "memory" / "LEARNINGS.md").read_text(encoding="utf-8")
+            self.assertIn(payload["memory_record_id"], memory_text)
+
+    def test_chat_lists_workspace_skills(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "\u5f53\u524d\u6709\u54ea\u4e9b skills\uff1f"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["type"], "skill_result")
+            self.assertIn("markdown_writer", payload["message"])
+            self.assertEqual(payload["data"]["skills"][0]["name"], "markdown_writer")
+
+    def test_chat_apply_requires_confirmation_and_includes_diff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            review_store = LocalReviewStore(root / ".reviews", root)
+            review = review_store.create_review(
+                type="skill.regression_case",
+                source="test",
+                candidate_id="PROMO-ABC12345",
+                target_skill="markdown_writer",
+                target_files=["skills/markdown_writer/eval/cases.yaml"],
+                severity="medium",
+                reason="test",
+                proposed_change="cases: []",
+                evaluation_plan="test",
+                rollback_plan="test",
+                metadata={"source_promo_id": "PROMO-ABC12345"},
+            )
+            review_store.approve_review(review["review_id"])
+            client = self.make_client(root)
+            response = client.post(
+                "/api/chat",
+                json={
+                    "message": "apply \u8fd9\u4e2a review",
+                    "context": {"current_review_id": review["review_id"]},
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["type"], "approval_required")
+            self.assertTrue(payload["actions"][0]["requires_confirmation"])
+            self.assertIn("/apply", payload["actions"][0]["path"])
+            self.assertTrue(payload["data"]["patch"]["has_patch"])

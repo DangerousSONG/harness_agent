@@ -4,6 +4,15 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-19
 
+### Skill-aware Chat Assistant
+
+- Upgraded the local web Chat API from command-mode fallback to a skill-aware assistant entry point at `POST /api/chat`, while keeping `/api/chat/send` as a compatible alias.
+- Added deterministic Chat routing for ordinary writing, error explanation, workspace skill listing, self-evolution status, promotion continuation, regression-review generation, review explanation, and approval/apply requests.
+- Added explicit learning-memory capture for durable user preferences through `SkillMemoryManager.record_learning`; Chat records `LRN-*` signals and surfaces promotion/evolution actions without editing `SKILL.md` directly.
+- Changed conversational approve/apply handling to return confirmation-required actions; apply responses include diff-preview data before the UI can call the existing review apply API.
+- Updated the Chat UI placeholder, message types, skill/memory badges, proposed-action buttons, and approval/apply confirmation flow; apply confirmation now displays the diff preview.
+- Added API tests for natural-language answers, memory capture, skill listing, and apply-confirmation diff exposure.
+
 ### SafeHarness Console V0.1 UI
 
 - Added a React + Tailwind frontend under `web/ui` for the local SafeHarness Console.

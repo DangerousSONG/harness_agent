@@ -66,11 +66,13 @@ export const api = {
     }),
   tools: () => request("/api/tools"),
   memories: () => request("/api/memories"),
+  promoteMemory: (id) =>
+    request(`/api/memories/${encodeURIComponent(id)}/promote`, { method: "POST" }),
   knowledgeBases: () => request("/api/knowledge-bases"),
-  chatSend: (message) =>
-    request("/api/chat/send", {
+  chatSend: (message, context = {}) =>
+    request("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, context }),
     }),
   chatEvents: () => request("/api/chat/events"),
 };

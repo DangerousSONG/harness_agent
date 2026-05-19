@@ -254,6 +254,16 @@ Dangling PROMOs are candidates whose source memory record is missing. They are n
 5. Confirm dangling PROMOs cannot call `/evolve` or `/regenerate`.
 6. Use `python scripts/seed_self_evolution_demo.py --skill markdown_writer` to generate a fresh healthy PROMO from current real memories.
 
+## Skill-aware Chat Acceptance Steps
+
+1. In Chat, ask for a book-note template. Confirm the response is a normal answer, uses `markdown_writer`, and does not contain `Only command-mode chat is implemented`.
+2. In Chat, state a durable book-note preference such as "from now on, book notes should use title, core idea, three insights, and action checklist". Confirm Chat creates an `LRN-*` learning signal under `markdown_writer` memory and returns `type=memory_captured`.
+3. Ask for current workspace skills. Confirm Chat returns the available skill list from `/api/skills`.
+4. Ask where self-evolution is currently blocked. Confirm Chat returns the selected PROMO state when context has `current_promo_id`, or a workspace-level promotion summary when none is selected.
+5. Ask Chat to generate a regression review. Confirm it returns a proposed `POST /api/promotions/{promo_id}/evolve` action, or creates the review through that same existing API, and does not modify files.
+6. Ask Chat to apply a review. Confirm it returns `type=approval_required`, includes a diff preview in `data.patch`, and requires a confirmation action before calling `/api/reviews/{review_id}/apply`.
+7. Ask a normal question. Confirm Chat gives a real answer and never falls back to `Only command-mode chat is implemented`.
+
 ## Actual Result
 
 - `npm.cmd --prefix web/ui run build` passed.

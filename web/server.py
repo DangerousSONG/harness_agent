@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
 import json
+import re
 from typing import Any
 
 try:
@@ -112,6 +113,32 @@ def fail(
             "message": message,
             "next_actions": next_actions or [],
             "errors": errors or [message],
+        },
+    )
+
+
+def chat_ok(
+    *,
+    response_type: str,
+    message: str,
+    used_skill: str = "",
+    memory_record_id: str = "",
+    actions: list[dict[str, Any]] | None = None,
+    data: Any = None,
+    status_code: int = 200,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "ok": True,
+            "type": response_type,
+            "message": message,
+            "used_skill": used_skill,
+            "memory_record_id": memory_record_id,
+            "actions": actions or [],
+            "data": {} if data is None else data,
+            "next_actions": [action.get("path", "") for action in actions or [] if action.get("path")],
+            "errors": [],
         },
     )
 
@@ -550,14 +577,45 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             [f"/api/reviews/{item['review_id']}", f"/api/reviews/{item['review_id']}/approve"],
         )
 
+    @app.post("/api/chat")
+    async def chat(request: Request) -> JSONResponse:
+        body = await request.json()
+        message = str(body.get("message", "")).strip()
+        if not message:
+            return fail("Message is required.")
+        context = body.get("context", {})
+        if not isinstance(context, dict):
+            context = {}
+        data = _handle_chat(ctx, message, context)
+        return chat_ok(
+            response_type=data.get("type", "answer"),
+            message=data.get("message", ""),
+            used_skill=data.get("used_skill", ""),
+            memory_record_id=data.get("memory_record_id", ""),
+            actions=data.get("actions", []),
+            data=data.get("data", {}),
+            status_code=data.get("status_code", 200),
+        )
+
     @app.post("/api/chat/send")
     async def chat_send(request: Request) -> JSONResponse:
         body = await request.json()
         message = str(body.get("message", "")).strip()
         if not message:
             return fail("Message is required.")
-        data = _handle_command(ctx, message)
-        return ok(data, data.get("message", ""), data.get("next_actions", []))
+        context = body.get("context", {})
+        if not isinstance(context, dict):
+            context = {}
+        data = _handle_chat(ctx, message, context)
+        return chat_ok(
+            response_type=data.get("type", "answer"),
+            message=data.get("message", ""),
+            used_skill=data.get("used_skill", ""),
+            memory_record_id=data.get("memory_record_id", ""),
+            actions=data.get("actions", []),
+            data=data.get("data", {}),
+            status_code=data.get("status_code", 200),
+        )
 
     @app.get("/api/chat/events")
     def chat_events() -> JSONResponse:
@@ -975,13 +1033,501 @@ def _next_evolution_action(regression: dict[str, Any], skill_review: dict[str, A
     return "waiting"
 
 
+def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict[str, Any]:
+    if message.startswith("/"):
+        return _handle_command(ctx, message)
+
+    intent = _chat_intent(message)
+    used_skill, skill_reason = _route_skill(ctx, message, context, intent)
+
+    if intent == "memory_capture":
+        return _capture_learning_memory(ctx, message, used_skill, skill_reason)
+    if intent == "list_skills":
+        skills = _skills(ctx)
+        names = ", ".join(skill["name"] for skill in skills) or "none"
+        return _chat_result(
+            "skill_result",
+            used_skill,
+            skill_reason,
+            f"Workspace skills: {names}.",
+            "No durable memory was captured.",
+            data={"skills": skills},
+        )
+    if intent == "evolution_status":
+        return _chat_evolution_status(ctx, context, used_skill, skill_reason)
+    if intent == "generate_regression_review":
+        promo = _current_promo(ctx, context)
+        if not promo:
+            return _chat_result(
+                "proposed_action",
+                used_skill,
+                skill_reason,
+                "I could not find a current promotion candidate to generate regression coverage for.",
+                "No durable memory was captured.",
+                actions=[_action("Open promotions", "GET", "/api/promotions", False)],
+            )
+        action = _action(
+            "Generate or continue regression review",
+            "POST",
+            f"/api/promotions/{promo['promo_id']}/evolve",
+            True,
+        )
+        return _chat_result(
+            "proposed_action",
+            used_skill,
+            skill_reason,
+            (
+                f"Ready to generate the next review for {promo['promo_id']}. "
+                "This will go through the promotion evolution API and will not modify skill files."
+            ),
+            "No durable memory was captured.",
+            actions=[action],
+            data={"promotion": promo},
+        )
+    if intent == "continue_promo":
+        promo = _current_promo(ctx, context)
+        if not promo:
+            return _chat_result(
+                "proposed_action",
+                used_skill,
+                skill_reason,
+                "I could not find a current PROMO. Choose one from Promotions, then ask me to continue it.",
+                "No durable memory was captured.",
+                actions=[_action("Open promotions", "GET", "/api/promotions", False)],
+            )
+        return _chat_result(
+            "proposed_action",
+            used_skill,
+            skill_reason,
+            f"The controlled next step for {promo['promo_id']} is available.",
+            "No durable memory was captured.",
+            actions=[
+                _action(
+                    "Continue promotion flow",
+                    "POST",
+                    f"/api/promotions/{promo['promo_id']}/evolve",
+                    True,
+                )
+            ],
+            data={"promotion": promo},
+        )
+    if intent == "review_explain":
+        return _chat_review_explain(ctx, message, context, used_skill, skill_reason)
+    if intent == "approve_review":
+        return _chat_review_action(ctx, message, context, used_skill, skill_reason, "approve")
+    if intent == "apply_review":
+        return _chat_review_action(ctx, message, context, used_skill, skill_reason, "apply")
+    if intent == "rollback":
+        return _chat_result(
+            "approval_required",
+            used_skill,
+            skill_reason,
+            "Rollback must be created through the skill version rollback API after you choose a concrete version.",
+            "No durable memory was captured.",
+            actions=[_action("Open versions", "GET", "/api/skills", False)],
+        )
+
+    answer = _draft_answer(message, intent)
+    return _chat_result("answer", used_skill, skill_reason, answer, "No durable memory was captured.")
+
+
+def _chat_result(
+    response_type: str,
+    used_skill: str,
+    skill_reason: str,
+    output: str,
+    memory_note: str,
+    *,
+    actions: list[dict[str, Any]] | None = None,
+    data: Any = None,
+    memory_record_id: str = "",
+) -> dict[str, Any]:
+    sections = [
+        f"Used skill: {used_skill or 'none'}",
+        f"Why: {skill_reason or 'No specialized skill was needed.'}",
+        f"Output: {output}",
+        f"Memory: {memory_note}",
+    ]
+    return {
+        "type": response_type,
+        "message": "\n".join(sections),
+        "used_skill": used_skill,
+        "memory_record_id": memory_record_id,
+        "actions": actions or [],
+        "data": data or {},
+    }
+
+
+def _chat_intent(message: str) -> str:
+    text = message.lower()
+    if _looks_like_memory_request(message):
+        return "memory_capture"
+    if _has_any(message, ["\u5f53\u524d\u6709\u54ea\u4e9b skills", "\u6709\u54ea\u4e9b skills", "\u6709\u54ea\u4e9b\u6280\u80fd", "\u5f53\u524d\u6280\u80fd"]) or "available skills" in text:
+        return "list_skills"
+    if ("self-evolution" in text or "evolution" in text or "\u8fdb\u5316" in message) and _has_any(message, ["\u5361", "\u72b6\u6001", "\u8fdb\u5ea6", "\u54ea\u4e00\u6b65"]):
+        return "evolution_status"
+    if "regression review" in text or "\u56de\u5f52 review" in message or "\u56de\u5f52\u8bc4\u5ba1" in message:
+        return "generate_regression_review"
+    if "promo" in text and _has_any(message, ["\u7ee7\u7eed", "\u63a8\u8fdb", "\u4e0b\u4e00\u6b65"]):
+        return "continue_promo"
+    if "review" in text and (_has_any(message, ["\u6539\u4e86\u4ec0\u4e48", "\u89e3\u91ca", "\u8bf4\u660e"]) or "what changed" in text):
+        return "review_explain"
+    if re.search(r"\bapprove\b", text) or "\u6279\u51c6" in message or "\u901a\u8fc7\u8fd9\u4e2a review" in message:
+        return "approve_review"
+    if re.search(r"\bapply\b", text) or "\u5e94\u7528\u8fd9\u4e2a review" in message or "apply \u8fd9\u4e2a review" in text:
+        return "apply_review"
+    if "rollback" in text or "\u56de\u6eda" in message:
+        return "rollback"
+    if _has_any(message, ["PRD", "\u6a21\u677f", "\u6574\u7406", "\u66f4\u6b63\u5f0f", "\u5927\u7eb2", "\u8bfb\u4e66\u7b14\u8bb0"]):
+        return "writing"
+    if _has_any(message, ["\u62a5\u9519", "\u9519\u8bef", "traceback", "exception", "error"]):
+        return "explain_error"
+    if "self-evolving skill" in text or "\u81ea\u8fdb\u5316 skill" in message:
+        return "self_evolving_explain"
+    return "general"
+
+
+def _route_skill(ctx: WebContext, message: str, context: dict[str, Any], intent: str) -> tuple[str, str]:
+    current = normalize_name(str(context.get("current_skill", "") or ""))
+    available = {skill["name"] for skill in _skills(ctx)}
+    if current in available and intent in {"memory_capture", "continue_promo", "review_explain", "approve_review", "apply_review"}:
+        return current, "The page context names this as the current skill."
+    if intent in {"memory_capture", "writing"} or _has_any(message, ["markdown", "\u8bfb\u4e66\u7b14\u8bb0", "PRD", "\u6a21\u677f", "\u5927\u7eb2", "\u6b63\u5f0f"]):
+        return _first_available(available, ["markdown_writer", current, "self_improvement"]), "The request is about writing or reusable markdown structure."
+    if intent in {"continue_promo", "evolution_status", "generate_regression_review", "approve_review", "apply_review", "review_explain", "rollback"}:
+        return _first_available(available, ["self_improvement", current]), "The request touches promotion, review, memory, version, or self-evolution workflow."
+    if _has_any(message, ["\u6587\u4ef6", "\u4fee\u6539", "patch", "diff", "\u7f16\u8f91"]):
+        return _first_available(available, ["file_editing", "file_modification", current, "self_improvement"]), "The request is about file editing or patch advice."
+    if _has_any(message, ["\u5de5\u5177", "\u547d\u4ee4", "tool", "api", "\u63a5\u53e3"]) or intent == "explain_error":
+        return _first_available(available, ["tool_usage", current, "self_improvement"]), "The request is about tools, commands, APIs, or error diagnosis."
+    if intent == "self_evolving_explain":
+        return _first_available(available, ["self_improvement", current]), "The request asks about self-evolving skills."
+    return _first_available(available, [current, "self_improvement"]), "General assistant response using workspace context."
+
+
+def _first_available(available: set[str], candidates: list[str]) -> str:
+    for candidate in candidates:
+        if candidate and candidate in available:
+            return candidate
+    return sorted(available)[0] if available else ""
+
+
+def _has_any(message: str, tokens: list[str]) -> bool:
+    lowered = message.lower()
+    return any(token.lower() in lowered for token in tokens)
+
+
+def _looks_like_memory_request(message: str) -> bool:
+    text = message.lower()
+    return _has_any(
+        message,
+        ["\u4ee5\u540e", "\u540e\u7eed", "\u8bb0\u4f4f", "\u957f\u671f", "\u9ed8\u8ba4", "\u90fd\u8981", "\u56fa\u5b9a"],
+    ) or any(token in text for token in ("from now on", "always", "remember this", "default to"))
+
+
+def _capture_learning_memory(
+    ctx: WebContext,
+    message: str,
+    used_skill: str,
+    skill_reason: str,
+) -> dict[str, Any]:
+    skill_name = used_skill or "self_improvement"
+    title = _memory_title(message)
+    content = _memory_content(message, skill_name)
+    before_promos = {promo["promo_id"] for promo in _promotions(ctx)}
+    result = ctx.skill_memory.record_learning(
+        skill_name,
+        title,
+        content,
+        evidence=message,
+        priority="medium",
+        status="open",
+        domain="chat_preference",
+        source="chat",
+        source_skill="self_improvement",
+        attribution_reason="explicit long-term user preference captured from Chat",
+        attribution_confidence="high",
+        needs_attribution_review=False,
+    )
+    record_id = _extract_record_id(result, "LRN")
+    ctx.promotions = PromotionBrowser(
+        skills_dir=ctx.skills_dir,
+        global_memory_dir=ctx.global_memory_dir,
+        project_root=ctx.project_root,
+    )
+    after_promos = _promotions(ctx)
+    new_promos = [promo for promo in after_promos if promo["promo_id"] not in before_promos]
+    actions = [
+        _action(
+            "Generate promotion candidate",
+            "POST",
+            f"/api/memories/{record_id}/promote",
+            True,
+        )
+    ] if record_id and not new_promos else []
+    if new_promos:
+        actions = [
+            _action(
+                "Continue promotion flow",
+                "POST",
+                f"/api/promotions/{new_promos[0]['promo_id']}/evolve",
+                True,
+            )
+        ]
+    promo_note = f" Promotion candidate: {new_promos[0]['promo_id']}." if new_promos else ""
+    return _chat_result(
+        "memory_captured",
+        used_skill,
+        skill_reason,
+        f"Captured the preference as a learning signal for {skill_name}.{promo_note}",
+        f"Recorded as learning signal {record_id or '(updated existing memory)' }.",
+        memory_record_id=record_id,
+        actions=actions,
+        data={"record_message": result, "new_promotions": new_promos},
+    )
+
+
+def _memory_title(message: str) -> str:
+    if "\u8bfb\u4e66\u7b14\u8bb0" in message:
+        return "Book note structure preference"
+    if "PRD" in message:
+        return "PRD structure preference"
+    clean = re.sub(r"\s+", " ", message.strip())
+    return (clean[:60] + "...") if len(clean) > 60 else clean
+
+
+def _memory_content(message: str, skill_name: str) -> str:
+    extra = ""
+    if "\u8bfb\u4e66\u7b14\u8bb0" in message:
+        extra = "Reusable default book-note format: book title, core viewpoint, three insights, action checklist."
+    if "PRD" in message:
+        extra = "Reusable default PRD format preference from the user."
+    return "\n".join(item for item in [message.strip(), extra, f"Target skill: {skill_name}"] if item)
+
+
+def _chat_evolution_status(
+    ctx: WebContext,
+    context: dict[str, Any],
+    used_skill: str,
+    skill_reason: str,
+) -> dict[str, Any]:
+    promo = _current_promo(ctx, context)
+    if not promo:
+        promos = _promotions(ctx)
+        pending = [item for item in promos if item.get("status") != "applied"]
+        output = (
+            f"No current PROMO is selected. Workspace has {len(promos)} promotion candidates, "
+            f"{len(pending)} not applied."
+        )
+        return _chat_result("skill_result", used_skill, skill_reason, output, "No durable memory was captured.", data={"promotions": promos})
+    state = _evolution_state_for_promo(ctx, promo["promo_id"])
+    next_action = state.get("next_action", "waiting")
+    steps = ", ".join(f"{step['name']}={step['status']}" for step in state.get("steps", []))
+    output = f"{promo['promo_id']} is at next_action={next_action}. Steps: {steps}."
+    return _chat_result("skill_result", used_skill, skill_reason, output, "No durable memory was captured.", data=state)
+
+
+def _chat_review_explain(
+    ctx: WebContext,
+    message: str,
+    context: dict[str, Any],
+    used_skill: str,
+    skill_reason: str,
+) -> dict[str, Any]:
+    review = _current_review(ctx, message, context)
+    if not review:
+        return _chat_result("error", used_skill, skill_reason, "I could not find a review id in the message or current context.", "No durable memory was captured.")
+    patch = _patch_for_review(ctx, review["review_id"])
+    output = (
+        f"{review['review_id']} is a {review.get('type', '')} review with status={review.get('status', '')}. "
+        f"Target files: {', '.join(review.get('target_files', [])) or '(none)'}. "
+        f"Proposed change: {review.get('proposed_change', '') or '(none)'}"
+    )
+    return _chat_result(
+        "skill_result",
+        used_skill,
+        skill_reason,
+        output,
+        "No durable memory was captured.",
+        data={"review": review, "patch": patch},
+    )
+
+
+def _chat_review_action(
+    ctx: WebContext,
+    message: str,
+    context: dict[str, Any],
+    used_skill: str,
+    skill_reason: str,
+    action_name: str,
+) -> dict[str, Any]:
+    review = _current_review(ctx, message, context)
+    if not review:
+        return _chat_result("approval_required", used_skill, skill_reason, "Choose a review first, or include a REV-xxxxxxxx id.", "No durable memory was captured.")
+    if action_name == "approve":
+        action = _action("Approve and generate preview", "POST", f"/api/reviews/{review['review_id']}/approve", True)
+        output = f"{review['review_id']} can be approved after confirmation. Approval only generates a patch preview."
+        return _chat_result("approval_required", used_skill, skill_reason, output, "No durable memory was captured.", actions=[action], data={"review": review})
+    patch = _patch_for_review(ctx, review["review_id"])
+    action = _action("Apply reviewed change", "POST", f"/api/reviews/{review['review_id']}/apply", True)
+    output = (
+        f"{review['review_id']} requires explicit confirmation before apply. "
+        "The diff preview is included in this response and should be inspected first."
+    )
+    return _chat_result(
+        "approval_required",
+        used_skill,
+        skill_reason,
+        output,
+        "No durable memory was captured.",
+        actions=[action],
+        data={"review": review, "patch": patch},
+    )
+
+
+def _draft_answer(message: str, intent: str) -> str:
+    if intent == "writing" and "\u8bfb\u4e66\u7b14\u8bb0" in message:
+        return "\n".join(
+            [
+                "# \u4e66\u540d",
+                "",
+                "## \u6838\u5fc3\u89c2\u70b9",
+                "- ",
+                "",
+                "## \u4e09\u6761\u542f\u53d1",
+                "1. ",
+                "2. ",
+                "3. ",
+                "",
+                "## \u884c\u52a8\u6e05\u5355",
+                "- [ ] ",
+            ]
+        )
+    if intent == "writing" and "PRD" in message:
+        return "\n".join(
+            [
+                "# PRD \u5927\u7eb2",
+                "",
+                "## \u80cc\u666f\u4e0e\u76ee\u6807",
+                "## \u7528\u6237\u4e0e\u573a\u666f",
+                "## F1 \u529f\u80fd\u70b9",
+                "## F2 \u529f\u80fd\u70b9",
+                "## \u975e\u76ee\u6807",
+                "## \u9a8c\u6536\u6807\u51c6",
+                "## \u98ce\u9669\u4e0e\u5f00\u653e\u95ee\u9898",
+            ]
+        )
+    if intent == "self_evolving_explain":
+        return (
+            "A self-evolving skill is a skill that can collect learning signals from repeated corrections, "
+            "turn eligible patterns into promotion candidates, pass them through review and regression checks, "
+            "and only then update the active skill with a versioned, reversible change."
+        )
+    if intent == "explain_error":
+        return (
+            "Paste the exact error text and the operation that triggered it. I will separate the symptom, likely cause, "
+            "smallest reproduction, and next verification step."
+        )
+    if "\u9a8c\u6536" in message:
+        return "\u9a8c\u6536\u53ef\u4ee5\u6309\u56db\u5c42\u770b\uff1a\u6838\u5fc3\u8def\u5f84\u80fd\u8dd1\u901a\u3001\u8fb9\u754c\u8f93\u5165\u6709\u63d0\u793a\u3001\u5931\u8d25\u72b6\u6001\u53ef\u6062\u590d\u3001\u5173\u952e\u53d8\u66f4\u6709\u53ef\u56de\u5f52\u7684\u68c0\u67e5\u8bb0\u5f55\u3002"
+    if "\u6b63\u5f0f" in message:
+        return "\u628a\u539f\u6587\u53d1\u7ed9\u6211\uff0c\u6211\u4f1a\u4fdd\u7559\u610f\u601d\uff0c\u8c03\u6574\u4e3a\u66f4\u6b63\u5f0f\u3001\u6e05\u6670\u3001\u9002\u5408\u4ea4\u4ed8\u6587\u6863\u7684\u8868\u8fbe\u3002"
+    return "I can help with writing, explanation, workspace status, skill memory, promotions, reviews, and versioned skill evolution from this Chat entry point."
+
+def _current_promo(ctx: WebContext, context: dict[str, Any]) -> dict[str, Any] | None:
+    wanted = str(context.get("current_promo_id", "") or "").strip()
+    promos = _promotions(ctx)
+    if wanted:
+        return next((promo for promo in promos if promo.get("promo_id") == wanted), None)
+    actionable = [
+        promo for promo in promos
+        if promo.get("promotion_decision") == "promote" and promo.get("eligible_target") == "skill_rule"
+    ]
+    return actionable[0] if actionable else (promos[0] if promos else None)
+
+
+def _current_review(ctx: WebContext, message: str, context: dict[str, Any]) -> dict[str, Any] | None:
+    match = re.search(r"\bREV-[A-Z0-9]{8}\b", message.upper())
+    wanted = match.group(0) if match else str(context.get("current_review_id", "") or "").strip()
+    if wanted:
+        return ctx.review_store.get_review(wanted)
+    reviews = _reviews(ctx)
+    for status in ("approved", "pending"):
+        found = next((review for review in reviews if review.get("status") == status), None)
+        if found:
+            return found
+    return None
+
+
+def _evolution_state_for_promo(ctx: WebContext, promo_id: str) -> dict[str, Any]:
+    promo = ctx.promotions.get_candidate(promo_id)
+    reviews_for_promo = [
+        review for review in _reviews(ctx)
+        if review.get("candidate_id") == promo_id
+    ]
+    regression = _first_review(reviews_for_promo, "skill.regression_case")
+    skill_review = _first_review(reviews_for_promo, "skill.promotion")
+    version = _version_for_promo(ctx, promo_id)
+    steps = [
+        {"name": "memory", "status": "completed"},
+        {"name": "promo", "status": "completed"},
+        {
+            "name": "regression_review",
+            "status": regression.get("status", "waiting") if regression else "waiting",
+            "review_id": regression.get("review_id", "") if regression else "",
+        },
+        {
+            "name": "skill_promotion_review",
+            "status": skill_review.get("status", "waiting") if skill_review else "waiting",
+            "review_id": skill_review.get("review_id", "") if skill_review else "",
+        },
+        {"name": "version", "status": "completed" if version else "waiting", "version": version},
+    ]
+    return {
+        "promo_id": promo_id,
+        "target_skill": promo.target_skill if promo else "",
+        "steps": steps,
+        "next_action": _next_evolution_action(regression, skill_review, version),
+    }
+
+
+def _patch_for_review(ctx: WebContext, review_id: str) -> dict[str, Any]:
+    patch_path = ctx.project_root / ".reviews" / "patches" / f"{review_id}.diff"
+    if patch_path.exists():
+        return {"has_patch": True, "patch_path": _display_path(ctx, patch_path), "patch": patch_path.read_text(encoding="utf-8")}
+    review = ctx.review_store.get_review(review_id)
+    if review and review.get("status") == "approved":
+        try:
+            _review, generated = ctx.review_store.approve_review(review_id)
+            if generated and Path(generated).exists():
+                path = Path(generated)
+                return {"has_patch": True, "patch_path": _display_path(ctx, path), "patch": path.read_text(encoding="utf-8")}
+        except ValueError:
+            pass
+    return {"has_patch": False, "patch_path": "", "patch": ""}
+
+
+def _extract_record_id(text: str, prefix: str) -> str:
+    match = re.search(rf"\b{re.escape(prefix)}-[A-Z0-9]{{8}}\b", text)
+    return match.group(0) if match else ""
+
+
+def _action(label: str, method: str, path: str, requires_confirmation: bool) -> dict[str, Any]:
+    return {
+        "label": label,
+        "method": method,
+        "path": path,
+        "requires_confirmation": requires_confirmation,
+    }
+
+
 def _handle_command(ctx: WebContext, message: str) -> dict[str, Any]:
     parts = message.split()
     command = parts[0]
     if command == "/promotions":
-        return {"mode": "command", "message": "Promotion candidates.", "data": _promotions(ctx), "next_actions": []}
+        return _chat_result("tool_result", "self_improvement", "Slash command requested promotion candidates.", "Promotion candidates.", "No durable memory was captured.", data=_promotions(ctx))
     if command == "/reviews":
-        return {"mode": "command", "message": "Reviews.", "data": [_review_summary(item) for item in _reviews(ctx)], "next_actions": []}
+        return _chat_result("tool_result", "self_improvement", "Slash command requested reviews.", "Reviews.", "No durable memory was captured.", data=[_review_summary(item) for item in _reviews(ctx)])
     if command == "/evolve-skill" and len(parts) == 2:
         result = evolve_skill_from_promotion(
             browser=ctx.promotions,
@@ -989,57 +1535,62 @@ def _handle_command(ctx: WebContext, message: str) -> dict[str, Any]:
             promo_id=parts[1],
             project_root=ctx.project_root,
         )
-        return {
-            "mode": "command",
-            "message": result.message,
-            "data": {"ok": result.ok, "stage": _api_stage(result.stage), "review_id": result.review_id},
-            "next_actions": _flow_next_actions(result.review_id, _api_stage(result.stage)),
-        }
+        return _chat_result(
+            "tool_result" if result.ok else "error",
+            "self_improvement",
+            "Slash command requested the existing promotion evolution flow.",
+            result.message,
+            "No durable memory was captured.",
+            data={"ok": result.ok, "stage": _api_stage(result.stage), "review_id": result.review_id},
+        )
     if command == "/approve" and len(parts) == 2:
-        try:
-            review, patch_path = ctx.review_store.approve_review(parts[1])
-        except ValueError as exc:
-            return {"mode": "command", "message": str(exc), "data": {"ok": False}, "next_actions": []}
-        return {
-            "mode": "command",
-            "message": f"Review {parts[1]} approved. No target file was modified.",
-            "data": {"status": review.get("status"), "patch_path": patch_path},
-            "next_actions": _next_review_actions(parts[1], review.get("status", "")),
-        }
+        review = ctx.review_store.get_review(parts[1])
+        if not review:
+            return _chat_result("error", "self_improvement", "Slash command requested review approval.", f"Unknown review_id: {parts[1]}", "No durable memory was captured.")
+        return _chat_result(
+            "approval_required",
+            "self_improvement",
+            "Slash command requested review approval.",
+            f"Confirm approval for {parts[1]}. Approval only creates a patch preview and does not modify target files.",
+            "No durable memory was captured.",
+            actions=[_action("Approve and generate preview", "POST", f"/api/reviews/{parts[1]}/approve", True)],
+            data={"review": review},
+        )
     if command == "/apply" and len(parts) == 2:
         current = ctx.review_store.get_review(parts[1])
         if not current:
-            return {"mode": "command", "message": f"Unknown review_id: {parts[1]}", "data": {"ok": False}, "next_actions": []}
+            return _chat_result("error", "self_improvement", "Slash command requested review apply.", f"Unknown review_id: {parts[1]}", "No durable memory was captured.")
         if current.get("status") != "approved":
-            return {
-                "mode": "command",
-                "message": f"Review {parts[1]} must be approved before apply.",
-                "data": {"ok": False},
-                "next_actions": [f"/approve {parts[1]}"],
-            }
-        try:
-            review, apply_message = ctx.review_store.apply_review(parts[1])
-        except ValueError as exc:
-            return {"mode": "command", "message": str(exc), "data": {"ok": False}, "next_actions": []}
-        return {
-            "mode": "command",
-            "message": apply_message,
-            "data": {"status": review.get("status")},
-            "next_actions": [],
-        }
+            return _chat_result(
+                "approval_required",
+                "self_improvement",
+                "Slash command requested review apply.",
+                f"Review {parts[1]} must be approved before apply.",
+                "No durable memory was captured.",
+                actions=[_action("Approve and generate preview", "POST", f"/api/reviews/{parts[1]}/approve", True)],
+                data={"review": current},
+            )
+        patch = _patch_for_review(ctx, parts[1])
+        return _chat_result(
+            "approval_required",
+            "self_improvement",
+            "Slash command requested review apply.",
+            f"Confirm apply for {parts[1]} only after inspecting the diff preview.",
+            "No durable memory was captured.",
+            actions=[_action("Apply reviewed change", "POST", f"/api/reviews/{parts[1]}/apply", True)],
+            data={"review": current, "patch": patch},
+        )
     if command == "/skill-versions" and len(parts) == 2:
-        return {
-            "mode": "command",
-            "message": "Skill versions.",
-            "data": ctx.versions.list_versions(parts[1]),
-            "next_actions": [],
-        }
-    return {
-        "mode": "command",
-        "message": "Only command-mode chat is implemented in this API version.",
-        "data": {"supported_commands": ["/promotions", "/reviews", "/evolve-skill", "/approve", "/apply", "/skill-versions"]},
-        "next_actions": [],
-    }
+        return _chat_result("tool_result", "self_improvement", "Slash command requested skill versions.", "Skill versions.", "No durable memory was captured.", data=ctx.versions.list_versions(parts[1]))
+    return _chat_result(
+        "error",
+        "self_improvement",
+        "Slash command was not recognized.",
+        "Unknown command. Supported advanced commands: /promotions, /reviews, /evolve-skill <PROMO>, /approve <REV>, /apply <REV>, /skill-versions <skill>.",
+        "No durable memory was captured.",
+    )
+
+
 
 
 def _recent_events(ctx: WebContext, limit: int = 50) -> list[dict[str, Any]]:
