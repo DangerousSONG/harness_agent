@@ -4,6 +4,13 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-19
 
+### Local Asset Governance API
+
+- Added `web/server.py`, a local FastAPI interface for Agent asset governance across skills, tools, memories, knowledge-base placeholders, reviews, promotions, versions, dashboard state, and command-mode chat.
+- Kept high-risk mutations behind the existing ReviewQueue: approval only creates patch previews, apply requires approved reviews, skill promotion apply still relies on existing regression coverage checks, and rollback creates a review without changing `SKILL.md`.
+- Added web API unittest coverage for empty lists, asset summaries, promotion evolution flow reuse, approval preview behavior, approved-only apply, skill version listing, and rollback review creation.
+- Added `fastapi` and `uvicorn` to `requirements.txt` for the local backend server.
+
 ### Self-Evolution Smoke Script
 
 - Added `scripts/smoke_self_evolution.py` to run the SafeHarness self-evolving skill loop end to end with optional cleanup, artifact preservation, skill selection, and verbose output.

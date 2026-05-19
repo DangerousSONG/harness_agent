@@ -1,0 +1,213 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+try:
+    from fastapi.testclient import TestClient
+    from web.server import create_app
+except (ImportError, RuntimeError):  # pragma: no cover
+    TestClient = None
+    create_app = None
+
+from runtime.backends.local import LocalReviewStore
+from runtime.promotion_browser import PromotionBrowser
+from runtime.skill_evolution_registry import SkillEvolutionRegistry
+from runtime.skill_memory import SkillMemoryManager
+
+def write_skill(root: Path, skill: str = "markdown_writer") -> None:
+    skill_dir = root / "skills" / skill
+    (skill_dir / "eval").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "\n".join(
+            [
+                "---",
+                f"name: {skill}",
+                "description: Markdown writing helper",
+                "---",
+                "",
+                f"# {skill}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (skill_dir / "eval" / "cases.yaml").write_text(f"skill: {skill}\ncases: []\n", encoding="utf-8")
+
+
+@unittest.skipIf(TestClient is None, "fastapi is not installed")
+class WebApiTests(unittest.TestCase):
+    def make_client(self, root: Path) -> TestClient:
+        return TestClient(create_app(root))
+
+    def make_promo(self, root: Path) -> str:
+        write_skill(root)
+        manager = SkillMemoryManager(root / "skills", root / ".skills_memory")
+        for _ in range(3):
+            manager.record_learning(
+                "markdown_writer",
+                "Use fenced markdown output",
+                "For repeated markdown output corrections, use fenced code blocks consistently.",
+                source="test",
+            )
+        browser = PromotionBrowser(
+            skills_dir=root / "skills",
+            global_memory_dir=root / ".skills_memory",
+            project_root=root,
+        )
+        return browser.list_candidates()[0].promo_id
+
+    def test_get_assets_returns_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            client = self.make_client(root)
+            response = client.get("/api/assets")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            self.assertIn("skills", payload["data"])
+
+    def test_empty_reviews_returns_empty_array(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = self.make_client(root)
+            response = client.get("/api/reviews")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["data"], [])
+
+    def test_empty_promotions_returns_empty_array(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = self.make_client(root)
+            response = client.get("/api/promotions")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["data"], [])
+
+    def test_evolve_promotion_reuses_existing_flow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            promo_id = self.make_promo(root)
+            client = self.make_client(root)
+            response = client.post(f"/api/promotions/{promo_id}/evolve")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["data"]["stage"], "regression_pending")
+            self.assertRegex(payload["data"]["review_id"], r"REV-[A-Z0-9]{8}")
+            reviews = client.get("/api/reviews").json()["data"]
+            self.assertEqual(len(reviews), 1)
+            self.assertEqual(reviews[0]["type"], "skill.regression_case")
+
+    def test_approve_does_not_modify_target_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            review_store = LocalReviewStore(root / ".reviews", root)
+            review = review_store.create_review(
+                type="skill.regression_case",
+                source="test",
+                candidate_id="PROMO-ABC12345",
+                target_skill="markdown_writer",
+                target_files=["skills/markdown_writer/eval/cases.yaml"],
+                severity="medium",
+                reason="test",
+                proposed_change="\n".join(
+                    [
+                        "cases:",
+                        "  - id: positive",
+                        "    input: \"markdown\"",
+                        "    must_include:",
+                        "      - \"```\"",
+                        "    target_rule: \"Use fences\"",
+                        "    source_promo_id: \"PROMO-ABC12345\"",
+                        "  - id: negative",
+                        "    input: \"plain text\"",
+                        "    must_not_include:",
+                        "      - \"```\"",
+                        "    target_rule: \"Use fences\"",
+                        "    source_promo_id: \"PROMO-ABC12345\"",
+                        "",
+                    ]
+                ),
+                evaluation_plan="test",
+                rollback_plan="test",
+                metadata={"source_promo_id": "PROMO-ABC12345"},
+            )
+            target = root / "skills" / "markdown_writer" / "eval" / "cases.yaml"
+            before = target.read_text(encoding="utf-8")
+            client = self.make_client(root)
+            response = client.post(f"/api/reviews/{review['review_id']}/approve")
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.json()["data"]["has_patch"])
+            self.assertEqual(target.read_text(encoding="utf-8"), before)
+
+    def test_apply_only_works_for_approved_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            review_store = LocalReviewStore(root / ".reviews", root)
+            review = review_store.create_review(
+                type="skill.regression_case",
+                source="test",
+                candidate_id="PROMO-ABC12345",
+                target_skill="markdown_writer",
+                target_files=["skills/markdown_writer/eval/cases.yaml"],
+                severity="medium",
+                reason="test",
+                proposed_change="cases: []",
+                evaluation_plan="test",
+                rollback_plan="test",
+                metadata={"source_promo_id": "PROMO-ABC12345"},
+            )
+            client = self.make_client(root)
+            response = client.post(f"/api/reviews/{review['review_id']}/apply")
+            self.assertEqual(response.status_code, 400)
+            self.assertFalse(response.json()["ok"])
+
+    def test_skill_versions_returns_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            versions_dir = root / ".skills_versions" / "markdown_writer"
+            versions_dir.mkdir(parents=True)
+            record = {
+                "skill": "markdown_writer",
+                "version": "v0.1.1",
+                "previous_version": "v0.1.0",
+                "promotion_id": "PROMO-ABC12345",
+                "skill_review_id": "REV-ABC12345",
+                "regression_review_ids": [],
+                "base_hash": "a",
+                "new_hash": "b",
+                "decision": "applied",
+                "created_at": "2026-05-19T00:00:00+00:00",
+            }
+            (versions_dir / "versions.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+            client = self.make_client(root)
+            response = client.get("/api/skills/markdown_writer/versions")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["data"][0]["version"], "v0.1.1")
+
+    def test_rollback_creates_review_without_modifying_skill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            skill_file = root / "skills" / "markdown_writer" / "SKILL.md"
+            before = skill_file.read_text(encoding="utf-8")
+            registry = SkillEvolutionRegistry(root)
+            version_dir = root / ".skills_versions" / "markdown_writer" / "v0.1.0"
+            version_dir.mkdir(parents=True)
+            (version_dir / "SKILL.md").write_text(before, encoding="utf-8")
+            versions_file = root / ".skills_versions" / "markdown_writer" / "versions.jsonl"
+            versions_file.write_text(
+                json.dumps({"skill": "markdown_writer", "version": "v0.1.0", "decision": "applied"}) + "\n",
+                encoding="utf-8",
+            )
+            self.assertIsNotNone(registry.get_version("markdown_writer", "v0.1.0"))
+            client = self.make_client(root)
+            response = client.post("/api/skills/markdown_writer/rollback", json={"version": "v0.1.0"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertRegex(payload["data"]["review_id"], r"REV-[A-Z0-9]{8}")
+            self.assertEqual(skill_file.read_text(encoding="utf-8"), before)
