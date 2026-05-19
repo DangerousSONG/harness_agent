@@ -42,7 +42,7 @@ class PromotionCandidateView:
     rollback_plan: str
     suggested_target_files: list[str]
     status: str
-    promotion_score: float = 0.0
+    promotion_score: float | str = "legacy"
     promotion_decision: str = ""
     reason: str = ""
     eligible_target: str = ""
@@ -116,6 +116,7 @@ class PromotionBrowser:
 
     def _view_from_record(self, record: dict[str, Any]) -> PromotionCandidateView:
         fields = record["fields"]
+        is_legacy = not _has_eligibility_fields(fields)
         promo_id = _first_field(fields, "Candidate ID", "Promo ID", "Promotion ID") or record["record_id"]
         summary = _first_field(fields, "Summary", "Proposed Change Summary") or record["title"]
         proposed_change = _first_field(fields, "Proposed Change", "Proposed Change Summary") or summary
@@ -151,10 +152,14 @@ class PromotionBrowser:
             rollback_plan=_first_field(fields, "Rollback Plan") or "",
             suggested_target_files=suggested_files,
             status=_first_field(fields, "Status") or "proposed",
-            promotion_score=_parse_float(_first_field(fields, "Promotion Score"), 0.0),
-            promotion_decision=_first_field(fields, "Promotion Decision") or "",
+            promotion_score=(
+                "legacy"
+                if is_legacy
+                else _parse_float(_first_field(fields, "Promotion Score"), 0.0)
+            ),
+            promotion_decision=_first_field(fields, "Promotion Decision") or ("legacy" if is_legacy else ""),
             reason=_first_field(fields, "Reason", "Promotion Reason") or "",
-            eligible_target=_first_field(fields, "Eligible Target") or "",
+            eligible_target=_first_field(fields, "Eligible Target") or ("legacy" if is_legacy else ""),
             safety_risk=_first_field(fields, "Safety Risk") or "",
             attribution_confidence=_first_field(fields, "Attribution Confidence") or "",
         )
@@ -315,6 +320,14 @@ def _first_field(fields: dict[str, str], *names: str) -> str:
         if value:
             return value
     return ""
+
+
+def _has_eligibility_fields(fields: dict[str, str]) -> bool:
+    return bool(
+        _first_field(fields, "Promotion Score")
+        and _first_field(fields, "Promotion Decision")
+        and _first_field(fields, "Eligible Target")
+    )
 
 
 def _split_csv(value: str) -> list[str]:

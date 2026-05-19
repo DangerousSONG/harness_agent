@@ -266,6 +266,7 @@ class SelfImprovementLoopTests(unittest.TestCase):
             self.assertIn("- Promotion Decision: promote", text)
             self.assertIn("- Eligible Target: skill_rule", text)
             self.assertIn("- Promotion Score:", text)
+            self.assertNotIn("legacy", text)
             self.assertIn("- Evaluation Plan:", text)
             self.assertIn("- Rollback Plan:", text)
             self.assertIn("skills/markdown_writer/SKILL.md", text)
@@ -680,6 +681,152 @@ class SelfImprovementLoopTests(unittest.TestCase):
             self.assertIn("already loaded", out.getvalue())
             self.assertEqual(review_store.list_reviews("pending"), [])
 
+    def test_apply_load_skill_status_message_does_not_write_learning_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill_dir = root / "skills" / "markdown_writer"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: markdown_writer\ndescription: Markdown writer\n---\n\n# Markdown Writer\n",
+                encoding="utf-8",
+            )
+            manager = self.make_manager(root)
+            review_store = LocalReviewStore(
+                root / ".reviews",
+                root,
+                skill_loader=SkillLoader(root / "skills"),
+                skill_memory=manager,
+            )
+            review = review_store.create_review(
+                type="tool.call.before",
+                source="llm",
+                target_skill="markdown_writer",
+                reason="load_skill requires approval",
+                tool_name="load_skill",
+                tool_arguments={"name": "markdown_writer"},
+                event_type="tool.call.before",
+                metadata={"tool_name": "load_skill"},
+            )
+
+            review_store.approve_review(review["review_id"])
+            applied, message = review_store.apply_review(review["review_id"])
+            self.assertEqual(applied["status"], "applied")
+            self.assertIn("Loaded skill 'markdown_writer'", message)
+            self.assertEqual(manager.last_loaded_skill, "markdown_writer")
+
+            client = FakeClient(
+                {
+                    "should_record": True,
+                    "record_type": "learning",
+                    "target_skill": "markdown_writer",
+                    "reason": "This load status must not become memory.",
+                    "attribution_confidence": "high",
+                    "title": "Loaded skill status",
+                    "content": "Loaded skill markdown_writer.",
+                }
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                _auto_record_learning_signal(
+                    client=client,
+                    model="fake",
+                    messages=[
+                        {
+                            "role": "assistant",
+                            "content": f"Review {review['review_id']} applied. Loaded skill 'markdown_writer'.",
+                        }
+                    ],
+                    tool_handlers={"__skill_memory__": manager},
+                    latest_tool_events=[
+                        {
+                            "type": "tool.call.before",
+                            "tool_name": "load_skill",
+                            "status": "applied",
+                        }
+                    ],
+                    latest_llm_messages=[
+                        {"content": "Loaded skill 'markdown_writer'."}
+                    ],
+                )
+
+            self.assertIn("auto_memory: skipped load_skill status message.", out.getvalue())
+            self.assertEqual(client.chat.completions.calls, 0)
+            self.assertFalse((root / "skills" / "markdown_writer" / "memory" / "LEARNINGS.md").exists())
+
+    def test_already_loaded_assistant_status_does_not_write_learning_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            manager.set_active_skill("markdown_writer")
+            client = FakeSequencedClient(
+                [
+                    FakeToolResponse(
+                        FakeToolMessage("Skill 'markdown_writer' is already loaded.")
+                    )
+                ]
+            )
+            messages = [{"role": "user", "content": "load markdown_writer again"}]
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                agent_loop(
+                    messages=messages,
+                    client=client,
+                    model="fake",
+                    system="system",
+                    tools=[],
+                    tool_handlers={"__skill_memory__": manager},
+                    todo=EmptyTodo(),
+                    bg=EmptyBg(),
+                    bus=EmptyBus(),
+                    token_threshold=100000,
+                    transcript_dir=root,
+                    estimate_tokens=lambda _messages: 0,
+                    microcompact=lambda _messages: None,
+                    auto_compact=lambda **kwargs: kwargs["messages"],
+                )
+
+            self.assertIn("already loaded", out.getvalue())
+            self.assertIn("auto_memory: skipped load_skill status message.", out.getvalue())
+            self.assertEqual(len(client.chat.completions.calls), 1)
+            self.assertFalse((root / "skills" / "markdown_writer" / "memory" / "LEARNINGS.md").exists())
+
+    def test_user_correction_after_load_skill_still_records_learning_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            manager.set_active_skill("markdown_writer")
+            client = FakeClient(
+                {
+                    "should_record": True,
+                    "record_type": "learning",
+                    "target_skill": "markdown_writer",
+                    "reason": "User gave a durable markdown_writer writing rule.",
+                    "attribution_confidence": "high",
+                    "title": "Default book note format",
+                    "content": "以后 markdown_writer 写读书笔记时默认使用 书名 / 核心观点 / 三条启发 / 行动清单。",
+                }
+            )
+
+            result = classify_and_record_learning_signal(
+                client=client,
+                model="fake",
+                skill_memory=manager,
+                raw_content="以后 markdown_writer 写读书笔记时默认使用 书名 / 核心观点 / 三条启发 / 行动清单。",
+                conversation_context=[
+                    {"role": "assistant", "content": "Loaded skill 'markdown_writer'."},
+                    {"role": "user", "content": "以后 markdown_writer 写读书笔记时默认使用固定结构。"},
+                ],
+                latest_tool_events=[],
+                latest_llm_messages=[],
+            )
+
+            self.assertTrue(result["classification"]["should_record"])
+            self.assertEqual(client.chat.completions.calls, 1)
+            text = read_file(root, "skills", "markdown_writer", "memory", "LEARNINGS.md")
+            self.assertIn("Default book note format", text)
+            self.assertIn("- Target Skill: markdown_writer", text)
+
     def test_auto_memory_skips_post_approval_assistant_message(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -982,14 +1129,160 @@ class SelfImprovementLoopTests(unittest.TestCase):
             self.assertIn("target_skill=python", listing)
             self.assertIn("source_memory_type=error", listing)
             self.assertIn("occurrence_count=3", listing)
+            self.assertIn("decision=legacy", listing)
+            self.assertIn("target=legacy", listing)
+            self.assertIn("promotion_score=legacy", listing)
             self.assertIn("suggested_target_files=README.md, .env.example", listing)
             self.assertIn("summary=Add setup guidance", listing)
             self.assertIn("promo_id: PROMO-ABC12345", detail)
             self.assertIn("source_memory_ids: ERR-ABC12345", detail)
             self.assertIn("source_memory_file: skills/python/memory/ERRORS.md", detail)
+            self.assertIn("promotion_score: legacy", detail)
+            self.assertIn("promotion_decision: legacy", detail)
+            self.assertIn("eligible_target: legacy", detail)
             self.assertIn("evaluation_plan: Review docs and run startup validation.", detail)
             self.assertIn("rollback_plan: Revert the reviewed docs change.", detail)
             self.assertIn("status: proposed", detail)
+
+    def test_evolve_skill_rejects_legacy_and_non_promote_decisions_before_reviews(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            global_dir = root / ".skills_memory"
+            global_dir.mkdir()
+            (global_dir / "PROMOTION_CANDIDATES.md").write_text(
+                "\n".join(
+                    [
+                        "# Promotion Candidates",
+                        "",
+                        "## PROMO-LEGACY1 - Old candidate",
+                        "- Candidate ID: PROMO-LEGACY1",
+                        "- Record ID: LRN-LEGACY1",
+                        "- Target Skill: markdown_writer",
+                        "- Proposed Change Summary: Old candidate",
+                        "- Target Files: skills/markdown_writer/SKILL.md",
+                        "- Status: proposed",
+                        "",
+                        "## PROMO-WAIT001 - Waiting candidate",
+                        "- Candidate ID: PROMO-WAIT001",
+                        "- Record ID: LRN-WAIT001",
+                        "- Target Skill: markdown_writer",
+                        "- Proposed Change Summary: Waiting candidate",
+                        "- Target Files: skills/markdown_writer/SKILL.md",
+                        "- Occurrence Count: 1",
+                        "- Promotion Score: 0.25",
+                        "- Promotion Decision: wait",
+                        "- Eligible Target: skill_rule",
+                        "- Status: proposed",
+                        "",
+                        "## PROMO-POLICY1 - Policy review candidate",
+                        "- Candidate ID: PROMO-POLICY1",
+                        "- Record ID: POL-POLICY1",
+                        "- Target Skill: self_improvement",
+                        "- Proposed Change Summary: Policy candidate",
+                        "- Target Files: ",
+                        "- Occurrence Count: 1",
+                        "- Promotion Score: 0.70",
+                        "- Promotion Decision: policy_review",
+                        "- Eligible Target: policy_review",
+                        "- Status: proposed",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            browser = PromotionBrowser(
+                skills_dir=root / "skills",
+                global_memory_dir=global_dir,
+                project_root=root,
+            )
+            review_store = LocalReviewStore(root / ".reviews", root)
+
+            legacy = evolve_skill_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id="PROMO-LEGACY1",
+                project_root=root,
+            )
+            waiting = evolve_skill_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id="PROMO-WAIT001",
+                project_root=root,
+            )
+            policy = evolve_skill_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id="PROMO-POLICY1",
+                project_root=root,
+            )
+
+            self.assertFalse(legacy.ok)
+            self.assertIn("legacy promotion candidate is missing", legacy.message)
+            self.assertFalse(waiting.ok)
+            self.assertIn("promotion_decision=wait", waiting.message)
+            self.assertFalse(policy.ok)
+            self.assertIn("promotion_decision=policy_review", policy.message)
+            self.assertEqual(review_store.list_reviews("pending"), [])
+
+    def test_non_recurring_error_promo_cannot_enter_skill_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memory_dir = root / "skills" / "markdown_writer" / "memory"
+            memory_dir.mkdir(parents=True)
+            (memory_dir / "ERRORS.md").write_text(
+                "\n".join(
+                    [
+                        "# Errors",
+                        "",
+                        "## ERR-ABC12345 - Markdown failed",
+                        "- Occurrence Count: 2",
+                        "- Target Skill: markdown_writer",
+                        "",
+                        "### Details",
+                        "When Markdown output includes code, use fenced code blocks.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            global_dir = root / ".skills_memory"
+            global_dir.mkdir()
+            (global_dir / "PROMOTION_CANDIDATES.md").write_text(
+                "\n".join(
+                    [
+                        "# Promotion Candidates",
+                        "",
+                        "## PROMO-ERR00001 - Non recurring error",
+                        "- Candidate ID: PROMO-ERR00001",
+                        "- Record ID: ERR-ABC12345",
+                        "- Target Skill: markdown_writer",
+                        "- Proposed Change Summary: Non recurring error",
+                        "- Target Files: skills/markdown_writer/SKILL.md",
+                        "- Occurrence Count: 2",
+                        "- Promotion Score: 0.9",
+                        "- Promotion Decision: promote",
+                        "- Eligible Target: skill_rule",
+                        "- Status: proposed",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            browser = PromotionBrowser(
+                skills_dir=root / "skills",
+                global_memory_dir=global_dir,
+                project_root=root,
+            )
+            review_store = LocalReviewStore(root / ".reviews", root)
+            result = propose_skill_patch_from_promotion(
+                browser=browser,
+                review_store=review_store,
+                promo_id="PROMO-ERR00001",
+            )
+
+            self.assertFalse(result.ok)
+            self.assertIn("source_memory_type=error is not eligible", result.message)
+            self.assertEqual(review_store.list_reviews("pending"), [])
 
     def test_propose_skill_patch_creates_review_without_modifying_skill(self):
         with tempfile.TemporaryDirectory() as tmp:

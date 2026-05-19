@@ -34,6 +34,8 @@ Every automatic memory write includes `Attribution Reason` and `Attribution Conf
 
 If `load_skill` is stopped for human approval, the skill is not treated as loaded until approval and a successful load occur. Follow-up preference text in that pending state is skipped by automatic memory capture instead of being written as a durable skill rule.
 
+Status-only `load_skill` turns are skipped as noise. Successful loads, already-loaded responses, and applied `load_skill` reviews print `auto_memory: skipped load_skill status message.` and do not update `LEARNINGS.md` or create promotion candidates. Later explicit user corrections about the loaded skill are still eligible for memory.
+
 Verification reads are also skipped before classification. Reads through `read_file`, `Get-Content`, or `Select-String` against `.reviews/**`, `.skills_versions/**`, `skills/*/SKILL.md`, or `skills/*/eval/cases.yaml` print `auto_memory: skipped verification read_file result.` and do not write memory or create promotion candidates.
 
 For a deterministic local walkthrough, run `python .\scripts\debug_self_improvement.py`. It creates a test-only `markdown_writer` skill if needed, records three similar corrections, prints classification and attribution details, and checks that memory and promotion candidate files were written.
@@ -45,6 +47,8 @@ Skill memory deduplication promotes recurring patterns into reviewable candidate
 Promotion decisions are `promote`, `wait`, `reject`, or `policy_review`. Repeated low-risk transferable records can promote at three occurrences; strong reusable user corrections can promote at two occurrences when a positive and negative regression case can be generated; policy and high-severity safety signals route to `policy_review`; low-confidence attribution waits for review; prompt-injection, secret, approval-bypass, safety-disable, or ignore-system content is rejected.
 
 Promotion candidates include the source `record_id`, `target_skill`, proposed change summary, target files, expected improvement, risk type, severity, promotion score, promotion decision, reason, eligible target, created time, status, evaluation plan, and rollback plan. The `propose_memory_promotion(skill_name, record_id)` tool uses the same eligibility path for manual promotion requests.
+
+Older promotion records that do not contain `Promotion Score`, `Promotion Decision`, and `Eligible Target` are displayed as `legacy` by `/promotions`. They remain inspectable, but `/evolve-skill` does not turn them into regression or skill-promotion reviews until they are regenerated with eligibility metadata.
 
 Candidates are suggestions only. They do not edit README files, `.env.example`, skill instructions, safety policy, schemas, handlers, or prompts by themselves.
 
@@ -58,7 +62,7 @@ The local human approval queue is implemented. When a candidate needs human revi
 
 Successful `skill.promotion` applies are recorded by the runtime skill evolution registry in `.skills_versions/<skill>/`. Each version links the source memory ids, promotion id, regression review ids, skill review id, hashes, patch diff, snapshot, eval result, and audit event. Use `/skill-versions <skill>` and `/skill-version <skill> <version>` to inspect history. `/rollback-skill <skill> <version>` creates a review item only; it does not modify `SKILL.md`.
 
-Use `/evolve-skill <promo_id>` as a workflow guide when moving a promotion through regression coverage and skill-patch review. It may create the next missing review, but it never approves or applies anything; it prints the next `/review`, `/approve`, or `/apply` command to run.
+Use `/evolve-skill <promo_id>` as a workflow guide when moving a promotion through regression coverage and skill-patch review. It first requires `promotion_decision=promote` and `eligible_target=skill_rule`. Only `learning`, `feature_request`, and recurring `error` source memories can enter a `SKILL.md` promotion path; `policy_candidate`, `policy_review`, `wait`, `reject`, and `legacy` candidates are refused. It may create the next missing review, but it never approves or applies anything; it prints the next `/review`, `/approve`, or `/apply` command to run.
 
 ## Conflict Resolution
 

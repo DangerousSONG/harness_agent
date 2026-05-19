@@ -4,6 +4,23 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-19
 
+### Self-Evolution Smoke Script
+
+- Added `scripts/smoke_self_evolution.py` to run the SafeHarness self-evolving skill loop end to end with optional cleanup, artifact preservation, skill selection, and verbose output.
+- Covered the smoke script with unittest checks for success, failure exit behavior, default restoration/cleanup, and `--keep-artifacts` artifact retention.
+
+### Promotion Eligibility Compatibility
+
+- Made `/promotions` display old candidates without Promotion Eligibility fields as `legacy` instead of showing empty decisions or `0.0` scores.
+- Made `/evolve-skill` check `promotion_decision` and `eligible_target` before creating regression or skill-promotion reviews; `legacy`, `wait`, `reject`, and `policy_review` candidates do not enter skill evolution.
+- Tightened skill-rule eligibility so only `learning`, `feature_request`, and recurring `error` sources can become `SKILL.md` promotion reviews.
+
+### load_skill Auto Memory Noise Filter
+
+- Skipped automatic memory capture for `load_skill` status-only turns, including successful skill loads, already-loaded responses, and applied `load_skill` reviews.
+- Printed `auto_memory: skipped load_skill status message.` for these status-only turns so repeated skill loads do not update `LEARNINGS.md` or generate PROMO candidates.
+- Added tests covering `/apply` load-skill status, repeated already-loaded status, and a real user correction after loading a skill.
+
 ### Promotion Eligibility Scoring
 
 - Replaced the raw `Occurrence Count >= 3` promotion trigger with a lightweight Promotion Eligibility / Promotion Score check in `SkillMemoryManager`.

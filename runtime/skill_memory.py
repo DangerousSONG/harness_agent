@@ -832,6 +832,8 @@ class SkillMemoryManager:
         correction_strength = self._score_user_correction_strength(text)
         safety_risk = self._safety_risk(record_kind, text, severity)
         eligible_target = self._eligible_target(record_kind, text, testability)
+        if record_kind == "error" and occurrence_count < 3 and eligible_target == "skill_rule":
+            eligible_target = "none"
         promotion_score = round(
             0.30 * transferability
             + 0.25 * impact

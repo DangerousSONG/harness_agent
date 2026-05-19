@@ -62,6 +62,7 @@ POST_APPROVAL_MESSAGE_PATTERNS = (
 
 REVIEW_ID_PATTERN = re.compile(r"REV-[A-Z0-9]{8}")
 VERIFICATION_READ_SKIP_RESULT = "skipped verification read_file result."
+LOAD_SKILL_STATUS_SKIP_RESULT = "skipped load_skill status message."
 
 
 @dataclass
@@ -165,6 +166,26 @@ def classify_and_record_learning_signal(
             "record_result": VERIFICATION_READ_SKIP_RESULT,
         }
 
+    raw_content = str(redact_learning_payload(raw_content or ""))
+    if _has_load_skill_status_message(
+        raw_content=raw_content,
+        latest_tool_events=latest_tool_events,
+        latest_llm_messages=latest_llm_messages,
+    ):
+        classification = LearningSignalClassification(
+            should_record=False,
+            record_type="learning",
+            target_skill=None,
+            reason="Skipped load_skill status output; successful or repeated skill loads are not durable learning signals.",
+            attribution_confidence="low",
+            title="Skipped load_skill status message",
+            content="",
+        )
+        return {
+            "classification": classification.to_dict(),
+            "record_result": LOAD_SKILL_STATUS_SKIP_RESULT,
+        }
+
     approval_event = _find_approval_event(latest_tool_events)
     if approval_event:
         review_id = _review_id_from_event(approval_event)
@@ -183,7 +204,6 @@ def classify_and_record_learning_signal(
             "record_result": f"approval_required event skipped for error memory{suffix}",
         }
 
-    raw_content = str(redact_learning_payload(raw_content or ""))
     post_approval_review_id = _post_approval_review_id(
         raw_content=raw_content,
         conversation_context=conversation_context,
@@ -453,6 +473,55 @@ def _has_pending_load_skill_approval(
 
 def _has_verification_read_event(latest_tool_events: list[dict]) -> bool:
     return any(_is_verification_read_event(event) for event in latest_tool_events)
+
+
+def _has_load_skill_status_message(
+    *,
+    raw_content: str,
+    latest_tool_events: list[dict],
+    latest_llm_messages: list[dict],
+) -> bool:
+    if any(_is_load_skill_event(event) for event in latest_tool_events):
+        return True
+
+    latest_text = _stringify_for_scan(latest_llm_messages).lower()
+    if _contains_load_skill_status_text(latest_text):
+        return True
+
+    if not latest_tool_events and not latest_llm_messages:
+        return _contains_load_skill_status_text(str(raw_content).lower())
+    return False
+
+
+def _is_load_skill_event(event: dict[str, Any]) -> bool:
+    if not isinstance(event, dict):
+        return False
+    names = {
+        str(event.get("tool", "")).lower(),
+        str(event.get("tool_name", "")).lower(),
+        str(event.get("name", "")).lower(),
+        str(event.get("target", "")).lower(),
+    }
+    if "load_skill" in names:
+        return True
+
+    event_type = str(event.get("type") or event.get("event_type") or "").lower()
+    if event_type == "tool.call.before" and "load_skill" in _stringify_for_scan(event).lower():
+        return True
+    return False
+
+
+def _contains_load_skill_status_text(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in (
+            "loaded skill",
+            "already loaded",
+            "skill 已成功加载",
+            "已成功加载 skill",
+            "已加载",
+        )
+    )
 
 
 def _is_verification_read_event(event: dict[str, Any]) -> bool:

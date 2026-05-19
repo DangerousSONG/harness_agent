@@ -32,6 +32,10 @@ def evolve_skill_from_promotion(
     if not candidate:
         return SkillEvolutionFlowResult(False, f"Rejected {promo_id}: promotion candidate was not found.")
 
+    decision_block = _promotion_decision_block(candidate)
+    if decision_block:
+        return decision_block
+
     source_text = browser.source_memory_text(candidate)
     allowed, reason, _rule_text = evaluate_skill_patch_candidate(candidate, source_text)
     if not allowed:
@@ -164,6 +168,42 @@ def _guide_skill_review(
         review_id,
         "skill_review",
     )
+
+
+def _promotion_decision_block(candidate) -> SkillEvolutionFlowResult | None:
+    decision = str(getattr(candidate, "promotion_decision", "") or "").strip().lower()
+    target = str(getattr(candidate, "eligible_target", "") or "").strip().lower()
+    if decision == "legacy":
+        return SkillEvolutionFlowResult(
+            False,
+            (
+                f"Rejected {candidate.promo_id}: legacy promotion candidate is missing "
+                "promotion_decision, promotion_score, or eligible_target; regenerate it with Promotion Eligibility."
+            ),
+            stage="promotion_rejected",
+        )
+    if decision and decision != "promote":
+        return SkillEvolutionFlowResult(
+            False,
+            f"Rejected {candidate.promo_id}: promotion_decision={decision} cannot enter skill evolution.",
+            stage="promotion_rejected",
+        )
+    if target == "legacy":
+        return SkillEvolutionFlowResult(
+            False,
+            (
+                f"Rejected {candidate.promo_id}: legacy promotion candidate is missing "
+                "eligible_target; regenerate it with Promotion Eligibility."
+            ),
+            stage="promotion_rejected",
+        )
+    if target and target != "skill_rule":
+        return SkillEvolutionFlowResult(
+            False,
+            f"Rejected {candidate.promo_id}: eligible_target={target} cannot enter skill evolution.",
+            stage="promotion_rejected",
+        )
+    return None
 
 
 def _find_review(review_store, review_type: str, candidate_id: str, status: str) -> dict[str, Any] | None:

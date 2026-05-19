@@ -97,7 +97,7 @@ def evaluate_skill_patch_candidate(
         return False, f"promotion_decision={candidate.promotion_decision} is not eligible for SKILL.md promotion.", ""
     if candidate.eligible_target and candidate.eligible_target != "skill_rule":
         return False, f"eligible_target={candidate.eligible_target} is not eligible for SKILL.md promotion.", ""
-    if source_type not in ALLOWED_SKILL_PATCH_SOURCE_TYPES:
+    if not _is_skill_rule_source_type(source_type, candidate.occurrence_count):
         return False, f"source_memory_type={source_type or '(unknown)'} is not eligible for SKILL.md promotion.", ""
     if SECRET_PATTERN.search(text):
         return False, "promotion text contains secret/token/api key/password terms.", ""
@@ -120,6 +120,14 @@ def evaluate_skill_patch_candidate(
     if SECRET_PATTERN.search(rule_text) or UNSAFE_INSTRUCTION_PATTERN.search(rule_text):
         return False, "proposed rule contains unsafe or secret-like terms.", ""
     return True, "Recurring promotion is suitable for a reviewed skill rule.", rule_text
+
+
+def _is_skill_rule_source_type(source_type: str, occurrence_count: int) -> bool:
+    if source_type in {"learning", "feature_request"}:
+        return True
+    if source_type == "error":
+        return occurrence_count >= 3
+    return False
 
 
 def _is_transferable_skill_rule(
