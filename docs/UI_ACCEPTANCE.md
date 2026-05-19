@@ -268,19 +268,35 @@ Dangling PROMOs are candidates whose source memory record is missing. They are n
 
 ## Chat Trace Visual Acceptance
 
-1. Every Chat response includes a `RUN-*` id and visible trace cards for the external work performed.
+1. Every Chat response includes a `RUN-*` id, `intent`, and visible trace cards for the external work performed.
 2. Trace cards are compact by default and can expand to show command/API/path metadata.
 3. Status badges are visually distinct: completed green, running/pending blue, failed red, waiting neutral.
 4. Approval events are more prominent than ordinary traces and expose review id, type, severity, target asset, and explicit action buttons.
-5. Final answers appear after trace cards as the clear conclusion of the run.
+5. `analyze`, `skill_route`, `tool_call`, `file_trace`, `approval_event`, and `next_action` traces render with distinct labels/icons.
+6. Final answers appear after trace cards as the clear conclusion of the run.
+
+## Skill-aware Chat Runtime Acceptance Steps
+
+1. In Chat, type "你好". Confirm the response is a direct Chinese greeting with `intent=general_chat`, no `Used skill / Why / Output / Memory` template, and no forced `self_improvement` attribution.
+2. Ask "今天天气怎样？用中文回答". Confirm Chat returns `intent=external_realtime_query`, asks for a city when missing, says realtime weather lookup is needed, and does not fabricate weather.
+3. Ask "你可以帮我写天气查询的工具吗？". Confirm Chat returns `intent=tool_creation_request`, uses `tool_usage` when available, and returns a `weather_query` tool design instead of entering a weather lookup waiting state.
+4. Ask "帮我创建 weather_query skill". Confirm Chat returns `type=proposed_action`, includes a review-required trace, and does not create or modify `skills/weather_query/SKILL.md`.
+5. Ask for a book-note template. Confirm the response uses `markdown_writer`, shows `analyze` and `skill_route` trace cards, returns the template, and does not contain `Only command-mode chat is implemented`.
+6. State "以后读书笔记都按书名、核心观点、三条启发、行动清单来写". Confirm Chat creates an `LRN-*` learning signal under `markdown_writer` memory, returns `type=memory_captured`, and shows a memory/file write trace.
+7. Ask for current workspace skills. Confirm Chat returns `intent=skill_list_query`, the available skill list from `/api/skills`, and a completed API trace card.
+8. Ask where the system is currently blocked. Confirm Chat returns `intent=workspace_status_query`, selected PROMO state when context has `current_promo_id`, or a workspace-level promotion summary when none is selected.
+9. Ask Chat to generate a regression review or continue the current PROMO. Confirm it calls the existing `POST /api/promotions/{promo_id}/evolve` flow, shows a tool-call trace, creates or reuses an approval review, and does not modify `SKILL.md`.
+10. Ask Chat to apply a review. Confirm it returns `type=approval_required`, includes a diff preview in `data.patch`, shows an approval-event trace card, and requires a confirmation action before calling `/api/reviews/{review_id}/apply`.
 
 ## Actual Result
 
 - `npm.cmd --prefix web/ui run build` passed.
+- Bundled Python `compileall` over `harness runtime tools safety web` passed.
 - Direct runtime validation of legacy regeneration passed: a legacy PROMO was marked `legacy_rejected`, and a new PROMO was created with `promotion_decision=promote`, numeric `promotion_score`, and `eligible_target=skill_rule`.
 - `python scripts/seed_self_evolution_demo.py --skill markdown_writer` is available for local UI acceptance seeding; unit coverage verifies it creates a real LRN and a PROMO that references that LRN.
 - `PROMO-F2C53BB` was an invalid example ID and must not be used as a fixed test value. The local store contains `PROMO-F2C535BB`; acceptance should always use the ID returned by `/api/promotions`.
 - API-level validation through FastAPI TestClient could not run in this shell because the available Python runtime does not include `fastapi`, the repository `.venv` points to a missing Python executable, and network access for installing temporary Python dependencies was blocked by the environment.
+- REPL validation with `"q" | python .\harness\agent_harness.py` could not run in this shell: the plain `python` command is unavailable, the repository `.venv` points to a missing interpreter, and the bundled Python lacks the `openai` package.
 
 ## Known Issues
 

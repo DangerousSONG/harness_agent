@@ -314,6 +314,7 @@ export default function App() {
           role: "agent",
           text: payload.message || payload.data?.message || "Done.",
           type: payload.type || "answer",
+          intent: payload.intent || "",
           run_id: payload.run_id || "",
           used_skill: payload.used_skill || "",
           why: payload.why || "",
@@ -510,6 +511,10 @@ export default function App() {
       }
       if (path === "/api/skills") {
         setPage("versions");
+        return;
+      }
+      if (path === "/api/reviews") {
+        setPage("reviews");
         return;
       }
       const reviewMatch = path.match(/^\/api\/reviews\/([^/]+)(?:\/patch)?$/);

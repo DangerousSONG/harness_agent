@@ -90,7 +90,15 @@ Stage 1 skill memory support now lives in `runtime/skill_memory.py`.
 
 `web/server.py` exposes the local asset-governance API and a skill-aware Chat entry point at `POST /api/chat`. The older `/api/chat/send` path remains as a compatible alias.
 
-Chat is not only a command console. It routes ordinary natural-language requests to the relevant workspace skill context, returns structured response types, and can read current workspace state including skills, memories, promotions, reviews, and versions. Deterministic routing currently covers writing/markdown requests, file editing advice, tool/error questions, and self-improvement workflows.
+Chat is not only a command console. It now runs a small runtime pipeline:
+
+1. Intent Router classifies the user request into canonical intents such as `general_chat`, `writing_request`, `workspace_status_query`, `skill_list_query`, `review_query`, `promotion_query`, `evolution_action_request`, `tool_creation_request`, `skill_creation_request`, `file_operation_request`, `memory_preference`, and `external_realtime_query`.
+2. Context Loader reads only the workspace state needed for that intent, such as skills for skill-list and skill-routing requests, or dashboard/review/promotion/version state for evolution status.
+3. Skill Selector maps writing to `markdown_writer`, file changes to file-editing skills, tool/API work to `tool_usage`, and self-evolution/review/version work to `self_improvement`.
+4. Planner and Safety Gate choose whether to answer directly, ask for missing information, capture memory, call an existing workspace API, or return a proposed/confirmation-required action.
+5. Response Composer returns natural language plus an auditable `trace[]`; it does not expose hidden chain-of-thought.
+
+Deterministic routing covers writing/markdown requests, file editing advice, tool creation/design, skill creation proposals, tool/error questions, realtime external-data limits, and self-improvement workflows. Weather-like requests are routed by intent: asking for today's weather is an `external_realtime_query` and will not fabricate data without a weather tool, while asking to build a weather tool is a `tool_creation_request`.
 
 When Chat sees an explicit long-term preference or correction, it records a learning signal through `SkillMemoryManager.record_learning` and returns the resulting `LRN-*` id. Promotion candidates remain separate suggestions: Chat may surface a proposed promotion or evolution action, but it does not edit `SKILL.md`.
 
@@ -101,11 +109,12 @@ Conversational evolution operations stay behind existing APIs:
 - Apply responses include diff-preview data before the UI calls the review apply API.
 - Rollback is routed through the version rollback API and creates a review only.
 
-The Chat response shape includes `run_id`, `type`, `message`, `used_skill`, `why`, `memory_record_id`, `trace`, `actions`, and `data`, allowing the UI to render normal answers, skill results, memory captures, proposed actions, tool results, approval-required states, and errors differently. Ordinary `answer` messages keep `message` as natural-language content and do not force a skill attribution.
+The Chat response shape includes `run_id`, `intent`, `type`, `message`, `used_skill`, `why`, `memory_record_id`, `trace`, `actions`, and `data`, allowing the UI to render normal answers, skill results, memory captures, proposed actions, tool results, approval-required states, and errors differently. Ordinary `answer` messages keep `message` as natural-language content and do not force a skill attribution.
 
 `trace[]` is an auditable external execution trace, not hidden chain-of-thought. It may include:
 
 - `reasoning_summary`: a short visible work summary such as intent understanding.
+- `analyze`: canonical visible intent-analysis summary for new Chat responses.
 - `skill_route`: selected skill, reason, confidence, and memory-capture candidacy.
 - `tool_call`: safeharness API calls, memory-tool calls, or unavailable tool notices.
 - `command_trace`: shell command summaries when commands are actually run.

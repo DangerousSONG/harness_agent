@@ -70,6 +70,11 @@ function Bubble({ role, message, children, time, onAction }) {
                   {message.memory_record_id}
                 </span>
               ) : null}
+              {message.intent ? (
+                <span className="rounded bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-500">
+                  {message.intent}
+                </span>
+              ) : null}
             </div>
           ) : null}
           {showSkillMeta && message?.why ? (
@@ -82,6 +87,11 @@ function Bubble({ role, message, children, time, onAction }) {
             ) : null}
             <MarkdownText text={children} />
           </div>
+          {!user && message.type === "error" && message.data?.suggested_fix ? (
+            <div className="mt-3 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
+              {message.data.suggested_fix}
+            </div>
+          ) : null}
           {!user && actions.length ? (
             <div className="mt-3 flex flex-wrap gap-2">
               {actions.map((action) => (
@@ -109,6 +119,7 @@ function Bubble({ role, message, children, time, onAction }) {
 }
 
 const TRACE_ICONS = {
+  analyze: Activity,
   reasoning_summary: Activity,
   skill_route: Route,
   tool_call: Wrench,
@@ -120,6 +131,7 @@ const TRACE_ICONS = {
 };
 
 const TRACE_LABELS = {
+  analyze: "Analyze",
   reasoning_summary: "Analyze",
   skill_route: "Skill route",
   tool_call: "Tool call",

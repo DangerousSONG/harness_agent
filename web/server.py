@@ -123,6 +123,7 @@ def chat_ok(
     *,
     response_type: str,
     message: str,
+    intent: str = "unknown",
     used_skill: str | None = None,
     why: str = "",
     memory_record_id: str = "",
@@ -137,6 +138,7 @@ def chat_ok(
         content={
             "ok": True,
             "run_id": run_id,
+            "intent": intent,
             "type": response_type,
             "message": message,
             "used_skill": used_skill,
@@ -598,6 +600,7 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
         return chat_ok(
             response_type=data.get("type", "answer"),
             message=data.get("message", ""),
+            intent=data.get("intent", "unknown"),
             used_skill=data.get("used_skill", ""),
             why=data.get("why", ""),
             memory_record_id=data.get("memory_record_id", ""),
@@ -621,6 +624,7 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
         return chat_ok(
             response_type=data.get("type", "answer"),
             message=data.get("message", ""),
+            intent=data.get("intent", "unknown"),
             used_skill=data.get("used_skill", ""),
             why=data.get("why", ""),
             memory_record_id=data.get("memory_record_id", ""),
@@ -1049,71 +1053,124 @@ def _next_evolution_action(regression: dict[str, Any], skill_review: dict[str, A
 
 def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict[str, Any]:
     if message.startswith("/"):
-        return _handle_command(ctx, message)
+        data = _handle_command(ctx, message)
+        data.setdefault("intent", "workspace_status_query")
+        return data
 
     intent = _chat_intent(message)
-    used_skill, skill_reason = _route_skill(ctx, message, context, intent)
-    base_trace = [_reasoning_trace(_intent_summary(intent))]
+    loaded_context, load_trace = _load_chat_context(ctx, intent, context)
+    used_skill, skill_reason = _route_skill(ctx, message, context, intent, loaded_context)
+    base_trace = [_reasoning_trace(_intent_summary(intent)), *load_trace]
 
-    if intent == "greeting":
-        return _chat_result(
+    def done(data: dict[str, Any]) -> dict[str, Any]:
+        data["intent"] = intent
+        return data
+
+    if intent == "general_chat" and _is_greeting(message):
+        return done(_chat_result(
             "answer",
             used_skill,
             skill_reason,
             "\u4f60\u597d\uff01\u6211\u5728\u3002\u4f60\u53ef\u4ee5\u76f4\u63a5\u8ddf\u6211\u804a\uff0c\u4e5f\u53ef\u4ee5\u8ba9\u6211\u5199\u5185\u5bb9\u3001\u770b workspace \u72b6\u6001\u3001\u5904\u7406 skills \u548c reviews\u3002",
             trace=base_trace,
+        ))
+    if intent == "external_realtime_query":
+        city_known = _weather_city_mentioned(message)
+        realtime_note = (
+            "\u6211\u8bc6\u522b\u5230\u4f60\u95ee\u7684\u662f\u5b9e\u65f6\u5929\u6c14\u3002"
+            if city_known
+            else "\u6211\u8bc6\u522b\u5230\u4f60\u95ee\u7684\u662f\u5b9e\u65f6\u5929\u6c14\uff0c\u4f46\u8fd8\u7f3a\u5c11\u57ce\u5e02\u6216\u5730\u533a\u3002"
         )
-    if intent == "weather":
-        return _chat_result(
+        message_text = (
+            "\u6211\u4e0d\u80fd\u5728\u8fd9\u4e2a workspace \u91cc\u76f4\u63a5\u7f16\u9020\u5b9e\u65f6\u5929\u6c14\u3002"
+            if city_known
+            else "\u8fd9\u4e2a\u95ee\u9898\u9700\u8981\u5148\u786e\u8ba4\u57ce\u5e02\uff0c\u7136\u540e\u8c03\u7528\u5b9e\u65f6\u5929\u6c14\u5de5\u5177\u3002"
+        )
+        return done(_chat_result(
             "answer",
             used_skill,
             skill_reason,
-            "\u6211\u53ef\u4ee5\u5e2e\u4f60\u67e5\u5929\u6c14\uff0c\u4f46\u9700\u8981\u4f60\u5148\u544a\u8bc9\u6211\u57ce\u5e02\u6216\u5730\u533a\u3002\u8fd9\u7c7b\u95ee\u9898\u9700\u8981\u5b9e\u65f6\u5929\u6c14\u67e5\u8be2\u5de5\u5177\uff1b\u53ea\u9760\u5f53\u524d workspace \u72b6\u6001\u4e0d\u80fd\u51c6\u786e\u56de\u7b54\u3002",
+            f"{realtime_note}{message_text}\u5f53\u524d Chat API \u672a\u63a5\u5165 weather_query \u5de5\u5177\uff0c\u6240\u4ee5\u6211\u53ea\u80fd\u8bf4\u660e\u9700\u8981\u7684\u4fe1\u606f\uff0c\u4e0d\u4f1a\u4f2a\u9020\u5b9e\u65f6\u7ed3\u679c\u3002",
             trace=[
-                _reasoning_trace("\u6211\u8bc6\u522b\u5230\u8fd9\u662f\u5b9e\u65f6\u5929\u6c14\u67e5\u8be2\uff1b\u5f53\u524d\u8bf7\u6c42\u6ca1\u6709\u57ce\u5e02\u4fe1\u606f\uff0c\u4e14 Chat API \u672a\u63a5\u5165\u5929\u6c14\u5de5\u5177\u3002"),
+                *base_trace,
                 _trace(
                     "tool_call",
                     "Weather tool",
                     status="waiting",
-                    tool_name="weather",
+                    tool_name="weather_query",
                     method="GET",
-                    summary="\u9700\u8981\u57ce\u5e02\u548c\u5b9e\u65f6\u5929\u6c14\u5de5\u5177\u540e\u624d\u80fd\u67e5\u8be2\u3002",
+                    summary="\u9700\u8981\u57ce\u5e02\u548c\u5b9e\u65f6\u5929\u6c14\u5de5\u5177\u540e\u624d\u80fd\u67e5\u8be2\uff1b\u672a\u8c03\u7528\u5916\u90e8\u6570\u636e\u3002",
                 ),
             ],
-        )
-    if intent == "memory_capture":
-        return _capture_learning_memory(ctx, message, used_skill, skill_reason)
-    if intent == "list_skills":
-        skills = _skills(ctx)
+        ))
+    if intent == "tool_creation_request":
+        return done(_chat_result(
+            "skill_result",
+            used_skill,
+            skill_reason,
+            _tool_design_answer(message),
+            "No durable memory was captured.",
+            data={"tool_name": "weather_query" if _has_any(message, ["\u5929\u6c14", "weather"]) else "custom_tool"},
+            trace=base_trace,
+        ))
+    if intent == "skill_creation_request":
+        return done(_chat_result(
+            "proposed_action",
+            used_skill,
+            skill_reason,
+            _skill_creation_proposal(message),
+            "No durable memory was captured.",
+            actions=[_action("Review proposed skill plan", "GET", "/api/reviews", False)],
+            trace=[
+                *base_trace,
+                _trace(
+                    "approval_event",
+                    "Review required",
+                    status="waiting",
+                    target_asset="skills/weather_query/SKILL.md" if "weather" in message.lower() or "\u5929\u6c14" in message else "skills/<new_skill>/SKILL.md",
+                    summary="Creating or modifying SKILL.md must go through a review/approval flow; Chat did not write files.",
+                ),
+            ],
+        ))
+    if intent == "file_operation_request":
+        return done(_chat_result(
+            "proposed_action",
+            used_skill,
+            skill_reason,
+            "\u6211\u53ef\u4ee5\u5e2e\u4f60\u89c4\u5212\u6587\u4ef6\u4fee\u6539\uff0c\u4f46\u5199\u5165\u3001apply\u3001rollback \u90fd\u9700\u8981\u5148\u8fdb\u5165 review/confirmation\u3002\u8bf7\u7ed9\u6211\u76ee\u6807\u6587\u4ef6\u548c\u671f\u671b\u53d8\u66f4\uff0c\u6211\u4f1a\u751f\u6210\u53ef\u5ba1\u9605\u7684 proposed action\u3002",
+            "No durable memory was captured.",
+            trace=[
+                *base_trace,
+                _trace(
+                    "approval_event",
+                    "Write safety gate",
+                    status="waiting",
+                    summary="File writes are not executed directly from Chat.",
+                ),
+            ],
+        ))
+    if intent == "memory_preference":
+        return done(_capture_learning_memory(ctx, message, used_skill, skill_reason))
+    if intent == "skill_list_query":
+        skills = loaded_context.get("skills", _skills(ctx))
         names = ", ".join(skill["name"] for skill in skills) or "none"
-        return _chat_result(
+        return done(_chat_result(
             "skill_result",
             used_skill,
             skill_reason,
             f"Workspace skills: {names}.",
             "No durable memory was captured.",
             data={"skills": skills},
-            trace=[
-                *base_trace,
-                _trace(
-                    "tool_call",
-                    "API request",
-                    tool_name="safeharness",
-                    method="GET",
-                    path="/api/skills",
-                    status="completed",
-                    summary=f"Loaded {len(skills)} workspace skills.",
-                ),
-            ],
-        )
-    if intent == "workspace_status":
-        return _chat_workspace_status(ctx, context, used_skill, skill_reason)
-    if intent == "evolution_status":
-        return _chat_evolution_status(ctx, context, used_skill, skill_reason)
-    if intent == "generate_regression_review":
+            trace=base_trace,
+        ))
+    if intent == "workspace_status_query":
+        return done(_chat_workspace_status(ctx, context, used_skill, skill_reason, loaded_context, base_trace))
+    if intent == "promotion_query":
+        return done(_chat_evolution_status(ctx, context, used_skill, skill_reason, loaded_context, base_trace))
+    if intent == "evolution_action_request":
         promo = _current_promo(ctx, context)
         if not promo:
-            return _chat_result(
+            return done(_chat_result(
                 "proposed_action",
                 used_skill,
                 skill_reason,
@@ -1132,12 +1189,18 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
                         summary="No current promotion candidate was selected or actionable.",
                     ),
                 ],
-            )
-        return _chat_continue_promotion(ctx, promo, used_skill, skill_reason, base_trace)
-    if intent == "continue_promo":
+            ))
+        return done(_chat_continue_promotion(ctx, promo, used_skill, skill_reason, base_trace))
+    if intent == "review_query" and _is_approval_request(message):
+        return done(_chat_review_action(ctx, message, context, used_skill, skill_reason, "approve"))
+    if intent == "review_query" and _is_apply_request(message):
+        return done(_chat_review_action(ctx, message, context, used_skill, skill_reason, "apply"))
+    if intent == "review_query":
+        return done(_chat_review_explain(ctx, message, context, used_skill, skill_reason))
+    if intent == "promotion_query" and _is_continue_request(message):
         promo = _current_promo(ctx, context)
         if not promo:
-            return _chat_result(
+            return done(_chat_result(
                 "proposed_action",
                 used_skill,
                 skill_reason,
@@ -1156,16 +1219,10 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
                         summary="No current promotion candidate was selected or actionable.",
                     ),
                 ],
-            )
-        return _chat_continue_promotion(ctx, promo, used_skill, skill_reason, base_trace)
-    if intent == "review_explain":
-        return _chat_review_explain(ctx, message, context, used_skill, skill_reason)
-    if intent == "approve_review":
-        return _chat_review_action(ctx, message, context, used_skill, skill_reason, "approve")
-    if intent == "apply_review":
-        return _chat_review_action(ctx, message, context, used_skill, skill_reason, "apply")
-    if intent == "rollback":
-        return _chat_result(
+            ))
+        return done(_chat_continue_promotion(ctx, promo, used_skill, skill_reason, base_trace))
+    if "rollback" in message.lower() or "\u56de\u6eda" in message:
+        return done(_chat_result(
             "approval_required",
             used_skill,
             skill_reason,
@@ -1179,19 +1236,19 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
                     "Human approval required",
                     status="waiting",
                     summary="Rollback is review-only and must be created for a concrete skill version.",
-                ),
-            ],
-        )
+                    ),
+                ],
+        ))
 
     answer = _draft_answer(message, intent)
-    return _chat_result(
+    return done(_chat_result(
         "skill_result" if used_skill else "answer",
         used_skill,
         skill_reason,
         answer,
         "No durable memory was captured.",
         trace=base_trace,
-    )
+    ))
 
 
 def _chat_result(
@@ -1211,7 +1268,7 @@ def _chat_result(
         payload_data = {**payload_data, "memory_note": memory_note}
     run_id = _run_id()
     trace_items = list(trace or [])
-    if not any(item.get("type") == "reasoning_summary" for item in trace_items):
+    if not any(item.get("type") == "analyze" for item in trace_items):
         trace_items.insert(0, _reasoning_trace(skill_reason or "Handled the request."))
     if used_skill and not any(item.get("type") == "skill_route" for item in trace_items):
         trace_items.insert(
@@ -1267,8 +1324,8 @@ def _trace(trace_type: str, title: str, **fields: Any) -> dict[str, Any]:
 
 def _reasoning_trace(summary: str) -> dict[str, Any]:
     return _trace(
-        "reasoning_summary",
-        "Analyze",
+        "analyze",
+        "Analyze request",
         status="completed",
         summary=summary,
     )
@@ -1292,79 +1349,98 @@ def _next_action_traces(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _intent_summary(intent: str) -> str:
     summaries = {
-        "greeting": "I recognized a greeting and prepared a direct assistant response.",
-        "weather": "I recognized a realtime weather request and checked whether enough information/tooling is available.",
-        "memory_capture": "I recognized an explicit long-term preference that should be captured as a learning signal.",
-        "list_skills": "I recognized a workspace skills query and will read the skill registry.",
-        "workspace_status": "I recognized a workspace progress query and will summarize reviews, promotions, and versions.",
-        "evolution_status": "I recognized a self-evolution progress query and will inspect the current promotion flow.",
-        "generate_regression_review": "I recognized a request to generate regression review coverage through the controlled evolution API.",
-        "continue_promo": "I recognized a request to continue the current promotion through the controlled evolution API.",
-        "review_explain": "I recognized a request to inspect a review and explain the proposed change.",
-        "approve_review": "I recognized a review approval request; confirmation is required before preview generation.",
-        "apply_review": "I recognized a review apply request; confirmation and diff inspection are required.",
-        "writing": "I recognized a writing request and will route to the appropriate writing skill.",
+        "general_chat": "Recognized a general conversational request and prepared a direct response.",
+        "writing_request": "Recognized a writing request and routed it toward the appropriate writing skill.",
+        "explanation_request": "Recognized an explanation request and prepared an explanatory response.",
+        "workspace_status_query": "Recognized a workspace status query and loaded only dashboard progress context.",
+        "skill_list_query": "Recognized a skill-list query and loaded the skill registry.",
+        "review_query": "Recognized a review request and kept approval/apply behind confirmation.",
+        "promotion_query": "Recognized a promotion or self-evolution status query.",
+        "evolution_action_request": "Recognized a request to advance an evolution flow through existing review APIs.",
+        "tool_creation_request": "Recognized that the user wants to design or create a tool, not run the tool.",
+        "skill_creation_request": "Recognized that the user wants a new skill; file creation must be proposed for review.",
+        "file_operation_request": "Recognized a file operation request and routed it through the write safety gate.",
+        "memory_preference": "Recognized an explicit durable preference that should be captured as memory.",
+        "external_realtime_query": "Recognized a realtime external-information request and checked tool availability.",
+        "unknown": "Could not confidently classify the request; choosing the safest general response.",
     }
     return summaries.get(intent, "I classified the request and selected the safest available response path.")
 
 
 def _chat_intent(message: str) -> str:
     text = message.lower()
-    compact = re.sub(r"[\s\uff01!,.\uff0c\u3002\uff1f?]+", "", message).lower()
-    if compact in {"hi", "hello", "hey", "\u4f60\u597d", "\u55e8", "\u54c8\u55bd"}:
-        return "greeting"
+    if not re.search(r"[A-Za-z0-9\u4e00-\u9fff]", message):
+        return "unknown"
     if _looks_like_memory_request(message):
-        return "memory_capture"
-    if _has_any(message, ["\u5929\u6c14", "weather", "\u4e0b\u96e8", "\u6c14\u6e29", "\u51e0\u5ea6"]):
-        return "weather"
+        return "memory_preference"
+    if _looks_like_skill_creation_request(message):
+        return "skill_creation_request"
+    if _looks_like_tool_creation_request(message):
+        return "tool_creation_request"
     if _has_any(message, ["\u5f53\u524d\u6709\u54ea\u4e9b skills", "\u6709\u54ea\u4e9b skills", "\u6709\u54ea\u4e9b\u6280\u80fd", "\u5f53\u524d\u6280\u80fd"]) or "available skills" in text:
-        return "list_skills"
+        return "skill_list_query"
     if _has_any(message, ["\u7cfb\u7edf\u5361\u5728\u54ea", "\u5361\u5728\u54ea", "\u5361\u54ea\u4e00\u6b65", "\u5f53\u524d\u8fdb\u5ea6", "\u7cfb\u7edf\u72b6\u6001", "workspace status"]):
-        return "workspace_status"
-    if ("self-evolution" in text or "evolution" in text or "\u8fdb\u5316" in message) and _has_any(message, ["\u5361", "\u72b6\u6001", "\u8fdb\u5ea6", "\u54ea\u4e00\u6b65"]):
-        return "evolution_status"
-    if "regression review" in text or "\u56de\u5f52 review" in message or "\u56de\u5f52\u8bc4\u5ba1" in message:
-        return "generate_regression_review"
-    if "promo" in text and _has_any(message, ["\u7ee7\u7eed", "\u63a8\u8fdb", "\u4e0b\u4e00\u6b65"]):
-        return "continue_promo"
-    if "review" in text and (_has_any(message, ["\u6539\u4e86\u4ec0\u4e48", "\u89e3\u91ca", "\u8bf4\u660e"]) or "what changed" in text):
-        return "review_explain"
-    if re.search(r"\bapprove\b", text) or "\u6279\u51c6" in message or "\u901a\u8fc7\u8fd9\u4e2a review" in message:
-        return "approve_review"
-    if re.search(r"\bapply\b", text) or "\u5e94\u7528\u8fd9\u4e2a review" in message or "apply \u8fd9\u4e2a review" in text:
-        return "apply_review"
-    if "rollback" in text or "\u56de\u6eda" in message:
-        return "rollback"
+        return "workspace_status_query"
+    if _looks_like_evolution_action_request(message):
+        return "evolution_action_request"
+    if _looks_like_review_request(message):
+        return "review_query"
+    if _looks_like_promotion_query(message):
+        return "promotion_query"
+    if _has_any(message, ["\u5929\u6c14", "weather", "\u4e0b\u96e8", "\u6c14\u6e29", "\u51e0\u5ea6"]):
+        return "external_realtime_query"
+    if _looks_like_file_operation_request(message):
+        return "file_operation_request"
     if _has_any(message, ["PRD", "\u6a21\u677f", "\u6574\u7406", "\u66f4\u6b63\u5f0f", "\u5927\u7eb2", "\u8bfb\u4e66\u7b14\u8bb0"]):
-        return "writing"
+        return "writing_request"
     if _has_any(message, ["\u62a5\u9519", "\u9519\u8bef", "traceback", "exception", "error"]):
-        return "explain_error"
+        return "explanation_request"
     if "self-evolving skill" in text or "\u81ea\u8fdb\u5316 skill" in message:
-        return "self_evolving_explain"
-    return "general"
+        return "explanation_request"
+    if _is_greeting(message):
+        return "general_chat"
+    return "general_chat"
 
 
-def _route_skill(ctx: WebContext, message: str, context: dict[str, Any], intent: str) -> tuple[str | None, str]:
+def _route_skill(
+    ctx: WebContext,
+    message: str,
+    context: dict[str, Any],
+    intent: str,
+    loaded_context: dict[str, Any] | None = None,
+) -> tuple[str | None, str]:
     current = normalize_name(str(context.get("current_skill", "") or ""))
-    available = {skill["name"] for skill in _skills(ctx)}
-    if intent == "list_skills":
+    loaded_context = loaded_context or {}
+    if intent == "skill_list_query":
         return None, "Read the workspace skill registry."
-    if intent == "workspace_status":
-        return "self_improvement", "Read dashboard, promotion, review, and version state."
-    if intent in {"greeting", "weather", "general"}:
+    if intent in {"general_chat", "external_realtime_query", "unknown"}:
         return None, "General assistant answer; no workspace skill is needed."
-    if current in available and intent in {"memory_capture", "continue_promo", "review_explain", "approve_review", "apply_review"}:
+    if intent == "workspace_status_query":
+        return "self_improvement", "Read dashboard, promotion, review, and version state."
+    skill_rows = loaded_context.get("skills")
+    available = {skill["name"] for skill in skill_rows} if skill_rows is not None else {
+        skill["name"] for skill in _skills(ctx)
+    }
+    if current in available and intent in {"review_query", "promotion_query", "evolution_action_request"}:
         return current, "The page context names this as the current skill."
-    if intent in {"memory_capture", "writing"} or _has_any(message, ["markdown", "\u8bfb\u4e66\u7b14\u8bb0", "PRD", "\u6a21\u677f", "\u5927\u7eb2", "\u6b63\u5f0f"]):
+    if intent == "memory_preference":
+        if _has_any(message, ["\u8bfb\u4e66\u7b14\u8bb0", "markdown", "PRD"]):
+            return _first_available(available, ["markdown_writer", current, "self_improvement"]), "The preference is about reusable markdown/writing behavior."
+        if _has_any(message, ["\u5929\u6c14", "weather", "\u5de5\u5177", "tool"]):
+            return _first_available(available, ["tool_usage", current, "self_improvement"]), "The preference is about future tool behavior."
+        return _first_available(available, [current, "self_improvement"]), "The request is a durable preference that belongs in skill memory."
+    if intent == "writing_request" or _has_any(message, ["markdown", "\u8bfb\u4e66\u7b14\u8bb0", "PRD", "\u6a21\u677f", "\u5927\u7eb2", "\u6b63\u5f0f"]):
         return _first_available(available, ["markdown_writer", current, "self_improvement"]), "The request is about writing or reusable markdown structure."
-    if intent in {"continue_promo", "evolution_status", "generate_regression_review", "approve_review", "apply_review", "review_explain", "rollback"}:
+    if intent in {"promotion_query", "evolution_action_request", "review_query", "skill_creation_request"}:
         return "self_improvement", "The request touches promotion, review, memory, version, or self-evolution workflow."
-    if _has_any(message, ["\u6587\u4ef6", "\u4fee\u6539", "patch", "diff", "\u7f16\u8f91"]):
+    if intent == "file_operation_request":
         return _first_available(available, ["file_editing", "file_modification", current, "self_improvement"]), "The request is about file editing or patch advice."
-    if _has_any(message, ["\u5de5\u5177", "\u547d\u4ee4", "tool", "api", "\u63a5\u53e3"]) or intent == "explain_error":
+    if intent == "tool_creation_request":
+        if _has_any(message, ["\u5929\u6c14", "weather"]):
+            return _first_available(available, ["tool_usage", current, "self_improvement"]), "\u7528\u6237\u8bf7\u6c42\u521b\u5efa\u5929\u6c14\u67e5\u8be2\u5de5\u5177\uff0c\u800c\u4e0d\u662f\u67e5\u8be2\u5929\u6c14\u3002"
+        return _first_available(available, ["tool_usage", current, "self_improvement"]), "The user wants to design or create a tool, not execute one."
+    if _has_any(message, ["\u5de5\u5177", "\u547d\u4ee4", "tool", "api", "\u63a5\u53e3"]) or intent == "explanation_request":
         return _first_available(available, ["tool_usage", current, "self_improvement"]), "The request is about tools, commands, APIs, or error diagnosis."
-    if intent == "self_evolving_explain":
-        return "self_improvement", "The request asks about self-evolving skills."
     return None, "General assistant answer; no workspace skill is needed."
 
 
@@ -1373,6 +1449,79 @@ def _first_available(available: set[str], candidates: list[str]) -> str:
         if candidate and candidate in available:
             return candidate
     return sorted(available)[0] if available else ""
+
+
+def _load_chat_context(
+    ctx: WebContext,
+    intent: str,
+    context: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    loaded: dict[str, Any] = {}
+    trace: list[dict[str, Any]] = []
+    if intent in {
+        "skill_list_query",
+        "writing_request",
+        "tool_creation_request",
+        "skill_creation_request",
+        "file_operation_request",
+        "memory_preference",
+    }:
+        skills = _skills(ctx)
+        loaded["skills"] = skills
+        trace.append(
+            _trace(
+                "tool_call",
+                "API request",
+                tool_name="safeharness",
+                method="GET",
+                path="/api/skills",
+                status="completed",
+                summary=f"Loaded {len(skills)} workspace skills.",
+            )
+        )
+    if intent in {"workspace_status_query", "promotion_query", "evolution_action_request"}:
+        reviews = _reviews(ctx)
+        promotions = _promotions(ctx)
+        versions = _all_versions(ctx)
+        loaded.update({"reviews": reviews, "promotions": promotions, "versions": versions})
+        loaded["dashboard"] = {
+            "pending_reviews": len([item for item in reviews if item.get("status") == "pending"]),
+            "approved_reviews": len([item for item in reviews if item.get("status") == "approved"]),
+            "promotions": len(promotions),
+            "versions": len(versions),
+        }
+        trace.append(
+            _trace(
+                "tool_call",
+                "API request",
+                tool_name="safeharness",
+                method="GET",
+                path="/api/dashboard",
+                status="completed",
+                summary="Loaded dashboard counts from reviews, promotions, and versions.",
+            )
+        )
+    if intent == "review_query":
+        reviews = _reviews(ctx)
+        loaded["reviews"] = reviews
+        trace.append(
+            _trace(
+                "tool_call",
+                "API request",
+                tool_name="safeharness",
+                method="GET",
+                path="/api/reviews",
+                status="completed",
+                summary=f"Loaded {len(reviews)} reviews.",
+            )
+        )
+    current_promo_id = str(context.get("current_promo_id", "") or "")
+    if current_promo_id and intent in {"workspace_status_query", "promotion_query", "evolution_action_request"}:
+        loaded["current_promo_id"] = current_promo_id
+    current_review_id = str(context.get("current_review_id", "") or "")
+    if current_review_id and intent == "review_query":
+        loaded["current_review_id"] = current_review_id
+    return loaded, trace
 
 
 def _has_any(message: str, tokens: list[str]) -> bool:
@@ -1386,6 +1535,72 @@ def _looks_like_memory_request(message: str) -> bool:
         message,
         ["\u4ee5\u540e", "\u540e\u7eed", "\u8bb0\u4f4f", "\u957f\u671f", "\u9ed8\u8ba4", "\u90fd\u8981", "\u56fa\u5b9a"],
     ) or any(token in text for token in ("from now on", "always", "remember this", "default to"))
+
+
+def _is_greeting(message: str) -> bool:
+    compact = re.sub(r"[\s\uff01!,.\uff0c\u3002\uff1f?]+", "", message).lower()
+    return compact in {"hi", "hello", "hey", "\u4f60\u597d", "\u55e8", "\u54c8\u55bd"}
+
+
+def _looks_like_tool_creation_request(message: str) -> bool:
+    text = message.lower()
+    has_tool_noun = _has_any(message, ["\u5de5\u5177", "tool", "\u63a5\u53e3", "api", "\u547d\u4ee4"])
+    has_creation_verb = _has_any(message, ["\u5199", "\u521b\u5efa", "\u505a", "\u8bbe\u8ba1", "\u5b9e\u73b0", "\u751f\u6210", "\u5f00\u53d1", "create", "build", "write", "design", "implement"])
+    return has_tool_noun and has_creation_verb and "skill" not in text
+
+
+def _looks_like_skill_creation_request(message: str) -> bool:
+    text = message.lower()
+    has_skill = "skill" in text or "\u6280\u80fd" in message
+    has_creation_verb = _has_any(message, ["\u521b\u5efa", "\u65b0\u589e", "\u751f\u6210", "\u5199\u4e00\u4e2a", "\u505a\u4e00\u4e2a", "create", "build", "new"])
+    return has_skill and has_creation_verb
+
+
+def _looks_like_file_operation_request(message: str) -> bool:
+    return _has_any(message, ["\u6587\u4ef6", "\u4fee\u6539", "\u7f16\u8f91", "\u5199\u5165", "\u5220\u9664", "patch", "diff", "file", "edit", "write"])
+
+
+def _looks_like_review_request(message: str) -> bool:
+    text = message.lower()
+    return (
+        "review" in text
+        or re.search(r"\bREV-[A-Z0-9]{8}\b", message.upper()) is not None
+        or _has_any(message, ["\u6279\u51c6", "\u5ba1\u6279", "\u5ba1\u9605", "\u5e94\u7528\u8fd9\u4e2a", "\u901a\u8fc7\u8fd9\u4e2a"])
+    )
+
+
+def _looks_like_promotion_query(message: str) -> bool:
+    text = message.lower()
+    return "promo" in text or "promotion" in text or _has_any(message, ["\u5019\u9009", "\u63d0\u5347", "\u8fdb\u5316\u72b6\u6001"])
+
+
+def _looks_like_evolution_action_request(message: str) -> bool:
+    text = message.lower()
+    return (
+        ("promo" in text or "promotion" in text or "\u8fdb\u5316" in message or "\u56de\u5f52" in message)
+        and _has_any(message, ["\u7ee7\u7eed", "\u63a8\u8fdb", "\u4e0b\u4e00\u6b65", "\u751f\u6210", "\u521b\u5efa", "continue", "next", "generate"])
+    )
+
+
+def _is_approval_request(message: str) -> bool:
+    text = message.lower()
+    return re.search(r"\bapprove\b", text) is not None or _has_any(message, ["\u6279\u51c6", "\u901a\u8fc7"])
+
+
+def _is_apply_request(message: str) -> bool:
+    text = message.lower()
+    return re.search(r"\bapply\b", text) is not None or "\u5e94\u7528" in message
+
+
+def _is_continue_request(message: str) -> bool:
+    return _has_any(message, ["\u7ee7\u7eed", "\u63a8\u8fdb", "\u4e0b\u4e00\u6b65", "continue", "next"])
+
+
+def _weather_city_mentioned(message: str) -> bool:
+    if re.search(r"\b(in|for)\s+[A-Za-z][A-Za-z\s-]{1,40}", message.lower()):
+        return True
+    known_cities = ["\u4e0a\u6d77", "\u5317\u4eac", "\u5e7f\u5dde", "\u6df1\u5733", "\u676d\u5dde", "\u5357\u4eac", "\u6210\u90fd", "\u7ebd\u7ea6", "\u4f26\u6566", "\u4e1c\u4eac"]
+    return any(city in message for city in known_cities)
 
 
 def _capture_learning_memory(
@@ -1449,7 +1664,7 @@ def _capture_learning_memory(
         actions=actions,
         data={"record_message": result, "new_promotions": new_promos},
         trace=[
-            _reasoning_trace(_intent_summary("memory_capture")),
+            _reasoning_trace(_intent_summary("memory_preference")),
             _trace(
                 "tool_call",
                 "Tool call: skill memory",
@@ -1493,10 +1708,14 @@ def _chat_evolution_status(
     context: dict[str, Any],
     used_skill: str | None,
     skill_reason: str,
+    loaded_context: dict[str, Any] | None = None,
+    base_trace: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    loaded_context = loaded_context or {}
+    base_trace = base_trace or [_reasoning_trace(_intent_summary("promotion_query"))]
     promo = _current_promo(ctx, context)
     if not promo:
-        promos = _promotions(ctx)
+        promos = loaded_context.get("promotions", _promotions(ctx))
         pending = [item for item in promos if item.get("status") != "applied"]
         output = (
             f"No current PROMO is selected. Workspace has {len(promos)} promotion candidates, "
@@ -1509,18 +1728,7 @@ def _chat_evolution_status(
             output,
             "No durable memory was captured.",
             data={"promotions": promos},
-            trace=[
-                _reasoning_trace(_intent_summary("evolution_status")),
-                _trace(
-                    "tool_call",
-                    "API request",
-                    tool_name="safeharness",
-                    method="GET",
-                    path="/api/promotions",
-                    status="completed",
-                    summary=f"Loaded {len(promos)} promotion candidates.",
-                ),
-            ],
+            trace=base_trace,
         )
     state = _evolution_state_for_promo(ctx, promo["promo_id"])
     next_action = state.get("next_action", "waiting")
@@ -1534,7 +1742,7 @@ def _chat_evolution_status(
         "No durable memory was captured.",
         data=state,
         trace=[
-            _reasoning_trace(_intent_summary("evolution_status")),
+            *base_trace,
             _trace(
                 "tool_call",
                 "API request",
@@ -1553,10 +1761,14 @@ def _chat_workspace_status(
     context: dict[str, Any],
     used_skill: str | None,
     skill_reason: str,
+    loaded_context: dict[str, Any] | None = None,
+    base_trace: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    reviews = _reviews(ctx)
-    promos = _promotions(ctx)
-    versions = _all_versions(ctx)
+    loaded_context = loaded_context or {}
+    base_trace = base_trace or [_reasoning_trace(_intent_summary("workspace_status_query"))]
+    reviews = loaded_context.get("reviews", _reviews(ctx))
+    promos = loaded_context.get("promotions", _promotions(ctx))
+    versions = loaded_context.get("versions", _all_versions(ctx))
     pending_reviews = [review for review in reviews if review.get("status") == "pending"]
     approved_reviews = [review for review in reviews if review.get("status") == "approved"]
     promo = _current_promo(ctx, context)
@@ -1587,16 +1799,7 @@ def _chat_workspace_status(
                 "evolution": state,
             },
             trace=[
-                _reasoning_trace(_intent_summary("workspace_status")),
-                _trace(
-                    "tool_call",
-                    "API request",
-                    tool_name="safeharness",
-                    method="GET",
-                    path="/api/dashboard",
-                    status="completed",
-                    summary="Loaded dashboard counts from reviews, promotions, and versions.",
-                ),
+                *base_trace,
                 _trace(
                     "tool_call",
                     "API request",
@@ -1629,18 +1832,7 @@ def _chat_workspace_status(
                 "versions": len(versions),
             }
         },
-        trace=[
-            _reasoning_trace(_intent_summary("workspace_status")),
-            _trace(
-                "tool_call",
-                "API request",
-                tool_name="safeharness",
-                method="GET",
-                path="/api/dashboard",
-                status="completed",
-                summary="Loaded dashboard counts from reviews, promotions, and versions.",
-            ),
-        ],
+        trace=base_trace,
     )
 
 
@@ -1667,8 +1859,8 @@ def _chat_review_explain(
         output,
         "No durable memory was captured.",
         data={"review": review, "patch": patch},
-        trace=[
-            _reasoning_trace(_intent_summary("review_explain")),
+            trace=[
+                _reasoning_trace(_intent_summary("review_query")),
             _trace(
                 "tool_call",
                 "API request",
@@ -1714,7 +1906,7 @@ def _chat_review_action(
             actions=[action],
             data={"review": review},
             trace=[
-                _reasoning_trace(_intent_summary("approve_review")),
+                _reasoning_trace(_intent_summary("review_query")),
                 _approval_trace(review, "Approve Preview"),
             ],
         )
@@ -1733,7 +1925,7 @@ def _chat_review_action(
         actions=[action],
         data={"review": review, "patch": patch},
         trace=[
-            _reasoning_trace(_intent_summary("apply_review")),
+            _reasoning_trace(_intent_summary("review_query")),
             _trace(
                 "tool_call",
                 "API request",
@@ -1749,7 +1941,7 @@ def _chat_review_action(
 
 
 def _draft_answer(message: str, intent: str) -> str:
-    if intent == "writing" and "\u8bfb\u4e66\u7b14\u8bb0" in message:
+    if intent == "writing_request" and "\u8bfb\u4e66\u7b14\u8bb0" in message:
         return "\n".join(
             [
                 "# \u4e66\u540d",
@@ -1766,7 +1958,7 @@ def _draft_answer(message: str, intent: str) -> str:
                 "- [ ] ",
             ]
         )
-    if intent == "writing" and "PRD" in message:
+    if intent == "writing_request" and "PRD" in message:
         return "\n".join(
             [
                 "# PRD \u5927\u7eb2",
@@ -1780,13 +1972,13 @@ def _draft_answer(message: str, intent: str) -> str:
                 "## \u98ce\u9669\u4e0e\u5f00\u653e\u95ee\u9898",
             ]
         )
-    if intent == "self_evolving_explain":
+    if intent == "explanation_request" and ("self-evolving skill" in message.lower() or "\u81ea\u8fdb\u5316 skill" in message):
         return (
             "A self-evolving skill is a skill that can collect learning signals from repeated corrections, "
             "turn eligible patterns into promotion candidates, pass them through review and regression checks, "
             "and only then update the active skill with a versioned, reversible change."
         )
-    if intent == "explain_error":
+    if intent == "explanation_request":
         return (
             "Paste the exact error text and the operation that triggered it. I will separate the symptom, likely cause, "
             "smallest reproduction, and next verification step."
@@ -1796,6 +1988,40 @@ def _draft_answer(message: str, intent: str) -> str:
     if "\u6b63\u5f0f" in message:
         return "\u628a\u539f\u6587\u53d1\u7ed9\u6211\uff0c\u6211\u4f1a\u4fdd\u7559\u610f\u601d\uff0c\u8c03\u6574\u4e3a\u66f4\u6b63\u5f0f\u3001\u6e05\u6670\u3001\u9002\u5408\u4ea4\u4ed8\u6587\u6863\u7684\u8868\u8fbe\u3002"
     return "I can help with writing, explanation, workspace status, skill memory, promotions, reviews, and versioned skill evolution from this Chat entry point."
+
+
+def _tool_design_answer(message: str) -> str:
+    if _has_any(message, ["\u5929\u6c14", "weather"]):
+        return "\n".join(
+            [
+                "\u53ef\u4ee5\u3002\u8fd9\u53e5\u8bdd\u7684\u610f\u56fe\u662f\u201c\u8bbe\u8ba1\u5929\u6c14\u67e5\u8be2\u5de5\u5177\u201d\uff0c\u4e0d\u662f\u73b0\u5728\u67e5\u5929\u6c14\u3002",
+                "",
+                "weather_query tool \u5efa\u8bae\uff1a",
+                "- \u8f93\u5165\uff1acity\uff08\u5fc5\u586b\uff09\u3001date\uff08\u9ed8\u8ba4 today\uff09\u3001units\uff08metric/imperial\uff09\u3001language\uff08\u9ed8\u8ba4 zh-CN\uff09",
+                "- \u6267\u884c\uff1a\u8c03\u7528\u53ef\u914d\u7f6e\u7684\u5929\u6c14 provider\uff0c\u628a provider \u54cd\u5e94\u89c4\u8303\u5316\u4e3a current_conditions / forecast / warnings",
+                "- \u9519\u8bef\uff1amissing_city \u65f6\u8ffd\u95ee\u57ce\u5e02\uff1bprovider_unavailable \u65f6\u660e\u786e\u8bf4\u65e0\u6cd5\u5b9e\u65f6\u67e5\u8be2\uff1b\u4e0d\u7f16\u9020\u5929\u6c14",
+                "- \u5b89\u5168\uff1aAPI key \u53ea\u8bfb\u73af\u5883\u53d8\u91cf\uff0c\u4e0d\u5199\u5165\u65e5\u5fd7\uff1b\u5916\u90e8\u7ed3\u679c\u4f5c\u4e3a\u4e0d\u53ef\u4fe1\u6570\u636e\u5904\u7406",
+                "- \u9a8c\u6536\uff1a\u8986\u76d6\u7f3a\u5c11\u57ce\u5e02\u3001\u4e0a\u6d77\u4eca\u65e5\u5929\u6c14\u3001provider \u5931\u8d25\u3001\u4e2d\u82f1\u6587\u8f93\u51fa\u56db\u7c7b\u7528\u4f8b",
+            ]
+        )
+    return "\u53ef\u4ee5\u3002\u6211\u4f1a\u5148\u5b9a\u4e49 tool \u7684\u8f93\u5165 schema\u3001\u6267\u884c\u8fb9\u754c\u3001\u9519\u8bef\u8bed\u4e49\u3001\u5b89\u5168\u7ea6\u675f\u548c\u9a8c\u6536\u7528\u4f8b\uff0c\u518d\u628a\u5b9e\u73b0\u653e\u5230 review/approval \u6d41\u7a0b\u91cc\u3002"
+
+
+def _skill_creation_proposal(message: str) -> str:
+    name = "weather_query" if _has_any(message, ["\u5929\u6c14", "weather"]) else "<new_skill>"
+    return "\n".join(
+        [
+            f"\u6211\u53ef\u4ee5\u8d77\u8349 {name} skill\uff0c\u4f46\u4e0d\u4f1a\u76f4\u63a5\u5199 SKILL.md\u3002",
+            "",
+            "\u5efa\u8bae\u7684 review \u5185\u5bb9\uff1a",
+            f"- \u76ee\u6807\u6587\u4ef6\uff1askills/{name}/SKILL.md",
+            "- \u89e6\u53d1\u8303\u56f4\uff1a\u7528\u6237\u8981\u505a\u5b9e\u65f6\u5929\u6c14\u67e5\u8be2\u3001\u5929\u6c14 tool \u8bbe\u8ba1\u6216\u5929\u6c14\u67e5\u8be2\u9519\u8bef\u5904\u7406",
+            "- \u6838\u5fc3\u89c4\u5219\uff1a\u5148\u786e\u8ba4\u57ce\u5e02\uff1b\u6709\u5de5\u5177\u624d\u67e5\u5b9e\u65f6\u6570\u636e\uff1b\u6ca1\u6709\u5de5\u5177\u65f6\u660e\u786e\u8bf4\u660e\u9650\u5236\uff1b\u4e0d\u4f2a\u9020\u5929\u6c14",
+            "- \u9a8c\u6536\uff1a\u533a\u5206\u201c\u67e5\u5929\u6c14\u201d\u548c\u201c\u521b\u5efa\u5929\u6c14\u67e5\u8be2 skill/tool\u201d",
+            "",
+            "\u4e0b\u4e00\u6b65\u5e94\u8be5\u662f\u628a\u8fd9\u4e2a\u8349\u6848\u751f\u6210\u4e3a review\uff0c\u5ba1\u6279\u540e\u624d\u80fd apply\u3002",
+        ]
+    )
 
 def _current_promo(ctx: WebContext, context: dict[str, Any]) -> dict[str, Any] | None:
     wanted = str(context.get("current_promo_id", "") or "").strip()

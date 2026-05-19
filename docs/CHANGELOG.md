@@ -4,6 +4,17 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-19
 
+### Skill-aware Chat Runtime Pipeline
+
+- Reworked `POST /api/chat` around an explicit runtime pipeline: intent routing, intent-scoped context loading, skill selection, planning/safety decisions, and response composition.
+- Added canonical Chat intent values including `general_chat`, `writing_request`, `workspace_status_query`, `skill_list_query`, `review_query`, `promotion_query`, `evolution_action_request`, `tool_creation_request`, `skill_creation_request`, `file_operation_request`, `memory_preference`, `external_realtime_query`, and `unknown`.
+- Fixed weather-related intent collisions: realtime weather questions now refuse to fabricate data when no `weather_query` tool is available, while requests to build a weather tool return a `weather_query` tool design.
+- Added proposed-action handling for skill creation requests so Chat can draft a `weather_query` skill plan without writing `SKILL.md`; file writes, apply, rollback, and skill changes remain behind review/confirmation.
+- Added `intent` to the Chat response contract and changed visible trace analysis cards to `type=analyze`, with intent-scoped API trace loading instead of loading every workspace dataset for every request.
+- Updated Chat UI rendering to show intent badges, support `analyze` trace cards, preserve skill/memory/action-specific presentation, and surface error repair hints when provided.
+- Added API tests for weather tool creation and skill creation proposed actions, and updated existing Chat tests for canonical intents and `weather_query` traces.
+- Validation: `npm.cmd --prefix web/ui run build`; bundled Python `compileall` over `harness runtime tools safety web`. Direct REPL validation could not run in this shell because the available bundled Python lacks `openai` and the repository `.venv` Python executable points to a missing interpreter.
+
 ### Skill-aware Chat Assistant
 
 - Upgraded the local web Chat API from command-mode fallback to a skill-aware assistant entry point at `POST /api/chat`, while keeping `/api/chat/send` as a compatible alias.
