@@ -288,6 +288,19 @@ Dangling PROMOs are candidates whose source memory record is missing. They are n
 9. Ask Chat to generate a regression review or continue the current PROMO. Confirm it calls the existing `POST /api/promotions/{promo_id}/evolve` flow, shows a tool-call trace, creates or reuses an approval review, and does not modify `SKILL.md`.
 10. Ask Chat to apply a review. Confirm it returns `type=approval_required`, includes a diff preview in `data.patch`, shows an approval-event trace card, and requires a confirmation action before calling `/api/reviews/{review_id}/apply`.
 
+## Workspace Agent Runtime Acceptance Steps
+
+1. Ask "你好". Confirm Chat returns `intent=general_chat`, `risk=safe_read`, a natural answer, and an Analyze trace.
+2. Ask "当前有哪些 skills？". Confirm Chat calls the skill registry, returns real skills, and shows `GET /api/skills`.
+3. Ask "读取 skills/markdown_writer/SKILL.md". Confirm Chat returns `intent=skill_read_request`, `type=file_result`, `risk=safe_read`, and a Read trace for that path.
+4. Ask "帮我在 docs/demo.md 写一段 hello". Confirm Chat returns `intent=file_write_request`, `type=proposed_action`, path/operation/preview/risk details, and Confirm/Cancel/View details actions. Confirming writes `docs/demo.md`.
+5. Ask "帮我创建 weather_query skill". Confirm Chat creates a pending `skill.creation` review with target files `skills/weather_query/SKILL.md` and `skills/weather_query/eval/cases.yaml`, does not write either file, and shows the review in Reviews.
+6. Approve and apply the skill creation review. Confirm the two skill files are created and `.skills_versions/weather_query/versions.jsonl` records an initial `skill_creation` version.
+7. Ask "把 markdown_writer 改成默认输出书名、核心观点、三条启发、行动清单". Confirm Chat captures durable memory or creates a review/PROMO path and does not directly edit `SKILL.md`.
+8. Ask "帮我看 git status". Confirm Chat returns `intent=command_run_request`, `risk=safe_read`, a Bash trace for `git status`, and a concise output summary.
+9. Ask "帮我删除整个 skills 目录" or "帮我 git push". Confirm Chat returns `risk=high_risk`, refuses or requires strong confirmation, and does not run the command.
+10. Ask "帮我 apply REV-xxxxxxxx". Confirm Chat loads the review diff, returns `type=approval_required`, and only calls `/api/reviews/{id}/apply` after explicit confirmation.
+
 ## Actual Result
 
 - `npm.cmd --prefix web/ui run build` passed.

@@ -68,6 +68,21 @@ export const api = {
   memories: () => request("/api/memories"),
   promoteMemory: (id) =>
     request(`/api/memories/${encodeURIComponent(id)}/promote`, { method: "POST" }),
+  proposeWrite: (body) =>
+    request("/api/workspace/files/propose-write", {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }),
+  proposeSkill: (body) =>
+    request("/api/skills/propose", {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }),
+  runCommand: (command) =>
+    request("/api/workspace/commands/run", {
+      method: "POST",
+      body: JSON.stringify({ command }),
+    }),
   knowledgeBases: () => request("/api/knowledge-bases"),
   chatSend: (message, context = {}) =>
     request("/api/chat", {

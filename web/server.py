@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import json
 import re
+import subprocess
 import uuid
 from typing import Any
 
@@ -124,6 +125,7 @@ def chat_ok(
     response_type: str,
     message: str,
     intent: str = "unknown",
+    risk: str = "safe_read",
     used_skill: str | None = None,
     why: str = "",
     memory_record_id: str = "",
@@ -139,6 +141,7 @@ def chat_ok(
             "ok": True,
             "run_id": run_id,
             "intent": intent,
+            "risk": risk,
             "type": response_type,
             "message": message,
             "used_skill": used_skill,
@@ -587,6 +590,44 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             [f"/api/reviews/{item['review_id']}", f"/api/reviews/{item['review_id']}/approve"],
         )
 
+    @app.get("/api/workspace/files/read")
+    def workspace_file_read(path: str) -> JSONResponse:
+        result = _read_workspace_file(ctx, path)
+        if not result["ok"]:
+            return fail(result["message"], errors=result.get("errors"), status_code=result.get("status_code", 400))
+        return ok(result["data"], result["message"])
+
+    @app.post("/api/workspace/files/propose-write")
+    async def workspace_file_propose_write(request: Request) -> JSONResponse:
+        body = await request.json()
+        target_path = str(body.get("path", "")).strip()
+        content = str(body.get("content", ""))
+        confirmed = bool(body.get("confirmed", False))
+        result = _propose_or_write_workspace_file(ctx, target_path, content, confirmed=confirmed)
+        if not result["ok"]:
+            return fail(result["message"], errors=result.get("errors"), status_code=result.get("status_code", 400))
+        return ok(result["data"], result["message"], result.get("next_actions", []))
+
+    @app.post("/api/skills/propose")
+    async def skill_propose(request: Request) -> JSONResponse:
+        body = await request.json()
+        skill_name = _extract_skill_name(str(body.get("name", "") or body.get("message", "")))
+        if not skill_name:
+            return fail("Missing skill name.")
+        result = _create_skill_creation_review(ctx, skill_name, str(body.get("description", "")))
+        if not result["ok"]:
+            return fail(result["message"], errors=result.get("errors"), status_code=result.get("status_code", 400))
+        return ok(result["data"], result["message"], result.get("next_actions", []))
+
+    @app.post("/api/workspace/commands/run")
+    async def workspace_command_run(request: Request) -> JSONResponse:
+        body = await request.json()
+        command = str(body.get("command", "")).strip()
+        result = _run_workspace_command(ctx, command)
+        if not result["ok"]:
+            return fail(result["message"], errors=result.get("errors"), status_code=result.get("status_code", 400))
+        return ok(result["data"], result["message"])
+
     @app.post("/api/chat")
     async def chat(request: Request) -> JSONResponse:
         body = await request.json()
@@ -601,6 +642,7 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             response_type=data.get("type", "answer"),
             message=data.get("message", ""),
             intent=data.get("intent", "unknown"),
+            risk=data.get("risk", "safe_read"),
             used_skill=data.get("used_skill", ""),
             why=data.get("why", ""),
             memory_record_id=data.get("memory_record_id", ""),
@@ -625,6 +667,7 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             response_type=data.get("type", "answer"),
             message=data.get("message", ""),
             intent=data.get("intent", "unknown"),
+            risk=data.get("risk", "safe_read"),
             used_skill=data.get("used_skill", ""),
             why=data.get("why", ""),
             memory_record_id=data.get("memory_record_id", ""),
@@ -974,6 +1017,330 @@ def _safe_project_path(ctx: WebContext, relative_path: str) -> Path | None:
     return path
 
 
+def _workspace_path_result(ctx: WebContext, relative_path: str) -> tuple[Path | None, str]:
+    cleaned = relative_path.strip().strip('"').strip("'").replace("\\", "/")
+    if not cleaned:
+        return None, ""
+    path = (ctx.project_root / cleaned).resolve()
+    try:
+        normalized = path.relative_to(ctx.project_root.resolve()).as_posix()
+    except ValueError:
+        return None, cleaned
+    return path, normalized
+
+
+def _is_sensitive_path(relative_path: str) -> bool:
+    normalized = relative_path.replace("\\", "/").lower()
+    parts = [part for part in normalized.split("/") if part]
+    sensitive_names = {
+        ".env",
+        ".env.local",
+        ".env.production",
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+    }
+    return any(part in sensitive_names for part in parts) or any(part.endswith(".pem") for part in parts)
+
+
+def _is_high_risk_path(relative_path: str) -> bool:
+    normalized = relative_path.replace("\\", "/").lower()
+    if _is_sensitive_path(normalized):
+        return True
+    return normalized in {"agents.md"} or normalized.startswith((".audit/", ".git/"))
+
+
+def _is_review_required_path(relative_path: str) -> bool:
+    normalized = relative_path.replace("\\", "/").lower()
+    if _is_high_risk_path(normalized):
+        return True
+    if normalized.endswith("/skill.md") or normalized.endswith("skill.md"):
+        return True
+    guarded_prefixes = ("harness/", "runtime/", "safety/", "tools/", "web/server.py")
+    source_suffixes = (".py", ".js", ".jsx", ".ts", ".tsx", ".css", ".json", ".yaml", ".yml", ".toml")
+    return normalized.startswith(guarded_prefixes) or normalized.endswith(source_suffixes) and not normalized.startswith("docs/")
+
+
+def _read_workspace_file(ctx: WebContext, relative_path: str) -> dict[str, Any]:
+    path, normalized = _workspace_path_result(ctx, relative_path)
+    if not path or not normalized:
+        return {"ok": False, "message": "Path must stay inside the workspace.", "status_code": 400}
+    if _is_sensitive_path(normalized):
+        return {"ok": False, "message": "Refusing to read sensitive files such as .env or private keys.", "status_code": 403}
+    if not path.exists() or not path.is_file():
+        return {"ok": False, "message": f"File not found: {normalized}", "status_code": 404}
+    try:
+        content = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return {"ok": False, "message": f"File is not readable as UTF-8: {normalized}", "status_code": 400}
+    return {
+        "ok": True,
+        "message": f"Read {normalized}.",
+        "data": {
+            "path": normalized,
+            "content": content,
+            "summary": _summarize_text(content),
+            "size": len(content.encode("utf-8")),
+        },
+    }
+
+
+def _propose_or_write_workspace_file(
+    ctx: WebContext,
+    relative_path: str,
+    content: str,
+    *,
+    confirmed: bool,
+) -> dict[str, Any]:
+    path, normalized = _workspace_path_result(ctx, relative_path)
+    if not path or not normalized:
+        return {"ok": False, "message": "Path must stay inside the workspace.", "status_code": 400}
+    risk = _risk_for_write_path(normalized)
+    if risk == "high_risk":
+        return {
+            "ok": False,
+            "message": f"Refusing high-risk write target: {normalized}",
+            "errors": ["High-risk paths such as .env, audit logs, and git internals cannot be written from Chat."],
+            "status_code": 403,
+        }
+    if _is_review_required_path(normalized):
+        review = _create_file_write_review(ctx, normalized, content)
+        return {
+            "ok": True,
+            "message": f"Created review {review['review_id']} for {normalized}. No file was modified.",
+            "data": {"risk": risk, "review": review, "path": normalized, "preview_content": content},
+            "next_actions": [f"/api/reviews/{review['review_id']}", f"/api/reviews/{review['review_id']}/approve"],
+        }
+    if not confirmed:
+        return {
+            "ok": True,
+            "message": f"Prepared write preview for {normalized}. Confirm before writing.",
+            "data": {
+                "risk": risk,
+                "path": normalized,
+                "operation": "write",
+                "preview_content": content,
+                "requires_confirmation": True,
+            },
+            "next_actions": ["/api/workspace/files/propose-write"],
+        }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return {
+        "ok": True,
+        "message": f"Wrote {normalized}.",
+        "data": {"risk": risk, "path": normalized, "operation": "write", "bytes": len(content.encode("utf-8"))},
+    }
+
+
+def _risk_for_write_path(relative_path: str) -> str:
+    if _is_high_risk_path(relative_path):
+        return "high_risk"
+    return "safe_write_preview"
+
+
+def _create_file_write_review(ctx: WebContext, relative_path: str, content: str) -> dict[str, Any]:
+    return ctx.review_store.create_review(
+        type="file.write",
+        source="chat_runtime",
+        target_skill=_skill_from_path(relative_path),
+        target_files=[relative_path],
+        severity="medium",
+        reason=f"Review workspace file write to {relative_path}.",
+        risk_type="safe_write_preview",
+        proposed_change=content,
+        evaluation_plan="Inspect the diff preview and run the smallest relevant validation before applying.",
+        rollback_plan="Revert this reviewed file write if the result is incorrect.",
+        tool_name="write_file",
+        tool_arguments={"path": relative_path, "content": content},
+        metadata={"operation": "write", "content": content},
+    )
+
+
+def _create_skill_creation_review(ctx: WebContext, skill_name: str, description: str = "") -> dict[str, Any]:
+    normalized = normalize_name(skill_name)
+    if not re.match(r"^[A-Za-z0-9._-]+$", normalized):
+        return {"ok": False, "message": "Skill name may only contain letters, numbers, dot, underscore, and dash.", "status_code": 400}
+    skill_file = f"skills/{normalized}/SKILL.md"
+    eval_file = f"skills/{normalized}/eval/cases.yaml"
+    if (ctx.project_root / skill_file).exists():
+        return {"ok": False, "message": f"Skill already exists: {normalized}", "status_code": 409}
+    skill_content, eval_content = _skill_creation_files(normalized, description)
+    review = ctx.review_store.create_review(
+        type="skill.creation",
+        source="chat_runtime",
+        target_skill=normalized,
+        target_files=[skill_file, eval_file],
+        severity="medium",
+        reason=f"Create new skill {normalized} through review.",
+        risk_type="safe_write_preview",
+        proposed_change=f"Create {skill_file} and {eval_file}.",
+        evaluation_plan="Review skill instructions and placeholder eval cases before applying.",
+        rollback_plan=f"Remove skills/{normalized} or create a rollback review if the new skill is unsafe.",
+        metadata={
+            "operation": "skill_create",
+            "proposed_files": {
+                skill_file: skill_content,
+                eval_file: eval_content,
+            },
+        },
+    )
+    return {
+        "ok": True,
+        "message": f"Created skill creation review {review['review_id']} for {normalized}. No skill files were written.",
+        "data": {
+            "review": review,
+            "skill_name": normalized,
+            "target_files": [skill_file, eval_file],
+            "preview_files": {skill_file: skill_content, eval_file: eval_content},
+        },
+        "next_actions": [f"/api/reviews/{review['review_id']}", f"/api/reviews/{review['review_id']}/approve"],
+    }
+
+
+def _skill_creation_files(skill_name: str, description: str = "") -> tuple[str, str]:
+    description = description.strip() or f"{skill_name} workspace skill"
+    skill_content = "\n".join(
+        [
+            "---",
+            f"name: {skill_name}",
+            f"description: {description}",
+            "---",
+            "",
+            f"# {skill_name}",
+            "",
+            "Use this skill when the user's request clearly matches this workspace capability.",
+            "",
+            "## Workflow",
+            "",
+            "1. Clarify missing inputs before acting.",
+            "2. Use workspace APIs and review gates for file or runtime changes.",
+            "3. Return a concise result with an auditable action trace.",
+            "",
+        ]
+    )
+    eval_content = f"skill: {skill_name}\ncases: []\n"
+    return skill_content, eval_content
+
+
+def _skill_from_path(relative_path: str) -> str:
+    parts = relative_path.replace("\\", "/").split("/")
+    if len(parts) >= 3 and parts[0] == "skills":
+        return normalize_name(parts[1])
+    return ""
+
+
+def _summarize_text(content: str, limit: int = 240) -> str:
+    stripped = re.sub(r"\s+", " ", content.strip())
+    if not stripped:
+        return "(empty file)"
+    return stripped if len(stripped) <= limit else stripped[: limit - 3] + "..."
+
+
+def _run_workspace_command(ctx: WebContext, command: str) -> dict[str, Any]:
+    normalized = _normalize_command(command)
+    decision = _command_decision(normalized)
+    if decision["risk"] == "high_risk":
+        return {
+            "ok": False,
+            "message": "Refusing to run a high-risk command from Chat.",
+            "errors": [decision["reason"]],
+            "status_code": 403,
+            "data": {"command": normalized, "risk": "high_risk"},
+        }
+    if not decision["allowed"]:
+        return {
+            "ok": False,
+            "message": "Command is outside the safe allowlist.",
+            "errors": [decision["reason"]],
+            "status_code": 400,
+            "data": {"command": normalized, "risk": decision["risk"]},
+        }
+    try:
+        completed = subprocess.run(
+            decision["argv"],
+            cwd=ctx.project_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            shell=False,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"Command failed to start: {exc}",
+            "errors": [str(exc)],
+            "status_code": 500,
+            "data": {"command": normalized, "risk": decision["risk"]},
+        }
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+    output = (stdout + stderr).strip()
+    return {
+        "ok": True,
+        "message": f"Command completed with exit code {completed.returncode}.",
+        "data": {
+            "command": normalized,
+            "risk": decision["risk"],
+            "exit_code": completed.returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "summary": _summarize_text(output or "(no output)", 500),
+        },
+    }
+
+
+def _normalize_command(command: str) -> str:
+    text = command.strip()
+    text = re.sub(r"^(帮我|请|please)\s*", "", text, flags=re.IGNORECASE)
+    if "git status" in text.lower() or "git 状态" in text.lower():
+        return "git status"
+    if "git diff" in text.lower():
+        return "git diff"
+    if text.lower() in {"ls", "dir"} or _has_any(text, ["查看目录", "列出目录"]):
+        return "dir" if text.lower() == "dir" else "ls"
+    return text
+
+
+def _command_decision(command: str) -> dict[str, Any]:
+    lowered = command.lower()
+    dangerous = [
+        "rm -rf",
+        "del ",
+        "rmdir",
+        "remove-item",
+        "git push",
+        "curl ",
+        "wget ",
+        "chmod",
+        "chown",
+        "set-executionpolicy",
+        "invoke-webrequest",
+        "invoke-expression",
+    ]
+    if any(token in lowered for token in dangerous) or any(mark in command for mark in [";", "&&", "||", "|"]):
+        return {"allowed": False, "risk": "high_risk", "reason": "The command can delete, publish, download, change permissions, or chain execution.", "argv": []}
+    if lowered == "git status":
+        return {"allowed": True, "risk": "safe_read", "reason": "Read-only git status is allowlisted.", "argv": ["git", "status"]}
+    if lowered == "git diff":
+        return {"allowed": True, "risk": "safe_read", "reason": "Read-only git diff is allowlisted.", "argv": ["git", "diff"]}
+    if lowered in {"ls", "dir"}:
+        return {"allowed": True, "risk": "safe_read", "reason": "Directory listing is allowlisted.", "argv": ["cmd", "/c", "dir"] if lowered == "dir" else ["powershell", "-NoProfile", "-Command", "Get-ChildItem"]}
+    if lowered == "python -m unittest":
+        return {"allowed": True, "risk": "safe_read", "reason": "Unit test command is allowlisted.", "argv": ["python", "-m", "unittest"]}
+    if lowered.startswith("python -m compileall "):
+        parts = lowered.split()
+        allowed_roots = {"harness", "runtime", "tools", "safety", "web"}
+        if all(part in allowed_roots for part in parts[3:]):
+            return {"allowed": True, "risk": "safe_read", "reason": "Compile-only validation is allowlisted.", "argv": command.split()}
+    if lowered == "npm run build":
+        return {"allowed": True, "risk": "safe_read", "reason": "Build validation is allowlisted.", "argv": ["npm", "run", "build"]}
+    return {"allowed": False, "risk": "safe_write_preview", "reason": "Only small read-only or validation commands are allowlisted.", "argv": []}
+
+
 def _next_review_actions(review_id: str, status: str) -> list[str]:
     if not review_id:
         return []
@@ -1114,42 +1481,203 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
             trace=base_trace,
         ))
     if intent == "skill_creation_request":
+        skill_name = _extract_skill_name(message)
+        result = _create_skill_creation_review(ctx, skill_name or "new_skill")
+        if not result["ok"]:
+            return done(_chat_result(
+                "error",
+                used_skill,
+                skill_reason,
+                result["message"],
+                "No durable memory was captured.",
+                risk="safe_write_preview",
+                data={"suggested_fix": "Provide a skill name such as weather_query."},
+                trace=base_trace,
+            ))
+        review = result["data"]["review"]
+        return done(_chat_result(
+            "review_created",
+            used_skill,
+            skill_reason,
+            result["message"],
+            "No durable memory was captured.",
+            risk="safe_write_preview",
+            actions=[
+                _action("View details", "GET", f"/api/reviews/{review['review_id']}", False),
+                _action("Approve", "POST", f"/api/reviews/{review['review_id']}/approve", True),
+                _action("Reject", "POST", f"/api/reviews/{review['review_id']}/reject", True),
+            ],
+            data=result["data"],
+            trace=[
+                *base_trace,
+                _trace(
+                    "tool_call",
+                    "API request",
+                    tool_name="safeharness",
+                    method="POST",
+                    path="/api/skills/propose",
+                    status="completed",
+                    summary=result["message"],
+                ),
+                _trace(
+                    "approval_event",
+                    "Review created",
+                    status="waiting",
+                    review_id=review["review_id"],
+                    review_type=review["type"],
+                    severity=review.get("severity", "medium"),
+                    target_asset=", ".join(review.get("target_files", [])),
+                    summary="Skill creation is pending review; no files were written.",
+                ),
+            ],
+        ))
+    if intent in {"file_read_request", "skill_read_request"}:
+        path = _extract_path(message)
+        if intent == "skill_read_request" and not path:
+            skill_name = _extract_skill_name(message)
+            path = f"skills/{skill_name}/SKILL.md" if skill_name else ""
+        result = _read_workspace_file(ctx, path)
+        if not result["ok"]:
+            return done(_chat_result(
+                "error",
+                used_skill,
+                skill_reason,
+                result["message"],
+                "No durable memory was captured.",
+                risk="safe_read",
+                data={"suggested_fix": "Check the path and avoid sensitive files such as .env."},
+                trace=[
+                    *base_trace,
+                    _trace("file_trace", "Read", operation="read", path=path, status="failed", summary=result["message"]),
+                ],
+            ))
+        data = result["data"]
+        return done(_chat_result(
+            "file_result",
+            used_skill,
+            skill_reason,
+            f"{data['path']}:\n\n{data['summary']}",
+            "No durable memory was captured.",
+            risk="safe_read",
+            data=data,
+            trace=[
+                *base_trace,
+                _trace("file_trace", "Read", operation="read", path=data["path"], status="completed", summary=data["summary"]),
+            ],
+        ))
+    if intent == "file_write_request":
+        path = _extract_path(message)
+        content = _extract_write_content(message, path)
+        result = _propose_or_write_workspace_file(ctx, path, content, confirmed=False)
+        if not result["ok"]:
+            return done(_chat_result(
+                "error",
+                used_skill,
+                skill_reason,
+                result["message"],
+                "No durable memory was captured.",
+                risk="high_risk",
+                data={"suggested_fix": "Choose a non-sensitive workspace path or create a review for protected files."},
+                trace=[
+                    *base_trace,
+                    _trace("file_trace", "Write blocked", operation="write", path=path, status="failed", summary=result["message"]),
+                ],
+            ))
+        result_data = result["data"]
+        if "review" in result_data:
+            review = result_data["review"]
+            return done(_chat_result(
+                "review_created",
+                used_skill,
+                skill_reason,
+                result["message"],
+                "No durable memory was captured.",
+                risk=result_data.get("risk", "safe_write_preview"),
+                actions=[
+                    _action("View details", "GET", f"/api/reviews/{review['review_id']}", False),
+                    _action("Approve", "POST", f"/api/reviews/{review['review_id']}/approve", True),
+                    _action("Reject", "POST", f"/api/reviews/{review['review_id']}/reject", True),
+                ],
+                data=result_data,
+                trace=[
+                    *base_trace,
+                    _trace("file_trace", "Write review", operation="write_review", path=path, status="waiting", summary=result["message"]),
+                    _approval_trace(review, "Review created"),
+                ],
+            ))
         return done(_chat_result(
             "proposed_action",
             used_skill,
             skill_reason,
-            _skill_creation_proposal(message),
+            f"Prepared a write preview for {result_data['path']}. Confirm before writing.",
             "No durable memory was captured.",
-            actions=[_action("Review proposed skill plan", "GET", "/api/reviews", False)],
+            risk=result_data.get("risk", "safe_write_preview"),
+            actions=[
+                _action("Confirm write", "POST", "/api/workspace/files/propose-write", True, {"path": result_data["path"], "content": content, "confirmed": True}),
+                _action("Cancel", "LOCAL", "cancel", False),
+                _action("View details", "LOCAL", "details", False),
+            ],
+            data=result_data,
             trace=[
                 *base_trace,
                 _trace(
-                    "approval_event",
-                    "Review required",
+                    "file_trace",
+                    "Write preview",
+                    operation="write_preview",
+                    path=result_data["path"],
                     status="waiting",
-                    target_asset="skills/weather_query/SKILL.md" if "weather" in message.lower() or "\u5929\u6c14" in message else "skills/<new_skill>/SKILL.md",
-                    summary="Creating or modifying SKILL.md must go through a review/approval flow; Chat did not write files.",
+                    summary="Requires confirmation before writing.",
                 ),
             ],
         ))
-    if intent == "file_operation_request":
+    if intent == "file_edit_request":
+        path = _extract_path(message)
         return done(_chat_result(
             "proposed_action",
             used_skill,
             skill_reason,
-            "\u6211\u53ef\u4ee5\u5e2e\u4f60\u89c4\u5212\u6587\u4ef6\u4fee\u6539\uff0c\u4f46\u5199\u5165\u3001apply\u3001rollback \u90fd\u9700\u8981\u5148\u8fdb\u5165 review/confirmation\u3002\u8bf7\u7ed9\u6211\u76ee\u6807\u6587\u4ef6\u548c\u671f\u671b\u53d8\u66f4\uff0c\u6211\u4f1a\u751f\u6210\u53ef\u5ba1\u9605\u7684 proposed action\u3002",
+            "I can prepare a reviewable file edit, but I need a target path and concrete old/new text or full replacement content.",
             "No durable memory was captured.",
+            risk="safe_write_preview",
+            actions=[_action("Open reviews", "GET", "/api/reviews", False)],
             trace=[
                 *base_trace,
-                _trace(
-                    "approval_event",
-                    "Write safety gate",
-                    status="waiting",
-                    summary="File writes are not executed directly from Chat.",
-                ),
+                _trace("file_trace", "Edit safety gate", operation="edit_preview", path=path, status="waiting", summary="File edits require a proposed action or review."),
             ],
         ))
-    if intent == "memory_preference":
+    if intent == "command_run_request":
+        command = _extract_command(message)
+        result = _run_workspace_command(ctx, command)
+        risk = result.get("data", {}).get("risk", "high_risk")
+        if not result["ok"]:
+            return done(_chat_result(
+                "error",
+                used_skill,
+                skill_reason,
+                result["message"],
+                "No durable memory was captured.",
+                risk=risk,
+                data={"suggested_fix": "Use an allowlisted read-only command such as git status or git diff."},
+                trace=[
+                    *base_trace,
+                    _trace("command_trace", "Bash", command=command, status="failed", summary=result["message"]),
+                ],
+            ))
+        command_data = result["data"]
+        return done(_chat_result(
+            "command_result",
+            used_skill,
+            skill_reason,
+            command_data.get("summary", result["message"]),
+            "No durable memory was captured.",
+            risk=risk,
+            data=command_data,
+            trace=[
+                *base_trace,
+                _trace("command_trace", "Bash", command=command_data["command"], status="completed", summary=command_data.get("summary", "")),
+            ],
+        ))
+    if intent in {"memory_preference", "skill_update_request"}:
         return done(_capture_learning_memory(ctx, message, used_skill, skill_reason))
     if intent == "skill_list_query":
         skills = loaded_context.get("skills", _skills(ctx))
@@ -1191,10 +1719,12 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
                 ],
             ))
         return done(_chat_continue_promotion(ctx, promo, used_skill, skill_reason, base_trace))
-    if intent == "review_query" and _is_approval_request(message):
+    if intent == "review_action_request" and _is_approval_request(message):
         return done(_chat_review_action(ctx, message, context, used_skill, skill_reason, "approve"))
-    if intent == "review_query" and _is_apply_request(message):
+    if intent == "review_action_request" and _is_apply_request(message):
         return done(_chat_review_action(ctx, message, context, used_skill, skill_reason, "apply"))
+    if intent == "review_action_request" and _is_reject_request(message):
+        return done(_chat_review_action(ctx, message, context, used_skill, skill_reason, "reject"))
     if intent == "review_query":
         return done(_chat_review_explain(ctx, message, context, used_skill, skill_reason))
     if intent == "promotion_query" and _is_continue_request(message):
@@ -1221,13 +1751,14 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
                 ],
             ))
         return done(_chat_continue_promotion(ctx, promo, used_skill, skill_reason, base_trace))
-    if "rollback" in message.lower() or "\u56de\u6eda" in message:
+    if intent == "rollback_request":
         return done(_chat_result(
             "approval_required",
             used_skill,
             skill_reason,
             "Rollback must be created through the skill version rollback API after you choose a concrete version.",
             "No durable memory was captured.",
+            risk="high_risk",
             actions=[_action("Open versions", "GET", "/api/skills", False)],
             trace=[
                 *base_trace,
@@ -1258,6 +1789,7 @@ def _chat_result(
     output: str,
     memory_note: str = "",
     *,
+    risk: str = "safe_read",
     actions: list[dict[str, Any]] | None = None,
     trace: list[dict[str, Any]] | None = None,
     data: Any = None,
@@ -1290,6 +1822,7 @@ def _chat_result(
     return {
         "run_id": run_id,
         "type": response_type,
+        "risk": risk,
         "message": output,
         "used_skill": used_skill,
         "why": skill_reason,
@@ -1354,12 +1887,19 @@ def _intent_summary(intent: str) -> str:
         "explanation_request": "Recognized an explanation request and prepared an explanatory response.",
         "workspace_status_query": "Recognized a workspace status query and loaded only dashboard progress context.",
         "skill_list_query": "Recognized a skill-list query and loaded the skill registry.",
+        "skill_read_request": "Recognized a request to read an existing skill file.",
         "review_query": "Recognized a review request and kept approval/apply behind confirmation.",
+        "review_action_request": "Recognized a review approve/apply/reject request and kept it behind confirmation.",
         "promotion_query": "Recognized a promotion or self-evolution status query.",
         "evolution_action_request": "Recognized a request to advance an evolution flow through existing review APIs.",
         "tool_creation_request": "Recognized that the user wants to design or create a tool, not run the tool.",
         "skill_creation_request": "Recognized that the user wants a new skill; file creation must be proposed for review.",
-        "file_operation_request": "Recognized a file operation request and routed it through the write safety gate.",
+        "skill_update_request": "Recognized a skill update request and routed it to reviewable memory or skill-patch flow.",
+        "file_read_request": "Recognized a safe file read request.",
+        "file_write_request": "Recognized a file write request and prepared a confirmation-gated preview.",
+        "file_edit_request": "Recognized a file edit request and routed it through the write safety gate.",
+        "command_run_request": "Recognized a shell command request and checked the safe command allowlist.",
+        "rollback_request": "Recognized a rollback request and kept it review-only.",
         "memory_preference": "Recognized an explicit durable preference that should be captured as memory.",
         "external_realtime_query": "Recognized a realtime external-information request and checked tool availability.",
         "unknown": "Could not confidently classify the request; choosing the safest general response.",
@@ -1371,26 +1911,40 @@ def _chat_intent(message: str) -> str:
     text = message.lower()
     if not re.search(r"[A-Za-z0-9\u4e00-\u9fff]", message):
         return "unknown"
-    if _looks_like_memory_request(message):
-        return "memory_preference"
     if _looks_like_skill_creation_request(message):
         return "skill_creation_request"
+    if _looks_like_skill_update_request(message):
+        return "skill_update_request"
+    if _looks_like_memory_request(message):
+        return "memory_preference"
     if _looks_like_tool_creation_request(message):
         return "tool_creation_request"
     if _has_any(message, ["\u5f53\u524d\u6709\u54ea\u4e9b skills", "\u6709\u54ea\u4e9b skills", "\u6709\u54ea\u4e9b\u6280\u80fd", "\u5f53\u524d\u6280\u80fd"]) or "available skills" in text:
         return "skill_list_query"
+    if _looks_like_skill_read_request(message):
+        return "skill_read_request"
     if _has_any(message, ["\u7cfb\u7edf\u5361\u5728\u54ea", "\u5361\u5728\u54ea", "\u5361\u54ea\u4e00\u6b65", "\u5f53\u524d\u8fdb\u5ea6", "\u7cfb\u7edf\u72b6\u6001", "workspace status"]):
         return "workspace_status_query"
+    if _looks_like_command_request(message):
+        return "command_run_request"
+    if "rollback" in text or "\u56de\u6eda" in message:
+        return "rollback_request"
     if _looks_like_evolution_action_request(message):
         return "evolution_action_request"
+    if _looks_like_review_action_request(message):
+        return "review_action_request"
     if _looks_like_review_request(message):
         return "review_query"
     if _looks_like_promotion_query(message):
         return "promotion_query"
     if _has_any(message, ["\u5929\u6c14", "weather", "\u4e0b\u96e8", "\u6c14\u6e29", "\u51e0\u5ea6"]):
         return "external_realtime_query"
+    if _looks_like_file_read_request(message):
+        return "file_read_request"
+    if _looks_like_file_write_request(message):
+        return "file_write_request"
     if _looks_like_file_operation_request(message):
-        return "file_operation_request"
+        return "file_edit_request"
     if _has_any(message, ["PRD", "\u6a21\u677f", "\u6574\u7406", "\u66f4\u6b63\u5f0f", "\u5927\u7eb2", "\u8bfb\u4e66\u7b14\u8bb0"]):
         return "writing_request"
     if _has_any(message, ["\u62a5\u9519", "\u9519\u8bef", "traceback", "exception", "error"]):
@@ -1413,6 +1967,10 @@ def _route_skill(
     loaded_context = loaded_context or {}
     if intent == "skill_list_query":
         return None, "Read the workspace skill registry."
+    if intent in {"file_read_request", "skill_read_request"}:
+        return None, "Read a workspace file through the safe file API."
+    if intent == "command_run_request":
+        return None, "Run a safe allowlisted workspace command."
     if intent in {"general_chat", "external_realtime_query", "unknown"}:
         return None, "General assistant answer; no workspace skill is needed."
     if intent == "workspace_status_query":
@@ -1423,7 +1981,7 @@ def _route_skill(
     }
     if current in available and intent in {"review_query", "promotion_query", "evolution_action_request"}:
         return current, "The page context names this as the current skill."
-    if intent == "memory_preference":
+    if intent in {"memory_preference", "skill_update_request"}:
         if _has_any(message, ["\u8bfb\u4e66\u7b14\u8bb0", "markdown", "PRD"]):
             return _first_available(available, ["markdown_writer", current, "self_improvement"]), "The preference is about reusable markdown/writing behavior."
         if _has_any(message, ["\u5929\u6c14", "weather", "\u5de5\u5177", "tool"]):
@@ -1431,9 +1989,9 @@ def _route_skill(
         return _first_available(available, [current, "self_improvement"]), "The request is a durable preference that belongs in skill memory."
     if intent == "writing_request" or _has_any(message, ["markdown", "\u8bfb\u4e66\u7b14\u8bb0", "PRD", "\u6a21\u677f", "\u5927\u7eb2", "\u6b63\u5f0f"]):
         return _first_available(available, ["markdown_writer", current, "self_improvement"]), "The request is about writing or reusable markdown structure."
-    if intent in {"promotion_query", "evolution_action_request", "review_query", "skill_creation_request"}:
+    if intent in {"promotion_query", "evolution_action_request", "review_query", "review_action_request", "skill_creation_request", "rollback_request"}:
         return "self_improvement", "The request touches promotion, review, memory, version, or self-evolution workflow."
-    if intent == "file_operation_request":
+    if intent in {"file_write_request", "file_edit_request"}:
         return _first_available(available, ["file_editing", "file_modification", current, "self_improvement"]), "The request is about file editing or patch advice."
     if intent == "tool_creation_request":
         if _has_any(message, ["\u5929\u6c14", "weather"]):
@@ -1463,7 +2021,9 @@ def _load_chat_context(
         "writing_request",
         "tool_creation_request",
         "skill_creation_request",
-        "file_operation_request",
+        "skill_update_request",
+        "file_write_request",
+        "file_edit_request",
         "memory_preference",
     }:
         skills = _skills(ctx)
@@ -1501,7 +2061,7 @@ def _load_chat_context(
                 summary="Loaded dashboard counts from reviews, promotions, and versions.",
             )
         )
-    if intent == "review_query":
+    if intent in {"review_query", "review_action_request"}:
         reviews = _reviews(ctx)
         loaded["reviews"] = reviews
         trace.append(
@@ -1556,8 +2116,43 @@ def _looks_like_skill_creation_request(message: str) -> bool:
     return has_skill and has_creation_verb
 
 
+def _looks_like_skill_update_request(message: str) -> bool:
+    text = message.lower()
+    return (
+        ("skill" in text or re.search(r"\b[A-Za-z0-9_-]+\b", text))
+        and _has_any(message, ["\u6539\u6210", "\u4fee\u6539", "\u66f4\u65b0", "\u9ed8\u8ba4\u8f93\u51fa", "update", "change"])
+        and _has_any(message, ["skill", "markdown_writer", "weather_query", "\u9ed8\u8ba4"])
+    )
+
+
+def _looks_like_skill_read_request(message: str) -> bool:
+    return _has_any(message, ["SKILL.md", "skill \u5185\u5bb9", "\u8bfb\u53d6 skill", "\u770b\u770b skill"]) and _has_any(message, ["\u8bfb\u53d6", "\u67e5\u770b", "\u770b\u770b", "read", "show"])
+
+
 def _looks_like_file_operation_request(message: str) -> bool:
     return _has_any(message, ["\u6587\u4ef6", "\u4fee\u6539", "\u7f16\u8f91", "\u5199\u5165", "\u5220\u9664", "patch", "diff", "file", "edit", "write"])
+
+
+def _looks_like_file_read_request(message: str) -> bool:
+    return _has_any(message, ["\u8bfb\u53d6", "\u67e5\u770b", "\u770b\u770b", "read", "show", "cat", "type"]) and bool(_extract_path(message))
+
+
+def _looks_like_file_write_request(message: str) -> bool:
+    return _has_any(message, ["\u5199\u5165", "\u5199\u4e00\u6bb5", "\u5199\u4e00\u4e2a", "\u521b\u5efa\u6587\u4ef6", "\u65b0\u589e\u6587\u4ef6", "write", "create file"]) and bool(_extract_path(message))
+
+
+def _looks_like_command_request(message: str) -> bool:
+    text = message.lower()
+    return (
+        "git status" in text
+        or "git diff" in text
+        or "git push" in text
+        or _has_any(message, ["\u547d\u4ee4", "shell", "bash", "\u770b git status", "\u68c0\u67e5\u5f53\u524d git status", "\u5220\u9664\u6574\u4e2a"])
+    )
+
+
+def _looks_like_review_action_request(message: str) -> bool:
+    return _looks_like_review_request(message) and (_is_approval_request(message) or _is_apply_request(message) or _is_reject_request(message))
 
 
 def _looks_like_review_request(message: str) -> bool:
@@ -1592,6 +2187,11 @@ def _is_apply_request(message: str) -> bool:
     return re.search(r"\bapply\b", text) is not None or "\u5e94\u7528" in message
 
 
+def _is_reject_request(message: str) -> bool:
+    text = message.lower()
+    return re.search(r"\breject\b", text) is not None or _has_any(message, ["\u62d2\u7edd", "\u9a73\u56de"])
+
+
 def _is_continue_request(message: str) -> bool:
     return _has_any(message, ["\u7ee7\u7eed", "\u63a8\u8fdb", "\u4e0b\u4e00\u6b65", "continue", "next"])
 
@@ -1601,6 +2201,69 @@ def _weather_city_mentioned(message: str) -> bool:
         return True
     known_cities = ["\u4e0a\u6d77", "\u5317\u4eac", "\u5e7f\u5dde", "\u6df1\u5733", "\u676d\u5dde", "\u5357\u4eac", "\u6210\u90fd", "\u7ebd\u7ea6", "\u4f26\u6566", "\u4e1c\u4eac"]
     return any(city in message for city in known_cities)
+
+
+def _extract_path(message: str) -> str:
+    quoted = re.search(r"[`'\"]([^`'\"]+\.[A-Za-z0-9]+)[`'\"]", message)
+    if quoted:
+        return quoted.group(1).replace("\\", "/")
+    path_match = re.search(r"([A-Za-z0-9_.-]+(?:[/\\][A-Za-z0-9_.-]+)+)", message)
+    if path_match:
+        return path_match.group(1).rstrip("。，,.").replace("\\", "/")
+    filename = re.search(r"\b([A-Za-z0-9_.-]+\.(?:md|txt|json|yaml|yml|py|js|jsx|css|toml))\b", message, re.IGNORECASE)
+    if filename and _has_any(message, ["docs", "doc"]):
+        return f"docs/{filename.group(1)}"
+    if filename:
+        return filename.group(1)
+    return ""
+
+
+def _extract_skill_name(message: str) -> str:
+    text = message.strip()
+    patterns = [
+        r"\b([A-Za-z0-9_.-]+)\s+skill\b",
+        r"\bskill\s+([A-Za-z0-9_.-]+)\b",
+        r"skills[/\\]([A-Za-z0-9_.-]+)[/\\]SKILL\.md",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            candidate = match.group(1)
+            if candidate.lower() not in {"create", "build", "new"}:
+                return normalize_name(candidate)
+    if _has_any(text, ["weather", "\u5929\u6c14"]):
+        return "weather_query"
+    if "markdown_writer" in text:
+        return "markdown_writer"
+    return normalize_name(text) if re.fullmatch(r"[A-Za-z0-9_.-]+", text) else ""
+
+
+def _extract_write_content(message: str, path: str) -> str:
+    text = message
+    if path:
+        text = text.replace(path, "")
+    markers = ["\u5199\u5165", "\u5199\u4e00\u6bb5", "\u5199\u4e00\u4e2a", "\u5199", "write"]
+    lowered = text.lower()
+    for marker in markers:
+        index = lowered.find(marker.lower())
+        if index != -1:
+            content = text[index + len(marker):].strip(" ：:，,。.")
+            if content:
+                if content.startswith("\u4e00\u6bb5"):
+                    content = content[len("\u4e00\u6bb5"):].strip()
+                return content + ("\n" if not content.endswith("\n") else "")
+    return message.strip() + "\n"
+
+
+def _extract_command(message: str) -> str:
+    text = message.strip()
+    lowered = text.lower()
+    for command in ("git status", "git diff", "git push", "python -m unittest", "npm run build"):
+        if command in lowered:
+            return command
+    if _has_any(text, ["\u5220\u9664\u6574\u4e2a skills", "delete the entire skills"]):
+        return "rm -rf skills"
+    return text
 
 
 def _capture_learning_memory(
@@ -1660,6 +2323,7 @@ def _capture_learning_memory(
         skill_reason,
         f"Captured the preference as a learning signal for {skill_name}.{promo_note}",
         f"Recorded as learning signal {record_id or '(updated existing memory)' }.",
+        risk="safe_write_preview",
         memory_record_id=record_id,
         actions=actions,
         data={"record_message": result, "new_promotions": new_promos},
@@ -1894,6 +2558,22 @@ def _chat_review_action(
     review = _current_review(ctx, message, context)
     if not review:
         return _chat_result("approval_required", used_skill, skill_reason, "Choose a review first, or include a REV-xxxxxxxx id.", "No durable memory was captured.")
+    if action_name == "reject":
+        action = _action("Reject review", "POST", f"/api/reviews/{review['review_id']}/reject", True)
+        return _chat_result(
+            "approval_required",
+            used_skill,
+            skill_reason,
+            f"{review['review_id']} can be rejected after confirmation.",
+            "No durable memory was captured.",
+            risk="safe_write_preview",
+            actions=[action],
+            data={"review": review},
+            trace=[
+                _reasoning_trace(_intent_summary("review_action_request")),
+                _approval_trace(review, "Reject Review"),
+            ],
+        )
     if action_name == "approve":
         action = _action("Approve and generate preview", "POST", f"/api/reviews/{review['review_id']}/approve", True)
         output = f"{review['review_id']} can be approved after confirmation. Approval only generates a patch preview."
@@ -1903,10 +2583,11 @@ def _chat_review_action(
             skill_reason,
             output,
             "No durable memory was captured.",
+            risk="safe_write_preview",
             actions=[action],
             data={"review": review},
             trace=[
-                _reasoning_trace(_intent_summary("review_query")),
+                _reasoning_trace(_intent_summary("review_action_request")),
                 _approval_trace(review, "Approve Preview"),
             ],
         )
@@ -1922,10 +2603,11 @@ def _chat_review_action(
         skill_reason,
         output,
         "No durable memory was captured.",
+        risk="safe_write_preview",
         actions=[action],
         data={"review": review, "patch": patch},
         trace=[
-            _reasoning_trace(_intent_summary("review_query")),
+            _reasoning_trace(_intent_summary("review_action_request")),
             _trace(
                 "tool_call",
                 "API request",
@@ -2200,12 +2882,19 @@ def _extract_record_id(text: str, prefix: str) -> str:
     return match.group(0) if match else ""
 
 
-def _action(label: str, method: str, path: str, requires_confirmation: bool) -> dict[str, Any]:
+def _action(
+    label: str,
+    method: str,
+    path: str,
+    requires_confirmation: bool,
+    body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "label": label,
         "method": method,
         "path": path,
         "requires_confirmation": requires_confirmation,
+        **({"body": body} if body is not None else {}),
     }
 
 

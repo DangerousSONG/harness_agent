@@ -118,6 +118,57 @@ class SkillEvolutionRegistry:
             shutil.rmtree(version_dir, ignore_errors=True)
             raise
 
+    def record_skill_creation(
+        self,
+        *,
+        skill: str,
+        skill_review: dict[str, Any],
+        target_file: str,
+        new_content: str,
+    ) -> dict[str, Any]:
+        skill = normalize_skill_name(skill)
+        version = self._latest_version(skill) or "v0.1.0"
+        version_dir = self._version_dir(skill, version)
+        version_dir.mkdir(parents=True, exist_ok=True)
+
+        snapshot_path = version_dir / "SKILL.md"
+        patch_path = version_dir / "patch.diff"
+        eval_result_path = version_dir / "eval_result.json"
+        try:
+            snapshot_path.write_text(new_content, encoding="utf-8")
+            patch_path.write_text(
+                self._diff(target_file, "", new_content),
+                encoding="utf-8",
+            )
+            eval_payload = {"passed": True, "source": "skill_creation_review"}
+            eval_result_path.write_text(
+                json.dumps(eval_payload, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            record = {
+                "skill": skill,
+                "version": version,
+                "previous_version": "",
+                "change_type": "skill_creation",
+                "source_memory_ids": [],
+                "promotion_id": skill_review.get("candidate_id", ""),
+                "skill_review_id": skill_review.get("review_id", ""),
+                "regression_review_ids": [],
+                "target_file": target_file,
+                "base_hash": sha256_text(""),
+                "new_hash": sha256_text(new_content),
+                "patch_path": self._display_path(patch_path),
+                "eval_result_path": self._display_path(eval_result_path),
+                "decision": "applied",
+                "created_at": utc_now(),
+            }
+            self._write_audit(record, eval_payload)
+            self._append_version_record(skill, record)
+            return record
+        except Exception:
+            shutil.rmtree(version_dir, ignore_errors=True)
+            raise
+
     def create_rollback_review(self, *, review_store, skill: str, version: str) -> dict[str, Any]:
         skill = normalize_skill_name(skill)
         target_file = f"skills/{skill}/SKILL.md"

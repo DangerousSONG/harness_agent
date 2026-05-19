@@ -14,6 +14,7 @@ import {
   ClipboardCheck,
   Activity,
   Database,
+  Check,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import ReviewCard from "../components/ReviewCard";
@@ -26,6 +27,9 @@ const TYPE_STYLES = {
   skill_result: { label: "Skill result", icon: Brain, className: "bg-blue-50 text-appleBlue" },
   memory_captured: { label: "Memory captured", icon: Brain, className: "bg-emerald-50 text-emerald-700" },
   proposed_action: { label: "Proposed action", icon: ShieldCheck, className: "bg-amber-50 text-risk" },
+  review_created: { label: "Review created", icon: ClipboardCheck, className: "bg-amber-50 text-risk" },
+  file_result: { label: "File result", icon: FileText, className: "bg-zinc-100 text-zinc-700" },
+  command_result: { label: "Command result", icon: Terminal, className: "bg-zinc-100 text-zinc-700" },
   tool_result: { label: "Tool result", icon: Wrench, className: "bg-zinc-100 text-zinc-700" },
   approval_required: { label: "Approval required", icon: ShieldCheck, className: "bg-amber-50 text-risk" },
   error: { label: "Error", icon: AlertCircle, className: "bg-red-50 text-red-700" },
@@ -72,6 +76,11 @@ function Bubble({ role, message, children, time, onAction }) {
               {message.intent ? (
                 <span className="rounded bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-500">
                   {message.intent}
+                </span>
+              ) : null}
+              {message.risk ? (
+                <span className="rounded bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-500">
+                  {message.risk}
                 </span>
               ) : null}
             </div>
@@ -219,6 +228,9 @@ function traceTitle(item) {
     const op = String(item.operation || "").toLowerCase();
     if (op === "read") return "Read";
     if (op === "write") return "Write";
+    if (op === "write_preview") return "Write preview";
+    if (op === "write_review") return "Write review";
+    if (op === "edit_preview") return "Edit preview";
   }
   return item.title || TRACE_LABELS[item.type] || "Trace";
 }
@@ -242,6 +254,10 @@ function traceDetails(item) {
     "review_type",
     "severity",
     "target_asset",
+    "preview_content",
+    "stdout",
+    "stderr",
+    "exit_code",
     "started_at",
     "ended_at",
     "duration",

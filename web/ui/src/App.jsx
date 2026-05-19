@@ -250,6 +250,10 @@ export default function App() {
     }
     if (confirmAction.kind === "rollback_version") {
       await confirmRollbackVersion(confirmAction.version);
+      return;
+    }
+    if (confirmAction.kind === "workspace_write") {
+      await confirmWorkspaceWrite(confirmAction.body);
     }
   }
 
@@ -294,6 +298,31 @@ export default function App() {
     }
   }
 
+  async function confirmWorkspaceWrite(body) {
+    const path = body?.path || "";
+    const toolId = appendToolCall("POST /api/workspace/files/propose-write");
+    try {
+      const payload = await api.proposeWrite({ ...(body || {}), confirmed: true });
+      finishToolCall(toolId, "completed");
+      appendAgentResult(payload.message || `Wrote ${path}.`, {
+        type: payload.data?.review ? "review_created" : "file_result",
+        data: payload.data || {},
+      });
+      setToast(payload.message || "Workspace write completed.");
+      setConfirmAction(null);
+      await refreshAfterOperation();
+      if (payload.data?.review?.review_id) {
+        setPage("reviews");
+        await openReview(payload.data.review.review_id);
+      }
+    } catch (error) {
+      const message = getErrorMessage(error);
+      finishToolCall(toolId, "failed");
+      appendAgentResult(message, { type: "error" });
+      setToast(message);
+    }
+  }
+
   async function sendChat(message) {
     setSending(true);
     setMessages((items) => [
@@ -315,6 +344,7 @@ export default function App() {
           text: payload.message || payload.data?.message || "Done.",
           type: payload.type || "answer",
           intent: payload.intent || "",
+          risk: payload.risk || "",
           run_id: payload.run_id || "",
           used_skill: payload.used_skill || "",
           why: payload.why || "",
@@ -504,6 +534,23 @@ export default function App() {
   async function handleChatAction(action, sourceMessage) {
     const path = action?.path || "";
     const method = action?.method || "GET";
+    if (method === "LOCAL") {
+      if (path === "cancel") {
+        appendAgentResult("Canceled. No workspace change was made.", { type: "answer" });
+        return;
+      }
+      if (path === "details") {
+        const data = sourceMessage?.data || {};
+        const details = [
+          data.path ? `Path: ${data.path}` : "",
+          data.operation ? `Operation: ${data.operation}` : "",
+          data.risk ? `Risk: ${data.risk}` : "",
+          data.preview_content ? `Preview:\n${data.preview_content}` : "",
+        ].filter(Boolean).join("\n");
+        appendAgentResult(details || "No additional details are available.", { type: "tool_result" });
+        return;
+      }
+    }
     if (method === "GET") {
       if (path === "/api/promotions") {
         setPage("promotions");
@@ -547,6 +594,22 @@ export default function App() {
         appendAgentResult(message, { type: "error" });
         setToast(message);
       }
+      return;
+    }
+    if (method === "POST" && path === "/api/workspace/files/propose-write") {
+      const body = action?.body || {};
+      setConfirmAction({
+        kind: "workspace_write",
+        body,
+        title: "Confirm workspace write?",
+        message: [
+          `Path: ${body.path || sourceMessage?.data?.path || "(unknown)"}`,
+          `Operation: write`,
+          `Risk: ${sourceMessage?.data?.risk || "safe_write_preview"}`,
+          "Confirming will write the preview content or create a review for protected files.",
+        ].join("\n"),
+        patch: body.content || sourceMessage?.data?.preview_content || "",
+      });
       return;
     }
     const approveMatch = path.match(/^\/api\/reviews\/([^/]+)\/approve$/);

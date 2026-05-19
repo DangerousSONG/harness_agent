@@ -360,10 +360,29 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertEqual(payload["intent"], "skill_creation_request")
-            self.assertEqual(payload["type"], "proposed_action")
+            self.assertEqual(payload["type"], "review_created")
+            self.assertEqual(payload["risk"], "safe_write_preview")
             self.assertIn("weather_query", payload["message"])
             self.assertTrue(any(item["type"] == "approval_event" for item in payload["trace"]))
+            reviews = client.get("/api/reviews").json()["data"]
+            self.assertEqual(reviews[0]["type"], "skill.creation")
             self.assertFalse((root / "skills" / "weather_query" / "SKILL.md").exists())
+
+    def test_skill_creation_review_apply_creates_files_and_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "self_improvement")
+            client = self.make_client(root)
+            chat = client.post("/api/chat", json={"message": "\u5e2e\u6211\u521b\u5efa weather_query skill"}).json()
+            review_id = chat["data"]["review"]["review_id"]
+            approve = client.post(f"/api/reviews/{review_id}/approve")
+            self.assertEqual(approve.status_code, 200)
+            apply = client.post(f"/api/reviews/{review_id}/apply")
+            self.assertEqual(apply.status_code, 200)
+            self.assertTrue((root / "skills" / "weather_query" / "SKILL.md").exists())
+            self.assertTrue((root / "skills" / "weather_query" / "eval" / "cases.yaml").exists())
+            versions = client.get("/api/skills/weather_query/versions").json()["data"]
+            self.assertEqual(versions[0]["change_type"], "skill_creation")
 
     def test_chat_captures_explicit_memory_signal(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -441,7 +460,7 @@ class WebApiTests(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 200)
             payload = response.json()
-            self.assertEqual(payload["intent"], "review_query")
+            self.assertEqual(payload["intent"], "review_action_request")
             self.assertEqual(payload["type"], "approval_required")
             self.assertTrue(payload["actions"][0]["requires_confirmation"])
             self.assertIn("/apply", payload["actions"][0]["path"])
@@ -470,3 +489,67 @@ class WebApiTests(unittest.TestCase):
             self.assertTrue(any(item["type"] == "tool_call" and item.get("method") == "POST" for item in payload["trace"]))
             self.assertTrue(any(item["type"] == "approval_event" for item in payload["trace"]))
             self.assertEqual(skill_file.read_text(encoding="utf-8"), before)
+
+    def test_chat_reads_workspace_file_with_trace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "\u8bfb\u53d6 skills/markdown_writer/SKILL.md"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["intent"], "skill_read_request")
+            self.assertEqual(payload["risk"], "safe_read")
+            self.assertEqual(payload["type"], "file_result")
+            self.assertEqual(payload["data"]["path"], "skills/markdown_writer/SKILL.md")
+            self.assertTrue(any(item["type"] == "file_trace" and item.get("operation") == "read" for item in payload["trace"]))
+
+    def test_chat_file_write_returns_confirmable_preview_then_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "\u5e2e\u6211\u5728 docs/demo.md \u5199\u4e00\u6bb5 hello"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["intent"], "file_write_request")
+            self.assertEqual(payload["type"], "proposed_action")
+            self.assertFalse((root / "docs" / "demo.md").exists())
+            action = payload["actions"][0]
+            confirm = client.post(action["path"], json=action["body"])
+            self.assertEqual(confirm.status_code, 200)
+            self.assertEqual((root / "docs" / "demo.md").read_text(encoding="utf-8"), "hello\n")
+
+    def test_chat_safe_command_runs_git_status_with_trace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "\u5e2e\u6211\u770b git status"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["intent"], "command_run_request")
+            self.assertEqual(payload["risk"], "safe_read")
+            self.assertEqual(payload["type"], "command_result")
+            self.assertTrue(any(item["type"] == "command_trace" and item.get("command") == "git status" for item in payload["trace"]))
+
+    def test_chat_high_risk_delete_command_is_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "\u5e2e\u6211\u5220\u9664\u6574\u4e2a skills \u76ee\u5f55"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["intent"], "command_run_request")
+            self.assertEqual(payload["risk"], "high_risk")
+            self.assertEqual(payload["type"], "error")
+            self.assertTrue((root / "skills").exists())
+
+    def test_workspace_file_read_refuses_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("OPENAI_API_KEY=secret", encoding="utf-8")
+            client = self.make_client(root)
+            response = client.get("/api/workspace/files/read", params={"path": ".env"})
+            self.assertEqual(response.status_code, 403)

@@ -164,6 +164,10 @@ class ReviewQueue:
             message = self._apply_regression_case(item)
         elif item.type == "skill.promotion":
             message = self._apply_skill_promotion(item)
+        elif item.type == "skill.creation":
+            message = self._apply_skill_creation(item)
+        elif item.type == "file.write":
+            message = self._apply_file_write(item)
         elif self._is_load_skill_review(item):
             message = self._apply_load_skill(item)
         else:
@@ -185,8 +189,13 @@ class ReviewQueue:
         tool_name = item.tool_name or item.metadata.get("tool_name", "")
         if item.type == "skill.promotion" and item.target_files:
             return self._diff_for_skill_promotion(item)
+        if item.type == "skill.creation" and item.target_files:
+            return self._diff_for_proposed_files(item)
         if item.type == "skill.regression_case" and item.target_files:
             return self._diff_for_regression_case(item)
+        if item.type == "file.write" and item.target_files:
+            content = str(item.metadata.get("content") or (item.tool_arguments or {}).get("content", "") or item.proposed_change)
+            return self._diff_for_write(item.target_files[0], content)
         if self._is_load_skill_review(item):
             return "\n".join(
                 [
@@ -221,6 +230,16 @@ class ReviewQueue:
             "",
         ]
         return "\n".join(header)
+
+    def _diff_for_proposed_files(self, item: ReviewItem) -> str:
+        proposed_files = item.metadata.get("proposed_files", {})
+        if not isinstance(proposed_files, dict):
+            proposed_files = {}
+        chunks = []
+        for target_file in item.target_files:
+            proposed_content = str(proposed_files.get(target_file, ""))
+            chunks.append(self._diff_for_write(target_file, proposed_content))
+        return "\n".join(chunks) if chunks else f"# No proposed files for {item.review_id}\n"
 
     def _diff_for_write(self, target_file: str, proposed_content: str) -> str:
         current = self._read_target(target_file)
@@ -339,6 +358,35 @@ class ReviewQueue:
         )
         self._write_target(target_file, proposed)
         return f"Applied regression cases for {promo_id} to {target_file}."
+
+    def _apply_file_write(self, item: ReviewItem) -> str:
+        if not item.target_files:
+            raise ValueError("File write review has no target file.")
+        target_file = item.target_files[0]
+        content = str(item.metadata.get("content") or (item.tool_arguments or {}).get("content", "") or item.proposed_change)
+        self._write_target(target_file, content)
+        return f"Applied reviewed file write to {target_file}."
+
+    def _apply_skill_creation(self, item: ReviewItem) -> str:
+        proposed_files = item.metadata.get("proposed_files", {})
+        if not isinstance(proposed_files, dict) or not proposed_files:
+            raise ValueError("Skill creation review has no proposed files.")
+        for target_file in item.target_files:
+            if target_file not in proposed_files:
+                raise ValueError(f"Skill creation review is missing proposed content for {target_file}.")
+            if (self.workdir / target_file).exists():
+                raise ValueError(f"Refusing to overwrite existing file: {target_file}")
+        for target_file in item.target_files:
+            self._write_target(target_file, str(proposed_files[target_file]))
+        skill_file = f"skills/{item.target_skill}/SKILL.md"
+        if skill_file in proposed_files:
+            self.evolution_registry.record_skill_creation(
+                skill=item.target_skill,
+                skill_review=item.to_dict(),
+                target_file=skill_file,
+                new_content=str(proposed_files[skill_file]),
+            )
+        return f"Created skill {item.target_skill} with {len(item.target_files)} reviewed files."
 
     def _apply_skill_promotion(self, item: ReviewItem) -> str:
         if not item.target_files:

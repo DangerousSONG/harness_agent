@@ -4,6 +4,18 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-19
 
+### Workspace Agent Chat Runtime
+
+- Upgraded Chat from a skill-aware answer pipeline into a risk-aware Workspace Agent Runtime with explicit intents for skill reads/creation/update, file read/write/edit, safe command execution, review actions, rollback requests, durable memory preferences, evolution actions, and tool creation.
+- Added workspace APIs for safe file reads, confirmation-gated file write proposals, skill creation proposals, and allowlisted command execution: `/api/workspace/files/read`, `/api/workspace/files/propose-write`, `/api/skills/propose`, and `/api/workspace/commands/run`.
+- Added minimal risk classification to Chat responses (`safe_read`, `safe_write_preview`, `high_risk`) and kept `.env`/private-key reads, destructive commands, `git push`, network download commands, permission changes, and chained shell commands blocked by default.
+- Changed skill creation requests to create a pending `skill.creation` review for `skills/<name>/SKILL.md` and `skills/<name>/eval/cases.yaml` without writing files; approve/apply now creates the reviewed files and records an initial skill version.
+- Added review-queue apply support for approved `skill.creation` and `file.write` reviews, with patch previews generated during approval and apply still blocked unless the review is approved.
+- Added Chat execution paths for safe file reads, ordinary docs write previews, protected-file write reviews, `git status` / `git diff` style command traces, high-risk command refusal, review approve/apply/reject confirmation, and memory-backed skill update requests.
+- Updated the Chat UI to render new result types, risk badges, file/command trace details, workspace write confirmation, and local Cancel/View details actions for proposed writes.
+- Added API tests covering intent routing, safe file read, write preview confirmation, skill creation review/apply, command allowlisting, high-risk command blocking, review apply confirmation, and sensitive file read refusal.
+- Validation: bundled Python `compileall` over `web runtime`; `npm.cmd --prefix web/ui run build`. FastAPI API tests were discovered but skipped in the available bundled Python because `fastapi` is not installed.
+
 ### Console UI Polish
 
 - Polished the SafeHarness Console frontend into a denser three-column approval workbench without changing backend business logic or `/api/...` contracts.

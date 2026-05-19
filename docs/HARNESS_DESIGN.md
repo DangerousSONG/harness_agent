@@ -92,15 +92,22 @@ Stage 1 skill memory support now lives in `runtime/skill_memory.py`.
 
 Chat is not only a command console. It now runs a small runtime pipeline:
 
-1. Intent Router classifies the user request into canonical intents such as `general_chat`, `writing_request`, `workspace_status_query`, `skill_list_query`, `review_query`, `promotion_query`, `evolution_action_request`, `tool_creation_request`, `skill_creation_request`, `file_operation_request`, `memory_preference`, and `external_realtime_query`.
+1. Intent Router classifies the user request into canonical intents such as `general_chat`, `skill_list_query`, `skill_read_request`, `skill_creation_request`, `skill_update_request`, `file_read_request`, `file_write_request`, `file_edit_request`, `command_run_request`, `workspace_status_query`, `review_query`, `review_action_request`, `rollback_request`, `memory_preference`, `promotion_query`, `evolution_action_request`, `tool_creation_request`, `writing_request`, and `external_realtime_query`.
 2. Context Loader reads only the workspace state needed for that intent, such as skills for skill-list and skill-routing requests, or dashboard/review/promotion/version state for evolution status.
 3. Skill Selector maps writing to `markdown_writer`, file changes to file-editing skills, tool/API work to `tool_usage`, and self-evolution/review/version work to `self_improvement`.
-4. Planner and Safety Gate choose whether to answer directly, ask for missing information, capture memory, call an existing workspace API, or return a proposed/confirmation-required action.
+4. Planner and Safety Gate choose whether to answer directly, ask for missing information, capture memory, call an existing workspace API, execute a safe read-only command, create a review, or return a proposed/confirmation-required action.
 5. Response Composer returns natural language plus an auditable `trace[]`; it does not expose hidden chain-of-thought.
 
 Deterministic routing covers writing/markdown requests, file editing advice, tool creation/design, skill creation proposals, tool/error questions, realtime external-data limits, and self-improvement workflows. Weather-like requests are routed by intent: asking for today's weather is an `external_realtime_query` and will not fabricate data without a weather tool, while asking to build a weather tool is a `tool_creation_request`.
 
 When Chat sees an explicit long-term preference or correction, it records a learning signal through `SkillMemoryManager.record_learning` and returns the resulting `LRN-*` id. Promotion candidates remain separate suggestions: Chat may surface a proposed promotion or evolution action, but it does not edit `SKILL.md`.
+
+Chat exposes workspace runtime APIs for general operations:
+
+- `GET /api/workspace/files/read?path=...` reads non-sensitive workspace files inside the project root.
+- `POST /api/workspace/files/propose-write` creates a write preview for ordinary docs and writes only after confirmation; protected targets create reviews instead.
+- `POST /api/skills/propose` creates a `skill.creation` review for `SKILL.md` plus placeholder eval cases.
+- `POST /api/workspace/commands/run` runs only small allowlisted commands such as `git status`, `git diff`, directory listing, unit-test, compile, and build validation commands.
 
 Conversational evolution operations stay behind existing APIs:
 
@@ -109,7 +116,9 @@ Conversational evolution operations stay behind existing APIs:
 - Apply responses include diff-preview data before the UI calls the review apply API.
 - Rollback is routed through the version rollback API and creates a review only.
 
-The Chat response shape includes `run_id`, `intent`, `type`, `message`, `used_skill`, `why`, `memory_record_id`, `trace`, `actions`, and `data`, allowing the UI to render normal answers, skill results, memory captures, proposed actions, tool results, approval-required states, and errors differently. Ordinary `answer` messages keep `message` as natural-language content and do not force a skill attribution.
+The Chat response shape includes `run_id`, `intent`, `risk`, `type`, `message`, `used_skill`, `why`, `memory_record_id`, `trace`, `actions`, and `data`, allowing the UI to render normal answers, skill results, file results, command results, memory captures, review-created states, proposed actions, tool results, approval-required states, and errors differently. Ordinary `answer` messages keep `message` as natural-language content and do not force a skill attribution.
+
+The minimal risk levels are `safe_read`, `safe_write_preview`, and `high_risk`. Safe reads can run directly. Safe writes must return a preview, proposed action, or review. High-risk actions such as `.env` reads/writes, destructive deletes, `git push`, network download execution, permission changes, chained shell commands, and audit/git internals are refused or require an explicit higher-trust path outside Chat.
 
 `trace[]` is an auditable external execution trace, not hidden chain-of-thought. It may include:
 
