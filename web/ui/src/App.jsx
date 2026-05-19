@@ -38,7 +38,7 @@ export default function App() {
   const [reviewDetail, setReviewDetail] = useState(null);
   const [reviewPatch, setReviewPatch] = useState(null);
   const [reviewLoading, setReviewLoading] = useState(false);
-  const [confirmReviewId, setConfirmReviewId] = useState("");
+  const [confirmAction, setConfirmAction] = useState(null);
   const [busyReviewId, setBusyReviewId] = useState("");
   const [busyPromoId, setBusyPromoId] = useState("");
   const [selectedPromotion, setSelectedPromotion] = useState(null);
@@ -60,17 +60,27 @@ export default function App() {
       api.knowledgeBases(),
     ]);
     const [dashboardResult, reviewsResult, promosResult, skillsResult, toolsResult, memoriesResult, kbResult] = settled;
+    let reviewItems = [];
+    let promoItems = [];
+    let skillItems = [];
     if (dashboardResult.status === "fulfilled") setDashboard(dashboardResult.value.data);
-    if (reviewsResult.status === "fulfilled") setReviews(reviewsResult.value.data || []);
-    if (promosResult.status === "fulfilled") {
-      const items = promosResult.value.data || [];
-      setPromotions(items);
-      setSelectedPromoId((current) => current || items[0]?.promo_id || "");
+    if (reviewsResult.status === "fulfilled") {
+      reviewItems = reviewsResult.value.data || [];
+      setReviews(reviewItems);
     }
-    if (skillsResult.status === "fulfilled") setSkills(skillsResult.value.data || []);
+    if (promosResult.status === "fulfilled") {
+      promoItems = promosResult.value.data || [];
+      setPromotions(promoItems);
+      setSelectedPromoId((current) => current || promoItems[0]?.promo_id || "");
+    }
+    if (skillsResult.status === "fulfilled") {
+      skillItems = skillsResult.value.data || [];
+      setSkills(skillItems);
+    }
     if (toolsResult.status === "fulfilled") setTools(toolsResult.value.data || []);
     if (memoriesResult.status === "fulfilled") setMemories(memoriesResult.value.data || []);
     if (kbResult.status === "fulfilled") setKnowledgeBases(kbResult.value.data || []);
+    return { reviews: reviewItems, promotions: promoItems, skills: skillItems };
   }, []);
 
   const loadVersions = useCallback(async (skillItems) => {
@@ -122,6 +132,41 @@ export default function App() {
     [reviewDetail, reviews, selectedReviewId],
   );
 
+  function appendToolCall(name, status = "running") {
+    const id = makeId();
+    setMessages((items) => [
+      ...items,
+      { id, role: "tool", name, status, time: formatDate(new Date().toISOString()) },
+    ]);
+    return id;
+  }
+
+  function finishToolCall(id, status) {
+    setMessages((items) =>
+      items.map((item) => (item.id === id ? { ...item, status } : item)),
+    );
+  }
+
+  function appendAgentResult(text) {
+    setMessages((items) => [
+      ...items,
+      { id: makeId(), role: "agent", text, time: formatDate(new Date().toISOString()) },
+    ]);
+  }
+
+  async function refreshAfterOperation(promoId = selectedPromoId) {
+    const data = await refresh();
+    await loadVersions(data.skills);
+    if (promoId) {
+      try {
+        const state = await api.evolutionState(promoId);
+        setEvolutionState(state.data);
+      } catch {
+        setEvolutionState(null);
+      }
+    }
+  }
+
   async function openReview(reviewId) {
     setSelectedReviewId(reviewId);
     setReviewLoading(true);
@@ -140,48 +185,80 @@ export default function App() {
 
   async function approveReview(reviewId) {
     setBusyReviewId(reviewId);
+    const toolId = appendToolCall(`POST /api/reviews/${reviewId}/approve`);
     try {
       const payload = await api.approveReview(reviewId);
       setToast(payload.message || "Preview generated.");
-      await refresh();
+      finishToolCall(toolId, "completed");
+      appendAgentResult(payload.message || `Review ${reviewId} approved.`);
+      await refreshAfterOperation();
       if (selectedReviewId === reviewId) await openReview(reviewId);
     } catch (error) {
-      setToast(getErrorMessage(error));
+      const message = getErrorMessage(error);
+      finishToolCall(toolId, "failed");
+      appendAgentResult(message);
+      setToast(message);
     } finally {
       setBusyReviewId("");
     }
   }
 
   async function applyReview(reviewId) {
-    setConfirmReviewId(reviewId);
+    setConfirmAction({
+      kind: "apply_review",
+      reviewId,
+      title: "Apply change?",
+      message: "This will modify the active file. Continue?",
+    });
   }
 
   async function confirmApply() {
-    const reviewId = confirmReviewId;
-    setBusyReviewId(reviewId);
-    try {
-      const payload = await api.applyReview(reviewId);
-      setToast(payload.message || "Change applied.");
-      setConfirmReviewId("");
-      await refresh();
-      await loadVersions();
-      if (selectedReviewId === reviewId) await openReview(reviewId);
-    } catch (error) {
-      setToast(getErrorMessage(error));
-    } finally {
-      setBusyReviewId("");
+    if (!confirmAction) return;
+    if (confirmAction.kind === "apply_review") {
+      await confirmApplyReview(confirmAction.reviewId);
+      return;
+    }
+    if (confirmAction.kind === "rollback_version") {
+      await confirmRollbackVersion(confirmAction.version);
     }
   }
 
   async function rejectReview(reviewId) {
     setBusyReviewId(reviewId);
+    const toolId = appendToolCall(`POST /api/reviews/${reviewId}/reject`);
     try {
       const payload = await api.rejectReview(reviewId);
       setToast(payload.message || "Review rejected.");
-      await refresh();
+      finishToolCall(toolId, "completed");
+      appendAgentResult(payload.message || `Review ${reviewId} rejected.`);
+      await refreshAfterOperation();
       if (selectedReviewId === reviewId) await openReview(reviewId);
     } catch (error) {
-      setToast(getErrorMessage(error));
+      const message = getErrorMessage(error);
+      finishToolCall(toolId, "failed");
+      appendAgentResult(message);
+      setToast(message);
+    } finally {
+      setBusyReviewId("");
+    }
+  }
+
+  async function confirmApplyReview(reviewId) {
+    setBusyReviewId(reviewId);
+    const toolId = appendToolCall(`POST /api/reviews/${reviewId}/apply`);
+    try {
+      const payload = await api.applyReview(reviewId);
+      setToast(payload.message || "Change applied.");
+      finishToolCall(toolId, "completed");
+      appendAgentResult(payload.message || `Review ${reviewId} applied.`);
+      setConfirmAction(null);
+      await refreshAfterOperation();
+      if (selectedReviewId === reviewId) await openReview(reviewId);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      finishToolCall(toolId, "failed");
+      appendAgentResult(message);
+      setToast(message);
     } finally {
       setBusyReviewId("");
     }
@@ -191,14 +268,14 @@ export default function App() {
     setSending(true);
     setMessages((items) => [
       ...items,
-      { id: crypto.randomUUID(), role: "user", text: message, time: formatDate(new Date().toISOString()) },
+      { id: makeId(), role: "user", text: message, time: formatDate(new Date().toISOString()) },
     ]);
     try {
       const payload = await api.chatSend(message);
       setMessages((items) => [
         ...items,
         {
-          id: crypto.randomUUID(),
+          id: makeId(),
           role: "agent",
           text: payload.message || payload.data?.message || "Done.",
           time: formatDate(new Date().toISOString()),
@@ -209,7 +286,7 @@ export default function App() {
       setMessages((items) => [
         ...items,
         {
-          id: crypto.randomUUID(),
+          id: makeId(),
           role: "agent",
           text: getErrorMessage(error),
           time: formatDate(new Date().toISOString()),
@@ -236,33 +313,96 @@ export default function App() {
   async function evolvePromotion(promoId) {
     if (!promoId) return;
     setBusyPromoId(promoId);
+    const toolId = appendToolCall(`POST /api/promotions/${promoId}/evolve`);
     try {
       const payload = await api.evolvePromotion(promoId);
       setToast(payload.message || "Evolution flow updated.");
+      finishToolCall(toolId, "completed");
+      appendAgentResult(payload.message || `Evolution flow updated for ${promoId}.`);
       setSelectedPromoId(promoId);
       setPage("evolution");
-      await refresh();
+      await refreshAfterOperation(promoId);
     } catch (error) {
-      setToast(getErrorMessage(error));
+      const message = getErrorMessage(error);
+      finishToolCall(toolId, "failed");
+      appendAgentResult(message);
+      setToast(message);
     } finally {
       setBusyPromoId("");
     }
   }
 
   async function createRollbackReview(version) {
+    setConfirmAction({
+      kind: "rollback_version",
+      version,
+      title: "Create rollback review?",
+      message: "This will ask the backend to create a rollback review. It will not directly modify SKILL.md. Continue?",
+    });
+  }
+
+  async function confirmRollbackVersion(version) {
     const key = versionKey(version);
     setBusyVersionKey(key);
+    const toolId = appendToolCall(`POST /api/skills/${version.skill}/rollback`);
     try {
       const payload = await api.rollbackSkill(version.skill, version.version);
       setToast(payload.message || "Rollback review created.");
-      await refresh();
+      finishToolCall(toolId, "completed");
+      appendAgentResult(payload.message || "Rollback review created.");
+      setConfirmAction(null);
+      await refreshAfterOperation();
       setPage("reviews");
       if (payload.data?.review_id) await openReview(payload.data.review_id);
     } catch (error) {
-      setToast(getErrorMessage(error));
+      const message = getErrorMessage(error);
+      finishToolCall(toolId, "failed");
+      appendAgentResult(message);
+      setToast(message);
     } finally {
       setBusyVersionKey("");
     }
+  }
+
+  async function continueEvolution(promoId) {
+    if (!promoId) return;
+    let state = evolutionState;
+    if (!state || state.promo_id !== promoId) {
+      try {
+        const payload = await api.evolutionState(promoId);
+        state = payload.data;
+        setEvolutionState(state);
+      } catch {
+        state = null;
+      }
+    }
+    const action = state?.next_action || "create_regression_review";
+    const reviewId = reviewIdForAction(state, action);
+    if (action === "approve_regression_review" || action === "approve_skill_review") {
+      if (reviewId) {
+        await approveReview(reviewId);
+      } else {
+        const message = `No review id is available for ${action}.`;
+        setToast(message);
+        appendAgentResult(message);
+      }
+      return;
+    }
+    if (action === "apply_regression_review" || action === "apply_skill_review") {
+      if (reviewId) {
+        await applyReview(reviewId);
+      } else {
+        const message = `No review id is available for ${action}.`;
+        setToast(message);
+        appendAgentResult(message);
+      }
+      return;
+    }
+    if (action === "completed") {
+      setPage("versions");
+      return;
+    }
+    await evolvePromotion(promoId);
   }
 
   const actionProps = {
@@ -281,6 +421,8 @@ export default function App() {
         skills={skills}
         reviews={reviews}
         evolutionState={evolutionState}
+        onNextAction={continueEvolution}
+        nextActionBusy={Boolean(busyPromoId || busyReviewId)}
       >
         {page === "chat" ? (
           <ChatPage
@@ -317,7 +459,7 @@ export default function App() {
             onSelectPromo={setSelectedPromoId}
             evolutionState={evolutionState}
             busyPromoId={busyPromoId}
-            onEvolve={evolvePromotion}
+            onContinue={continueEvolution}
           />
         ) : null}
         {page === "versions" ? (
@@ -352,11 +494,11 @@ export default function App() {
         onEvolve={evolvePromotion}
       />
       <ConfirmDialog
-        open={Boolean(confirmReviewId)}
-        title="Apply change?"
-        message="This will modify the active file. Continue?"
-        busy={Boolean(busyReviewId)}
-        onCancel={() => setConfirmReviewId("")}
+        open={Boolean(confirmAction)}
+        title={confirmAction?.title || "Continue?"}
+        message={confirmAction?.message || "Continue?"}
+        busy={Boolean(busyReviewId || busyVersionKey)}
+        onCancel={() => setConfirmAction(null)}
         onConfirm={confirmApply}
       />
       {toast ? (
@@ -367,4 +509,18 @@ export default function App() {
       ) : null}
     </>
   );
+}
+
+function reviewIdForAction(state, action) {
+  const steps = state?.steps || [];
+  const reviewName =
+    action === "approve_regression_review" || action === "apply_regression_review"
+      ? "regression_review"
+      : "skill_promotion_review";
+  return steps.find((step) => step.name === reviewName)?.review_id || "";
+}
+
+function makeId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }

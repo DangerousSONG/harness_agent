@@ -94,9 +94,17 @@ export default function ChatPage({
       <div className="min-h-0 flex-1 overflow-auto px-5 py-6">
         <div className="mx-auto max-w-3xl space-y-5">
           {(messages || []).map((message) => (
-            <Bubble key={message.id} role={message.role} time={message.time}>
-              {message.text}
-            </Bubble>
+            message.role === "tool" ? (
+              <ToolStatus
+                key={message.id}
+                name={message.name || message.text}
+                status={message.status || "completed"}
+              />
+            ) : (
+              <Bubble key={message.id} role={message.role} time={message.time}>
+                {message.text}
+              </Bubble>
+            )
           ))}
 
           {toolEvents.map((event, index) => (

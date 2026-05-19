@@ -18,7 +18,7 @@ export default function EvolutionPage({
   selectedPromoId,
   onSelectPromo,
   evolutionState,
-  onEvolve,
+  onContinue,
   busyPromoId,
 }) {
   const hasPromos = Boolean(promotions?.length);
@@ -91,9 +91,9 @@ export default function EvolutionPage({
               <button
                 className="primary-button mt-5 w-full"
                 disabled={!selectedPromoId || busyPromoId === selectedPromoId}
-                onClick={() => onEvolve(selectedPromoId)}
+                onClick={() => onContinue(selectedPromoId)}
               >
-                Continue Evolution
+                {busyPromoId === selectedPromoId ? "Working..." : "Continue Evolution"}
               </button>
               <div className="mt-5 space-y-2 text-xs text-zinc-500">
                 {steps.map((step) => (

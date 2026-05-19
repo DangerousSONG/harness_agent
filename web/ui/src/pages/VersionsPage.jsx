@@ -111,7 +111,7 @@ export default function VersionsPage({
                   onClick={() => selected && onCreateRollback(selected)}
                 >
                   <RotateCcw className="h-4 w-4" />
-                  Create Rollback Review
+                  {busyVersionKey === selectedVersionKey ? "Creating..." : "Create Rollback Review"}
                 </button>
               </div>
             </aside>

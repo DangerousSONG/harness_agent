@@ -60,7 +60,7 @@ export default function PromotionModal({ open, promotion, loading, onClose, onEv
             disabled={!promotion?.promo_id || busy}
             onClick={() => onEvolve(promotion.promo_id)}
           >
-            Evolve
+            {busy ? "Evolving..." : "Evolve"}
           </button>
         </footer>
       </section>

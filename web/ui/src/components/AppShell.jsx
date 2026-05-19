@@ -3,7 +3,6 @@ import {
   Boxes,
   Check,
   GitPullRequest,
-  History,
   Layers3,
   Monitor,
   Rocket,
@@ -42,7 +41,7 @@ function StepDot({ status, active }) {
   );
 }
 
-function ContextPanel({ skills, evolutionState, reviews }) {
+function ContextPanel({ skills, evolutionState, reviews, onNextAction, nextActionBusy }) {
   const currentSkill =
     skills?.find((skill) => skill.name === evolutionState?.target_skill) || skills?.[0] || null;
   const steps = buildPanelSteps(evolutionState, reviews);
@@ -107,6 +106,13 @@ function ContextPanel({ skills, evolutionState, reviews }) {
             </span>
             <p className="text-sm leading-6 text-zinc-700">{nextActionLabel(nextAction)}</p>
           </div>
+          <button
+            className="primary-button mt-5 w-full"
+            disabled={!evolutionState?.promo_id || nextAction === "completed" || nextActionBusy}
+            onClick={() => onNextAction?.(evolutionState?.promo_id)}
+          >
+            {nextActionBusy ? "Working..." : nextActionLabel(nextAction)}
+          </button>
         </section>
       </div>
     </aside>
@@ -155,6 +161,8 @@ export default function AppShell({
   skills,
   reviews,
   evolutionState,
+  onNextAction,
+  nextActionBusy,
 }) {
   return (
     <div className="flex h-screen overflow-hidden bg-mist text-ink">
@@ -214,7 +222,13 @@ export default function AppShell({
         {children}
       </main>
 
-      <ContextPanel skills={skills} reviews={reviews} evolutionState={evolutionState} />
+      <ContextPanel
+        skills={skills}
+        reviews={reviews}
+        evolutionState={evolutionState}
+        onNextAction={onNextAction}
+        nextActionBusy={nextActionBusy}
+      />
     </div>
   );
 }

@@ -1,5 +1,10 @@
 export default {
-  content: ["./index.html", "./src/**/*.{js,jsx}"],
+  content: [
+    "./index.html",
+    "./src/**/*.{js,jsx}",
+    "./web/ui/index.html",
+    "./web/ui/src/**/*.{js,jsx}",
+  ],
   theme: {
     extend: {
       boxShadow: {

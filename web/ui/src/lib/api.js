@@ -1,6 +1,7 @@
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 
 async function request(path, options = {}) {
+  const method = options.method || "GET";
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
       "Content-Type": "application/json",
@@ -21,7 +22,13 @@ async function request(path, options = {}) {
   }
   if (!response.ok || payload?.ok === false) {
     const message = payload?.message || `Request failed: ${response.status}`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    error.statusText = response.statusText;
+    error.payload = payload;
+    error.path = path;
+    error.method = method;
+    throw error;
   }
   return payload;
 }
@@ -67,5 +74,7 @@ export const api = {
 };
 
 export function getErrorMessage(error) {
-  return error instanceof Error ? error.message : "Something went wrong.";
+  if (!(error instanceof Error)) return "Something went wrong.";
+  const prefix = error.status ? `HTTP ${error.status}` : "Request failed";
+  return `${prefix}: ${error.message}`;
 }

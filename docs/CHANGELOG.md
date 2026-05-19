@@ -9,6 +9,8 @@ This file records meaningful project iterations. When judging current state, rea
 - Added a React + Tailwind frontend under `web/ui` for the local SafeHarness Console.
 - Built the Apple-like minimal three-column Agent Chat workspace with sidebar navigation, chat stream review cards, review details diff modal, context panel, promotions, evolution, assets, reviews, and versions views.
 - Kept all approval, preview, apply, reject, evolve, and rollback actions routed through the existing FastAPI endpoints and ReviewQueue; the UI does not read or write local asset files directly, and apply actions require a second confirmation.
+- Fixed the UI operation layer so PROMO evolve, Evolution next action, ReviewQueue actions, and rollback review creation call the real backend APIs with loading, Chat feedback, refresh, and explicit error status handling.
+- Added `docs/UI_ACCEPTANCE.md` with progression endpoints, expected responses, acceptance steps, actual validation results, and known limitations.
 
 ### Local Asset Governance API
 

@@ -56,18 +56,30 @@ export default function ReviewsPage({ reviews, actionProps }) {
                             Details
                           </button>
                           {review.status === "pending" ? (
-                            <button className="secondary-button" onClick={() => actionProps.onApprove(review.review_id)}>
-                              Generate Preview
+                            <button
+                              className="secondary-button"
+                              disabled={actionProps.busyReviewId === review.review_id}
+                              onClick={() => actionProps.onApprove(review.review_id)}
+                            >
+                              {actionProps.busyReviewId === review.review_id ? "Generating..." : "Generate Preview"}
                             </button>
                           ) : null}
                           {review.status === "approved" ? (
-                            <button className="primary-button" onClick={() => actionProps.onApply(review.review_id)}>
-                              Apply Change
+                            <button
+                              className="primary-button"
+                              disabled={actionProps.busyReviewId === review.review_id}
+                              onClick={() => actionProps.onApply(review.review_id)}
+                            >
+                              {actionProps.busyReviewId === review.review_id ? "Applying..." : "Apply Change"}
                             </button>
                           ) : null}
                           {review.status === "pending" ? (
-                            <button className="danger-button" onClick={() => actionProps.onReject(review.review_id)}>
-                              Reject
+                            <button
+                              className="danger-button"
+                              disabled={actionProps.busyReviewId === review.review_id}
+                              onClick={() => actionProps.onReject(review.review_id)}
+                            >
+                              {actionProps.busyReviewId === review.review_id ? "Rejecting..." : "Reject"}
                             </button>
                           ) : null}
                         </div>
