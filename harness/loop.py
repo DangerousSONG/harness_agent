@@ -223,6 +223,7 @@ def _auto_record_learning_signal(
             (
                 "approval_required event skipped",
                 "skipped post-approval assistant message",
+                "skipped verification read_file result",
             )
         ):
             print(f"> auto_memory: {record_result[:200]}")

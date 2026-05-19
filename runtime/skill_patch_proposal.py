@@ -90,11 +90,13 @@ def evaluate_skill_patch_candidate(
         return False, "target_skill is required.", ""
     if not re.fullmatch(r"[A-Za-z0-9._-]+", target_skill):
         return False, f"target_skill contains unsupported characters: {target_skill}", ""
-    if candidate.occurrence_count < 3:
-        return False, "occurrence_count must be >= 3.", ""
     source_type = candidate.source_memory_type.strip().lower()
     if source_type == "policy_candidate":
         return False, POLICY_CANDIDATE_REJECTION, ""
+    if candidate.promotion_decision and candidate.promotion_decision != "promote":
+        return False, f"promotion_decision={candidate.promotion_decision} is not eligible for SKILL.md promotion.", ""
+    if candidate.eligible_target and candidate.eligible_target != "skill_rule":
+        return False, f"eligible_target={candidate.eligible_target} is not eligible for SKILL.md promotion.", ""
     if source_type not in ALLOWED_SKILL_PATCH_SOURCE_TYPES:
         return False, f"source_memory_type={source_type or '(unknown)'} is not eligible for SKILL.md promotion.", ""
     if SECRET_PATTERN.search(text):

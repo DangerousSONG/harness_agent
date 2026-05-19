@@ -42,6 +42,12 @@ class PromotionCandidateView:
     rollback_plan: str
     suggested_target_files: list[str]
     status: str
+    promotion_score: float = 0.0
+    promotion_decision: str = ""
+    reason: str = ""
+    eligible_target: str = ""
+    safety_risk: str = ""
+    attribution_confidence: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -145,6 +151,12 @@ class PromotionBrowser:
             rollback_plan=_first_field(fields, "Rollback Plan") or "",
             suggested_target_files=suggested_files,
             status=_first_field(fields, "Status") or "proposed",
+            promotion_score=_parse_float(_first_field(fields, "Promotion Score"), 0.0),
+            promotion_decision=_first_field(fields, "Promotion Decision") or "",
+            reason=_first_field(fields, "Reason", "Promotion Reason") or "",
+            eligible_target=_first_field(fields, "Eligible Target") or "",
+            safety_risk=_first_field(fields, "Safety Risk") or "",
+            attribution_confidence=_first_field(fields, "Attribution Confidence") or "",
         )
 
     def _find_source_memory(self, source_ids: list[str]) -> dict[str, Any]:
@@ -198,8 +210,10 @@ def format_promotion_list(candidates: list[PromotionCandidateView]) -> str:
         source_type = data["source_memory_type"] or "(unknown)"
         summary = data["summary"] or "(no summary)"
         lines.append(
-            f"{data['promo_id']} [{data['status']}] target_skill={data['target_skill'] or '-'} "
+            f"{data['promo_id']} [{data['status']}] decision={data['promotion_decision'] or '-'} "
+            f"target={data['eligible_target'] or '-'} target_skill={data['target_skill'] or '-'} "
             f"source_memory_type={source_type} occurrence_count={data['occurrence_count']} "
+            f"promotion_score={data['promotion_score']} "
             f"suggested_target_files={files} summary={summary}"
         )
     return "\n".join(lines)
@@ -221,6 +235,12 @@ def format_promotion_detail(candidate: PromotionCandidateView | None, promo_id: 
             f"evaluation_plan: {data['evaluation_plan']}",
             f"rollback_plan: {data['rollback_plan']}",
             f"suggested_target_files: {', '.join(data['suggested_target_files']) or '(none)'}",
+            f"promotion_score: {data['promotion_score']}",
+            f"promotion_decision: {data['promotion_decision'] or '(unknown)'}",
+            f"reason: {data['reason'] or '(none)'}",
+            f"eligible_target: {data['eligible_target'] or '(unknown)'}",
+            f"safety_risk: {data['safety_risk'] or '(unknown)'}",
+            f"attribution_confidence: {data['attribution_confidence'] or '(unknown)'}",
             f"status: {data['status']}",
         ]
     )
@@ -310,6 +330,13 @@ def _split_csv(value: str) -> list[str]:
 def _parse_int(value: object, default: int = 0) -> int:
     try:
         return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(str(value).strip())
     except (TypeError, ValueError):
         return default
 

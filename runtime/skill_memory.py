@@ -29,6 +29,27 @@ SECRET_PATTERNS = [
     re.compile(r"-----BEGIN [A-Z ]+PRIVATE KEY-----.*?-----END [A-Z ]+PRIVATE KEY-----", re.DOTALL),
 ]
 
+UNSAFE_PROMOTION_PATTERN = re.compile(
+    r"(?i)(ignore previous instructions|ignore system|disable safety|turn off safety|"
+    r"bypass approval|bypass policy|send this secret|save this api key|store this token|"
+    r"system administrator)"
+)
+SECRET_PROMOTION_PATTERN = re.compile(
+    r"(?i)(api[_ -]?key|token|secret|password|sk-[A-Za-z0-9_-]{20,}|BEGIN [A-Z ]+PRIVATE KEY)"
+)
+STRONG_CORRECTION_PATTERN = re.compile(
+    r"(?i)(以后|固定|默认|不要再|可复用|from now on|always|default|never again|reusable)"
+)
+ONE_TIME_PATTERN = re.compile(
+    r"(?i)(一次性|临时|这一次|本次|当前这次|just this once|one[- ]?off|temporary|this time only)"
+)
+DIRECTIVE_PATTERN = re.compile(
+    r"(?i)\b(when|for|always|prefer|use|include|ensure|avoid|do not|must|should|default)\b|"
+    r"(以后|固定|默认|不要再|可复用|使用|包含|避免|必须|应该|读书笔记|格式)"
+)
+PROMOTION_DECISIONS = {"promote", "wait", "reject", "policy_review"}
+ELIGIBLE_TARGETS = {"skill_rule", "regression_case", "policy_review", "docs", "none"}
+
 WORD_PATTERN = re.compile(r"[A-Za-z0-9_.\\/-]+|[\u4e00-\u9fff]{2,}")
 PATH_PATTERN = re.compile(r"(?i)([A-Z]:\\[^\s`'\"\)]+|(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+[\\/][A-Za-z0-9_.\\/-]+)")
 STOP_WORDS = {
@@ -105,6 +126,17 @@ class PromotionCandidate:
     status: str = "proposed"
     evaluation_plan: str = ""
     rollback_plan: str = ""
+    occurrence_count: int = 1
+    transferability_score: float = 0.0
+    impact_score: float = 0.0
+    testability_score: float = 0.0
+    user_correction_strength: float = 0.0
+    safety_risk: str = "low"
+    attribution_confidence: str = "medium"
+    promotion_score: float = 0.0
+    promotion_decision: str = "wait"
+    reason: str = ""
+    eligible_target: str = "none"
 
     @classmethod
     def create(
@@ -120,6 +152,17 @@ class PromotionCandidate:
         status: str = "proposed",
         evaluation_plan: str = "",
         rollback_plan: str = "",
+        occurrence_count: int = 1,
+        transferability_score: float = 0.0,
+        impact_score: float = 0.0,
+        testability_score: float = 0.0,
+        user_correction_strength: float = 0.0,
+        safety_risk: str = "low",
+        attribution_confidence: str = "medium",
+        promotion_score: float = 0.0,
+        promotion_decision: str = "wait",
+        reason: str = "",
+        eligible_target: str = "none",
     ) -> "PromotionCandidate":
         return cls(
             candidate_id=f"PROMO-{uuid.uuid4().hex[:8].upper()}",
@@ -133,6 +176,17 @@ class PromotionCandidate:
             status=status,
             evaluation_plan=evaluation_plan,
             rollback_plan=rollback_plan,
+            occurrence_count=occurrence_count,
+            transferability_score=transferability_score,
+            impact_score=impact_score,
+            testability_score=testability_score,
+            user_correction_strength=user_correction_strength,
+            safety_risk=safety_risk,
+            attribution_confidence=attribution_confidence,
+            promotion_score=promotion_score,
+            promotion_decision=promotion_decision,
+            reason=reason,
+            eligible_target=eligible_target,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -503,12 +557,27 @@ class SkillMemoryManager:
             return self._update_similar_record(
                 similar,
                 clean_title,
+                clean_details,
                 clean_domain,
                 clean_source,
             )
 
         record_id = self._build_record_id(record_type)
-        first_priority = self._priority_for_occurrence(max(int(occurrence_count), 1))
+        initial_count = max(int(occurrence_count), 1)
+        first_priority = self._priority_for_occurrence(initial_count)
+        eligibility = self._evaluate_promotion_eligibility(
+            record_id=record_id,
+            record_kind=record_type,
+            title=clean_title,
+            details=clean_details,
+            fields={
+                "Occurrence Count": str(initial_count),
+                "Target Skill": skill_name,
+                "Attribution Confidence": clean_attribution_confidence,
+                "Needs Attribution Review": str(resolved_review).lower(),
+                "Priority": first_priority or priority,
+            },
+        )
         block = "\n".join(
             [
                 "",
@@ -518,12 +587,21 @@ class SkillMemoryManager:
                 f"- Status: {status}",
                 f"- Domain: {clean_domain or 'unknown'}",
                 f"- Source: {clean_source or 'unknown'}",
-                f"- Occurrence Count: {max(int(occurrence_count), 1)}",
+                f"- Occurrence Count: {initial_count}",
                 f"- Target Skill: {skill_name}",
                 f"- Source Skill: {clean_source_skill}",
                 f"- Attribution Reason: {clean_attribution_reason}",
                 f"- Attribution Confidence: {clean_attribution_confidence}",
                 f"- Needs Attribution Review: {str(resolved_review).lower()}",
+                f"- Transferability Score: {eligibility['transferability_score']}",
+                f"- Impact Score: {eligibility['impact_score']}",
+                f"- Testability Score: {eligibility['testability_score']}",
+                f"- User Correction Strength: {eligibility['user_correction_strength']}",
+                f"- Safety Risk: {eligibility['safety_risk']}",
+                f"- Promotion Score: {eligibility['promotion_score']}",
+                f"- Promotion Decision: {eligibility['promotion_decision']}",
+                f"- Promotion Reason: {eligibility['reason']}",
+                f"- Eligible Target: {eligibility['eligible_target']}",
                 "",
                 "### Details",
                 clean_details or "(no details)",
@@ -534,7 +612,18 @@ class SkillMemoryManager:
         with open(path, "a", encoding="utf-8") as f:
             f.write(block)
 
-        return f"Recorded {record_type} {record_id} for '{normalize_name(skill_name)}'"
+        message = f"Recorded {record_type} {record_id} for '{normalize_name(skill_name)}'"
+        if eligibility["promotion_decision"] in {"promote", "policy_review"}:
+            record = {
+                "path": path,
+                "record_id": record_id,
+                "title": clean_title,
+                "fields": self._parse_fields(block),
+                "details": clean_details,
+            }
+            promotion_message = self._create_or_get_promotion_candidate(record)
+            message += f". Promotion eligibility: {promotion_message}"
+        return message
 
     def _resolve_attribution(
         self,
@@ -655,6 +744,7 @@ class SkillMemoryManager:
         self,
         record: dict[str, object],
         title: str,
+        details: str,
         domain: str,
         source: str,
     ) -> str:
@@ -674,28 +764,218 @@ class SkillMemoryManager:
         if source:
             related += f" (source={source})"
 
+        combined_details = "\n".join(
+            item for item in (str(record.get("details", "")), details) if item
+        )
         updated_block = self._set_field(block, "Occurrence Count", str(occurrence_count))
         updated_block = self._set_field(
             updated_block,
             "Priority",
             self._priority_for_occurrence(occurrence_count),
         )
+        eligibility = self._evaluate_promotion_eligibility(
+            record_id=str(record["record_id"]),
+            record_kind=self._record_kind_for_path(path),
+            title=str(record.get("title", "")),
+            details=combined_details,
+            fields={**fields, "Occurrence Count": str(occurrence_count)},
+        )
+        for field, value in self._eligibility_fields(eligibility).items():
+            updated_block = self._set_field(updated_block, field, value)
+
         promotion_message = ""
-        if occurrence_count >= 3:
+        if eligibility["promotion_decision"] in {"promote", "policy_review"}:
             updated_block = self._set_field(updated_block, "Status", "recurring")
         updated_block = self._append_related(updated_block, related)
 
         path.write_text(text[:start] + updated_block + text[end:], encoding="utf-8")
 
         message = f"Updated similar record {record['record_id']} in {path.name}; occurrence_count={occurrence_count}"
-        if occurrence_count >= 3:
+        if eligibility["promotion_decision"] in {"promote", "policy_review"}:
             updated_record = dict(record)
             updated_record["block"] = updated_block
             updated_record["fields"] = self._parse_fields(updated_block)
             updated_record["details"] = self._parse_details(updated_block)
             promotion_message = self._create_or_get_promotion_candidate(updated_record)
-            message += f". Recurring pattern promotion: {promotion_message}"
+            message += f". Promotion eligibility: {promotion_message}"
         return message
+
+    def _evaluate_promotion_eligibility(
+        self,
+        *,
+        record_id: str,
+        record_kind: str,
+        title: str,
+        details: str,
+        fields: dict[str, str],
+    ) -> dict[str, object]:
+        occurrence_count = self._parse_int(fields.get("Occurrence Count", "1"), 1)
+        attribution_confidence = str(fields.get("Attribution Confidence", "") or "medium").lower()
+        target_skill = str(fields.get("Target Skill", "")).strip()
+        needs_review = str(fields.get("Needs Attribution Review", "")).lower() == "true"
+        severity = self._promotion_severity(fields.get("Priority", "") or fields.get("Severity", ""))
+        text = "\n".join(
+            item
+            for item in (
+                title,
+                details,
+                fields.get("Risk Type", ""),
+                fields.get("Severity", ""),
+                fields.get("Domain", ""),
+            )
+            if item
+        )
+
+        transferability = self._score_transferability(record_kind, text)
+        impact = self._score_impact(record_kind, text, severity)
+        testability = self._score_testability(record_kind, text)
+        correction_strength = self._score_user_correction_strength(text)
+        safety_risk = self._safety_risk(record_kind, text, severity)
+        eligible_target = self._eligible_target(record_kind, text, testability)
+        promotion_score = round(
+            0.30 * transferability
+            + 0.25 * impact
+            + 0.25 * testability
+            + 0.20 * correction_strength,
+            2,
+        )
+
+        decision = "wait"
+        reason = "waiting for more occurrences or stronger transferability/testability evidence"
+        if SECRET_PROMOTION_PATTERN.search(text) or UNSAFE_PROMOTION_PATTERN.search(text):
+            decision = "reject"
+            eligible_target = "none"
+            reason = "reject: secret, prompt-injection, approval-bypass, safety-disable, or ignore-system text"
+        elif not target_skill or attribution_confidence == "low" or needs_review:
+            decision = "wait"
+            eligible_target = "none"
+            reason = "needs_attribution_review: target_skill is missing or attribution confidence is low"
+        elif record_kind == "policy_candidate" or (severity == "high" and "safety" in text.lower()):
+            decision = "policy_review"
+            eligible_target = "policy_review"
+            reason = "safety or policy candidate requires policy_review and cannot enter skill-rule promotion directly"
+        elif eligible_target == "skill_rule" and testability < 0.7:
+            decision = "reject"
+            eligible_target = "none"
+            reason = "reject: cannot generate positive and negative regression coverage for a skill rule"
+        elif (
+            occurrence_count >= 3
+            and transferability >= 0.7
+            and safety_risk == "low"
+            and eligible_target in {"skill_rule", "regression_case", "docs"}
+        ):
+            decision = "promote"
+            reason = "occurrence_count >= 3 with transferable, low-risk evidence"
+        elif (
+            occurrence_count >= 2
+            and correction_strength >= 0.7
+            and testability >= 0.7
+            and safety_risk == "low"
+            and eligible_target in {"skill_rule", "regression_case", "docs"}
+        ):
+            decision = "promote"
+            reason = "strong reusable user correction with testable behavior reached occurrence_count >= 2"
+
+        return {
+            "occurrence_count": occurrence_count,
+            "transferability_score": round(transferability, 2),
+            "impact_score": round(impact, 2),
+            "testability_score": round(testability, 2),
+            "user_correction_strength": round(correction_strength, 2),
+            "safety_risk": safety_risk,
+            "attribution_confidence": attribution_confidence,
+            "promotion_score": promotion_score,
+            "promotion_decision": decision,
+            "reason": reason,
+            "eligible_target": eligible_target if eligible_target in ELIGIBLE_TARGETS else "none",
+        }
+
+    def _eligibility_fields(self, eligibility: dict[str, object]) -> dict[str, str]:
+        return {
+            "Transferability Score": str(eligibility["transferability_score"]),
+            "Impact Score": str(eligibility["impact_score"]),
+            "Testability Score": str(eligibility["testability_score"]),
+            "User Correction Strength": str(eligibility["user_correction_strength"]),
+            "Safety Risk": str(eligibility["safety_risk"]),
+            "Promotion Score": str(eligibility["promotion_score"]),
+            "Promotion Decision": str(eligibility["promotion_decision"]),
+            "Promotion Reason": str(eligibility["reason"]),
+            "Eligible Target": str(eligibility["eligible_target"]),
+        }
+
+    def _score_transferability(self, record_kind: str, text: str) -> float:
+        lowered = text.lower()
+        if ONE_TIME_PATTERN.search(text):
+            return 0.25
+        score = 0.45
+        if record_kind in {"learning", "regression_test"}:
+            score += 0.15
+        if any(marker in lowered for marker in ("format", "workflow", "default", "reusable", "recurring", "repeated", "fixed", "structure", "book-note", "book note")):
+            score += 0.25
+        if any(marker in text for marker in ("读书笔记", "格式", "固定", "默认", "可复用", "以后")):
+            score += 0.25
+        if record_kind == "policy_candidate":
+            score = max(score, 0.7)
+        return min(score, 1.0)
+
+    def _score_impact(self, record_kind: str, text: str, severity: str) -> float:
+        lowered = text.lower()
+        if severity == "high":
+            return 0.9
+        score = 0.45
+        if record_kind in {"error", "policy_candidate", "regression_test"}:
+            score += 0.2
+        if any(marker in lowered for marker in ("failed", "missing", "regression", "safety", "policy", "default", "always")):
+            score += 0.2
+        if any(marker in text for marker in ("不要再", "以后", "固定", "默认")):
+            score += 0.15
+        return min(score, 1.0)
+
+    def _score_testability(self, record_kind: str, text: str) -> float:
+        lowered = text.lower()
+        if record_kind == "policy_candidate":
+            return 0.4
+        if record_kind == "regression_test":
+            return 0.9
+        if any(marker in lowered for marker in ("book-note", "book note", "markdown", "json", "table", "code block", "fenced")):
+            return 0.85
+        if any(marker in text for marker in ("读书笔记", "书名", "核心观点", "三条启发", "行动清单", "格式")):
+            return 0.9
+        if DIRECTIVE_PATTERN.search(text):
+            return 0.7
+        return 0.35
+
+    def _score_user_correction_strength(self, text: str) -> float:
+        if STRONG_CORRECTION_PATTERN.search(text):
+            return 0.9
+        lowered = text.lower()
+        if any(marker in lowered for marker in ("should", "prefer", "correct", "correction", "instead")):
+            return 0.55
+        if any(marker in text for marker in ("应该", "纠正", "改为", "建议")):
+            return 0.55
+        return 0.2
+
+    def _safety_risk(self, record_kind: str, text: str, severity: str) -> str:
+        if SECRET_PROMOTION_PATTERN.search(text) or UNSAFE_PROMOTION_PATTERN.search(text):
+            return "high"
+        lowered = text.lower()
+        if record_kind == "policy_candidate" or severity == "high" or "safety" in lowered or "policy" in lowered:
+            return "high"
+        if any(marker in lowered for marker in ("credential", "permission", "approval")):
+            return "medium"
+        return "low"
+
+    def _eligible_target(self, record_kind: str, text: str, testability_score: float) -> str:
+        lowered = text.lower()
+        if record_kind == "policy_candidate" or "policy" in lowered or "safeharness" in lowered:
+            return "policy_review"
+        if record_kind == "regression_test":
+            return "regression_case"
+        if "readme" in lowered or ".env.example" in lowered or "environment setup" in lowered:
+            return "docs"
+        if record_kind in {"learning", "feature_request", "error"} and testability_score >= 0.7:
+            return "skill_rule"
+        return "none"
 
     def _find_record_by_id(
         self,
@@ -721,9 +1001,40 @@ class SkillMemoryManager:
             summary = fields.get("Proposed Change Summary", str(existing["title"]))
             return f"{candidate_id}: {summary}"
 
+        eligibility = self._eligibility_for_record(record)
+        if eligibility["promotion_decision"] not in {"promote", "policy_review"}:
+            return (
+                "not eligible: "
+                f"{eligibility['promotion_decision']} - {eligibility['reason']}"
+            )
+
         candidate = self._build_promotion_candidate(record)
         self._write_promotion_candidate(candidate)
         return f"{candidate.candidate_id}: {candidate.proposed_change_summary}"
+
+    def _eligibility_for_record(self, record: dict[str, object]) -> dict[str, object]:
+        fields = dict(record["fields"])
+        if fields.get("Promotion Decision"):
+            return {
+                "occurrence_count": self._parse_int(fields.get("Occurrence Count", "1"), 1),
+                "transferability_score": self._parse_float(fields.get("Transferability Score"), 0.0),
+                "impact_score": self._parse_float(fields.get("Impact Score"), 0.0),
+                "testability_score": self._parse_float(fields.get("Testability Score"), 0.0),
+                "user_correction_strength": self._parse_float(fields.get("User Correction Strength"), 0.0),
+                "safety_risk": fields.get("Safety Risk", "low"),
+                "attribution_confidence": fields.get("Attribution Confidence", "medium"),
+                "promotion_score": self._parse_float(fields.get("Promotion Score"), 0.0),
+                "promotion_decision": fields.get("Promotion Decision", "wait"),
+                "reason": fields.get("Promotion Reason", ""),
+                "eligible_target": fields.get("Eligible Target", "none"),
+            }
+        return self._evaluate_promotion_eligibility(
+            record_id=str(record["record_id"]),
+            record_kind=self._record_kind_for_path(Path(record["path"])),
+            title=str(record["title"]),
+            details=str(record["details"]),
+            fields=fields,
+        )
 
     def _find_existing_promotion_candidate(
         self,
@@ -742,11 +1053,13 @@ class SkillMemoryManager:
         details = str(record["details"]).strip()
         target_skill = fields.get("Target Skill") or self._skill_name_for_record(record)
         record_kind = self._record_kind_for_path(Path(record["path"]))
+        eligibility = self._eligibility_for_record(record)
         target_files, summary, expected = self._suggest_promotion_change(
             target_skill=target_skill,
             record_kind=record_kind,
             title=title,
             details=details,
+            eligible_target=str(eligibility["eligible_target"]),
         )
         return PromotionCandidate.create(
             record_id=str(record["record_id"]),
@@ -758,6 +1071,17 @@ class SkillMemoryManager:
             severity=self._promotion_severity(fields.get("Priority", "")),
             evaluation_plan=self._default_evaluation_plan(target_files, record_kind),
             rollback_plan="Do not apply patches automatically. If a human-approved change is later made, rollback by reverting only that reviewed change.",
+            occurrence_count=int(eligibility["occurrence_count"]),
+            transferability_score=float(eligibility["transferability_score"]),
+            impact_score=float(eligibility["impact_score"]),
+            testability_score=float(eligibility["testability_score"]),
+            user_correction_strength=float(eligibility["user_correction_strength"]),
+            safety_risk=str(eligibility["safety_risk"]),
+            attribution_confidence=str(eligibility["attribution_confidence"]),
+            promotion_score=float(eligibility["promotion_score"]),
+            promotion_decision=str(eligibility["promotion_decision"]),
+            reason=str(eligibility["reason"]),
+            eligible_target=str(eligibility["eligible_target"]),
         )
 
     def _write_promotion_candidate(self, candidate: PromotionCandidate) -> None:
@@ -781,6 +1105,17 @@ class SkillMemoryManager:
                 f"- Expected Improvement: {clean['expected_improvement']}",
                 f"- Risk Type: {clean['risk_type']}",
                 f"- Severity: {clean['severity']}",
+                f"- Occurrence Count: {clean['occurrence_count']}",
+                f"- Transferability Score: {clean['transferability_score']}",
+                f"- Impact Score: {clean['impact_score']}",
+                f"- Testability Score: {clean['testability_score']}",
+                f"- User Correction Strength: {clean['user_correction_strength']}",
+                f"- Safety Risk: {clean['safety_risk']}",
+                f"- Attribution Confidence: {clean['attribution_confidence']}",
+                f"- Promotion Score: {clean['promotion_score']}",
+                f"- Promotion Decision: {clean['promotion_decision']}",
+                f"- Reason: {clean['reason']}",
+                f"- Eligible Target: {clean['eligible_target']}",
                 f"- Created At: {clean['created_at']}",
                 f"- Status: {clean['status']}",
                 f"- Evaluation Plan: {clean['evaluation_plan']}",
@@ -798,8 +1133,34 @@ class SkillMemoryManager:
         record_kind: str,
         title: str,
         details: str,
+        eligible_target: str = "none",
     ) -> tuple[list[str], str, str]:
         text = f"{title}\n{details}".lower()
+        if eligible_target == "skill_rule":
+            target_file = f"skills/{normalize_name(target_skill)}/SKILL.md"
+            summary = (
+                f"Promote reusable {record_kind} guidance for {title} into a reviewed "
+                f"skill rule for {normalize_name(target_skill)}."
+            )
+            expected = "Reduce recurrence by making the tested behavior part of the active skill guidance."
+            return [target_file], summary, expected
+
+        if eligible_target == "regression_case":
+            target_file = f"skills/{normalize_name(target_skill)}/eval/cases.yaml"
+            summary = (
+                f"Promote regression coverage for {title} into {target_file}."
+            )
+            expected = "Catch the recurring behavior before future changes are accepted."
+            return [target_file], summary, expected
+
+        if eligible_target == "policy_review":
+            summary = (
+                f"Route safety or policy signal for {title} to policy_review; do not "
+                "promote it directly to a skill rule."
+            )
+            expected = "Preserve the safety signal for human policy review without changing skill rules."
+            return [], summary, expected
+
         if "openai_api_key" in text or ("api key" in text and "missing" in text):
             target_files = ["README.md", ".env.example"]
             summary = (
@@ -1076,6 +1437,12 @@ class SkillMemoryManager:
         except (TypeError, ValueError):
             return default
 
+    def _parse_float(self, value: object, default: float) -> float:
+        try:
+            return float(str(value).strip())
+        except (TypeError, ValueError):
+            return default
+
     def _ensure_global_memory(self) -> None:
         for record_type, filename in GLOBAL_MEMORY_FILES.items():
             if record_type == "promotion_candidate":
@@ -1107,6 +1474,17 @@ class SkillMemoryManager:
                     "- Expected Improvement",
                     "- Risk Type",
                     "- Severity",
+                    "- Occurrence Count",
+                    "- Transferability Score",
+                    "- Impact Score",
+                    "- Testability Score",
+                    "- User Correction Strength",
+                    "- Safety Risk",
+                    "- Attribution Confidence",
+                    "- Promotion Score",
+                    "- Promotion Decision",
+                    "- Reason",
+                    "- Eligible Target",
                     "- Created At",
                     "- Status",
                     "- Evaluation Plan",
@@ -1152,6 +1530,15 @@ class SkillMemoryManager:
                     "- Attribution Reason",
                     "- Attribution Confidence",
                     "- Needs Attribution Review",
+                    "- Transferability Score",
+                    "- Impact Score",
+                    "- Testability Score",
+                    "- User Correction Strength",
+                    "- Safety Risk",
+                    "- Promotion Score",
+                    "- Promotion Decision",
+                    "- Promotion Reason",
+                    "- Eligible Target",
                     "",
                 ]
             ),

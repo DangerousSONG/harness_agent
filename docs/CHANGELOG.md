@@ -2,6 +2,24 @@
 
 This file records meaningful project iterations. When judging current state, read this before older design notes.
 
+## 2026-05-19
+
+### Promotion Eligibility Scoring
+
+- Replaced the raw `Occurrence Count >= 3` promotion trigger with a lightweight Promotion Eligibility / Promotion Score check in `SkillMemoryManager`.
+- Memory records now track transferability, impact, testability, user-correction strength, safety risk, promotion score, promotion decision, promotion reason, and eligible target.
+- Promotion candidates now include `promotion_score`, `promotion_decision`, `reason`, and `eligible_target` fields.
+- Allowed normal skill-rule promotion when repeated evidence is transferable and low-risk, and allowed strong reusable user corrections to promote at two occurrences when testable.
+- Routed policy and high-severity safety signals to `policy_review` candidates instead of `SKILL.md`; prompt-injection, secret, approval-bypass, safety-disable, and ignore-system content is rejected for promotion.
+- Added tests for repeated book-note learning, strong two-occurrence correction, one-time preference rejection, policy review routing, high-severity safety routing, and unsafe promotion rejection.
+
+### SafeHarness Stability and Noise Reduction
+
+- Skipped automatic memory capture for verification reads of `.reviews/**`, `.skills_versions/**`, `skills/*/SKILL.md`, and `skills/*/eval/cases.yaml`, including `read_file`, `Get-Content`, and `Select-String` reads, so review/version/eval checks do not generate promotion candidates.
+- Printed `auto_memory: skipped verification read_file result.` when those verification reads are intentionally ignored.
+- Added unittest coverage that the verification-read skip does not call the classifier, write memory, or create a PROMO.
+- Reworked the README REPL command list into a standard Markdown table.
+
 ## 2026-05-15
 
 ### Review Queue Safety Follow-up

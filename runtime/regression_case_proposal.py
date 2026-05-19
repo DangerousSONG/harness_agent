@@ -31,7 +31,16 @@ def propose_regression_case_from_promotion(
             False,
             "policy_candidate cannot be promoted directly to SKILL.md; use policy review instead.",
         )
-
+    if candidate.promotion_decision and candidate.promotion_decision != "promote":
+        return RegressionCaseProposalResult(
+            False,
+            f"Rejected {candidate.promo_id}: promotion_decision={candidate.promotion_decision} cannot enter skill.promotion.",
+        )
+    if candidate.eligible_target and candidate.eligible_target not in {"skill_rule", "regression_case"}:
+        return RegressionCaseProposalResult(
+            False,
+            f"Rejected {candidate.promo_id}: eligible_target={candidate.eligible_target} cannot enter skill.promotion.",
+        )
     source_text = browser.source_memory_text(candidate)
     target_rule = extract_concrete_skill_rule(candidate, source_text)
     if not is_concrete_skill_rule(target_rule):

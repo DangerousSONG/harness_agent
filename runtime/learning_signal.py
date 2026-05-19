@@ -61,6 +61,7 @@ POST_APPROVAL_MESSAGE_PATTERNS = (
 )
 
 REVIEW_ID_PATTERN = re.compile(r"REV-[A-Z0-9]{8}")
+VERIFICATION_READ_SKIP_RESULT = "skipped verification read_file result."
 
 
 @dataclass
@@ -149,6 +150,21 @@ def classify_and_record_learning_signal(
     conversation_context = conversation_context or []
     latest_tool_events = latest_tool_events or []
     latest_llm_messages = latest_llm_messages or []
+    if _has_verification_read_event(latest_tool_events):
+        classification = LearningSignalClassification(
+            should_record=False,
+            record_type="learning",
+            target_skill=None,
+            reason="Skipped verification read output from review, skill-version, skill body, or eval-case files.",
+            attribution_confidence="low",
+            title="Skipped verification read",
+            content="",
+        )
+        return {
+            "classification": classification.to_dict(),
+            "record_result": VERIFICATION_READ_SKIP_RESULT,
+        }
+
     approval_event = _find_approval_event(latest_tool_events)
     if approval_event:
         review_id = _review_id_from_event(approval_event)
@@ -433,6 +449,58 @@ def _has_pending_load_skill_approval(
     if "review_id" not in text and REVIEW_ID_PATTERN.search(text.upper()) is None:
         return False
     return True
+
+
+def _has_verification_read_event(latest_tool_events: list[dict]) -> bool:
+    return any(_is_verification_read_event(event) for event in latest_tool_events)
+
+
+def _is_verification_read_event(event: dict[str, Any]) -> bool:
+    if not isinstance(event, dict):
+        return False
+    tool = str(event.get("tool") or event.get("name") or "").lower()
+    args = event.get("arguments")
+    if not isinstance(args, dict):
+        args = {}
+
+    if tool == "read_file":
+        return _is_verification_read_path(str(args.get("path") or event.get("path") or ""))
+
+    if tool == "bash":
+        command = str(args.get("command") or event.get("command") or "")
+        lowered = command.lower()
+        if "get-content" not in lowered and "select-string" not in lowered:
+            return False
+        return _contains_verification_read_path(command)
+
+    return False
+
+
+def _contains_verification_read_path(text: str) -> bool:
+    normalized = _normalize_read_path(text)
+    return any(pattern.search(normalized) for pattern in _verification_read_path_patterns())
+
+
+def _is_verification_read_path(path: str) -> bool:
+    return _contains_verification_read_path(path)
+
+
+def _normalize_read_path(text: str) -> str:
+    normalized = str(text).replace("\\", "/").strip().strip("'\"")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def _verification_read_path_patterns() -> tuple[re.Pattern, ...]:
+    boundary = r"(?:^|[\s'\"(=])"
+    end = r"(?:$|[\s'\"),;])"
+    return (
+        re.compile(boundary + r"\.reviews(?:/|$|[\s'\"),;])"),
+        re.compile(boundary + r"\.skills_versions(?:/|$|[\s'\"),;])"),
+        re.compile(boundary + r"skills/[^/\s'\"]+/SKILL\.md" + end),
+        re.compile(boundary + r"skills/[^/\s'\"]+/eval/cases\.yaml" + end),
+    )
 
 
 def _stringify_for_scan(value: Any) -> str:
