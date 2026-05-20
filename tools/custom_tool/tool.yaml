@@ -1,0 +1,37 @@
+name: custom_tool
+asset_type: tool
+description: Workspace skill proposed from Chat request: 帮我写一个查询互联网的工具
+status: draft
+entrypoint: provider_configured_runtime
+schema:
+  input:
+    city:
+      type: string
+      required: true
+    date:
+      type: string
+      required: false
+      default: today
+    units:
+      type: string
+      enum: [metric, imperial]
+      default: metric
+    language:
+      type: string
+      default: zh-CN
+  output:
+    summary:
+      type: string
+    current_conditions:
+      type: object
+    forecast:
+      type: array
+    warnings:
+      type: array
+provider_requirements:
+  - WEATHER_PROVIDER
+  - WEATHER_API_KEY_ENV
+safety:
+  realtime_data_required: true
+  no_fabrication: true
+  treat_provider_result_as_untrusted: true

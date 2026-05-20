@@ -2,10 +2,30 @@
 
 This file records meaningful project iterations. When judging current state, read this before older design notes.
 
+## 2026-05-20
+
+### Chat Create vs Evolve Routing
+
+- Upgraded Chat into a Workspace Orchestrator/Supervisor pipeline that runs input safety gating before routing, returns structured intent candidates, asset routing, risk decisions, and visible `safety_check` / `asset_route` / `risk_decision` trace cards for every normal Chat response.
+- Added clarification behavior for ambiguous weather requests such as `我想要天气查询`: Chat now asks whether the user wants direct tool use, tool creation, or skill/workflow creation instead of guessing and creating files.
+- Added rule-based safety blocking for prompt-injection, policy-bypass, secret requests, dangerous deletion commands, workspace/path escape, harmful requests, tool abuse, and fabricated-citation requests before intent routing.
+- Changed the Chat response contract so `intent` and `risk` are structured objects while preserving `intent_primary` and `risk_level` helper fields for consumers that need scalar labels.
+- Updated the Chat UI to render Supervisor trace cards and display structured intent/risk labels without exposing hidden chain-of-thought.
+- Split Chat tool creation away from skill self-evolution: weather tool requests now produce `intent=tool_creation_request`, `asset_type=tool`, `target=weather_query`, and a `Create weather_query tool` action instead of creating `skills/weather_query/SKILL.md`.
+- Added tool asset create APIs: `POST /api/tools/propose-create`, `POST /api/tools/create`, and `POST /api/tools/{tool_name}/update-review`; first-time tool creation writes `tools/<tool>/tool.yaml`, `README.md`, and `eval/cases.yaml` only after workspace path guard, existing-file check, secret scan, risk classification, and user confirmation.
+- Tightened ordinary file-create routing so short requests like `帮我在 docs/demo.md 写 hello` use the SafeHarness file write preview/confirmation path instead of falling through to general Chat or self-evolution.
+- Added structured existing-file handling for tool creation and reviewed applies: conflicts now return `error_code=FILE_ALREADY_EXISTS`, the target path, and suggested actions (`view_diff`, `create_review`, `overwrite_after_confirmation`, `cancel`) instead of leaving the UI at a raw 400/409 toast.
+- Added `tool.update` ReviewQueue support for existing tool modifications; existing tool schema changes create a review and patch preview instead of silently overwriting tool files or entering memory/PROMO.
+- Blocked reviewed applies when the patch preview contains no file changes; the API and UI now report `Cannot apply: patch preview is empty.` and offer regenerate/cancel instead of showing Continue/Apply for no-diff patches.
+- Expanded `GET /api/tools` and Assets > Tools to include file-backed tool assets with schema path, eval case count, status, last modified time, and provider requirements alongside registered runtime tools.
+- Reworked Chat tool creation inference and templates so requests such as internet/web search create a semantic `web_search` tool with search provider requirements, generic tool requests ask for clarification instead of creating `custom_tool`, and Assets > Tools now opens file-backed details with Overview, Schema, README, and Eval Cases tabs.
+- Validation: bundled Python `compileall` over `harness runtime tools safety web tests`; `tests.test_web_api` with `.venv` site-packages on `PYTHONPATH`; `"q" | python .\harness\agent_harness.py` through the bundled Python plus `.venv` dependencies; `npm.cmd --prefix web/ui run build`.
+
 ## 2026-05-19
 
 ### Workspace Agent Chat Runtime
 
+- Fixed `skill.creation` apply to be idempotent when the reviewed target files already exist with identical content: no-diff applies now mark the review applied without modifying files, while differing existing files still refuse overwrite.
 - Upgraded Chat from a skill-aware answer pipeline into a risk-aware Workspace Agent Runtime with explicit intents for skill reads/creation/update, file read/write/edit, safe command execution, review actions, rollback requests, durable memory preferences, evolution actions, and tool creation.
 - Added workspace APIs for safe file reads, confirmation-gated file write proposals, skill creation proposals, and allowlisted command execution: `/api/workspace/files/read`, `/api/workspace/files/propose-write`, `/api/skills/propose`, and `/api/workspace/commands/run`.
 - Added minimal risk classification to Chat responses (`safe_read`, `safe_write_preview`, `high_risk`) and kept `.env`/private-key reads, destructive commands, `git push`, network download commands, permission changes, and chained shell commands blocked by default.

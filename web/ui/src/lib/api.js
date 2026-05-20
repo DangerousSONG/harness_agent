@@ -65,6 +65,22 @@ export const api = {
       body: JSON.stringify({ version }),
     }),
   tools: () => request("/api/tools"),
+  tool: (name) => request(`/api/tools/${encodeURIComponent(name)}`),
+  proposeToolCreate: (body) =>
+    request("/api/tools/propose-create", {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }),
+  createTool: (body) =>
+    request("/api/tools/create", {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }),
+  createToolUpdateReview: (name, body) =>
+    request(`/api/tools/${encodeURIComponent(name)}/update-review`, {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }),
   memories: () => request("/api/memories"),
   promoteMemory: (id) =>
     request(`/api/memories/${encodeURIComponent(id)}/promote`, { method: "POST" }),
@@ -94,6 +110,12 @@ export const api = {
 
 export function getErrorMessage(error) {
   if (!(error instanceof Error)) return "Something went wrong.";
+  if (error.payload?.error_code === "FILE_ALREADY_EXISTS") {
+    return "Existing file detected.";
+  }
+  if (error.payload?.error_code === "EMPTY_PATCH_PREVIEW") {
+    return "Cannot apply: patch preview is empty.";
+  }
   const prefix = error.status ? `HTTP ${error.status}` : "Request failed";
   return `${prefix}: ${error.message}`;
 }

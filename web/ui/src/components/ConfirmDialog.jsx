@@ -1,7 +1,17 @@
 import { AlertTriangle } from "lucide-react";
 import DiffPreview from "./DiffPreview";
 
-export default function ConfirmDialog({ open, title, message, patch, busy, onCancel, onConfirm }) {
+export default function ConfirmDialog({
+  open,
+  title,
+  message,
+  patch,
+  busy,
+  confirmLabel = "Continue",
+  confirmDisabled = false,
+  onCancel,
+  onConfirm,
+}) {
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/20 px-4 backdrop-blur-sm">
@@ -25,8 +35,8 @@ export default function ConfirmDialog({ open, title, message, patch, busy, onCan
           <button className="secondary-button" onClick={onCancel} disabled={busy}>
             Cancel
           </button>
-          <button className="primary-button" onClick={onConfirm} disabled={busy}>
-            Continue
+          <button className="primary-button" onClick={onConfirm} disabled={busy || confirmDisabled}>
+            {confirmLabel}
           </button>
         </div>
       </div>

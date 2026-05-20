@@ -23,6 +23,7 @@ const initialMessages = [
 
 export default function App() {
   const [page, setPage] = useState("chat");
+  const [assetTab, setAssetTab] = useState("skills");
   const [dashboard, setDashboard] = useState(null);
   const [reviews, setReviews] = useState([]);
   const [promotions, setPromotions] = useState([]);
@@ -229,6 +230,20 @@ export default function App() {
     } catch {
       patch = null;
     }
+    const review = reviewDetail?.review_id === reviewId
+      ? reviewDetail
+      : reviews.find((item) => item.review_id === reviewId);
+    if (reviewNeedsPatch(review) && !patch?.has_changes) {
+      setConfirmAction({
+        kind: "empty_patch",
+        reviewId,
+        title: "Cannot apply",
+        message: patch?.apply_blocked_reason || "Cannot apply: patch preview is empty.",
+        patch: patch?.patch || "",
+        confirmLabel: "Regenerate patch",
+      });
+      return;
+    }
     setConfirmAction({
       kind: "apply_review",
       reviewId,
@@ -254,6 +269,10 @@ export default function App() {
     }
     if (confirmAction.kind === "workspace_write") {
       await confirmWorkspaceWrite(confirmAction.body);
+      return;
+    }
+    if (confirmAction.kind === "empty_patch") {
+      await confirmApproveReview(confirmAction.reviewId);
       return;
     }
     if (confirmAction.kind === "chat_action") {
@@ -293,6 +312,23 @@ export default function App() {
       await refreshAfterOperation();
       if (selectedReviewId === reviewId) await openReview(reviewId);
     } catch (error) {
+      if (error.payload?.error_code === "FILE_ALREADY_EXISTS") {
+        finishToolCall(toolId, "failed");
+        appendAgentResult("Existing file detected. View the diff or cancel; no file was overwritten.", {
+          type: "error",
+          data: {
+            path: error.payload?.path || "",
+            suggested_fix: "Existing file detected. View diff or cancel.",
+          },
+          actions: [
+            { label: "View diff", method: "GET", path: `/api/reviews/${reviewId}/patch`, requires_confirmation: false },
+            { label: "Cancel", method: "LOCAL", path: "cancel", requires_confirmation: false },
+          ],
+        });
+        setToast("Existing file detected.");
+        setConfirmAction(null);
+        return;
+      }
       const message = getErrorMessage(error);
       finishToolCall(toolId, "failed");
       appendAgentResult(message);
@@ -356,6 +392,48 @@ export default function App() {
         if (reviewId) await openReview(reviewId);
         return;
       }
+      if (method === "POST" && path === "/api/tools/create") {
+        payload = await api.createTool(payloadBody);
+        finishToolCall(toolId, "completed");
+        appendAgentResult(payload.message || `Created ${payload.data?.tool_name || "tool"}.`, {
+          type: "tool_result",
+          risk: sourceMessage?.risk || action?.risk || "safe_write_preview",
+          data: payload.data || {},
+          trace: payload.data?.operation_trace || [],
+          actions: [
+            { label: "View in Assets > Tools", method: "GET", path: "/api/tools", requires_confirmation: false },
+          ],
+        });
+        setConfirmAction(null);
+        await refreshAfterOperation();
+        setAssetTab("tools");
+        setPage("assets");
+        return;
+      }
+      const toolReviewMatch = path.match(/^\/api\/tools\/([^/]+)\/update-review$/);
+      if (method === "POST" && toolReviewMatch) {
+        const toolName = decodeURIComponent(toolReviewMatch[1]);
+        payload = await api.createToolUpdateReview(toolName, payloadBody);
+        finishToolCall(toolId, "completed");
+        const reviewId = payload.data?.review_id || payload.data?.review?.review_id;
+        appendAgentResult(payload.message || `Created review ${reviewId}.`, {
+          type: "review_created",
+          risk: sourceMessage?.risk || action?.risk || "safe_write_preview",
+          data: payload.data || {},
+          actions: reviewId
+            ? [
+                { label: "View details", method: "GET", path: `/api/reviews/${reviewId}`, requires_confirmation: false },
+                { label: "Approve", method: "POST", path: `/api/reviews/${reviewId}/approve`, requires_confirmation: true },
+                { label: "Reject", method: "POST", path: `/api/reviews/${reviewId}/reject`, requires_confirmation: true },
+              ]
+            : [],
+        });
+        setConfirmAction(null);
+        await refreshAfterOperation();
+        setPage("reviews");
+        if (reviewId) await openReview(reviewId);
+        return;
+      }
       if (method === "POST" && path === "/api/workspace/files/propose-write") {
         await confirmWorkspaceWrite(payloadBody);
         finishToolCall(toolId, "completed");
@@ -365,6 +443,13 @@ export default function App() {
       appendAgentResult(`Action is not wired in the UI yet: ${method} ${path}`, { type: "error" });
       setConfirmAction(null);
     } catch (error) {
+      if (error.payload?.error_code === "FILE_ALREADY_EXISTS") {
+        finishToolCall(toolId, "failed");
+        appendExistingFileResult(error, action, sourceMessage);
+        setToast("Existing file detected.");
+        setConfirmAction(null);
+        return;
+      }
       const message = getErrorMessage(error);
       finishToolCall(toolId, "failed");
       appendAgentResult(message, { type: "error" });
@@ -394,6 +479,8 @@ export default function App() {
           type: payload.type || "answer",
           intent: payload.intent || "",
           risk: payload.risk || "",
+          safety: payload.safety || {},
+          asset_route: payload.asset_route || {},
           run_id: payload.run_id || "",
           used_skill: payload.used_skill || "",
           why: payload.why || "",
@@ -590,10 +677,21 @@ export default function App() {
       }
       if (path === "details") {
         const data = sourceMessage?.data || {};
+        const files = data.files || data.proposed_tool?.files || [];
+        const preflight = data.preflight || {};
         const details = [
           data.path ? `Path: ${data.path}` : "",
           data.operation ? `Operation: ${data.operation}` : "",
           data.risk ? `Risk: ${data.risk}` : "",
+          data.asset_type ? `Asset type: ${data.asset_type}` : "",
+          data.target ? `Target: ${data.target}` : "",
+          preflight.risk ? `Preflight risk: ${preflight.risk}` : "",
+          preflight.existing_file_check ? `Existing file check: ${preflight.existing_file_check}` : "",
+          files.length ? `Files:\n${files.map((file) => `- ${file.path}`).join("\n")}` : "",
+          data.preflight?.files?.some((file) => file.diff)
+            ? `Diff:\n${data.preflight.files.map((file) => file.diff).filter(Boolean).join("\n")}`
+            : "",
+          data.diffs ? `Diff:\n${Object.values(data.diffs).filter(Boolean).join("\n")}` : "",
           data.preview_content ? `Preview:\n${data.preview_content}` : "",
         ].filter(Boolean).join("\n");
         appendAgentResult(details || "No additional details are available.", { type: "tool_result" });
@@ -611,6 +709,11 @@ export default function App() {
       }
       if (path === "/api/reviews") {
         setPage("reviews");
+        return;
+      }
+      if (path === "/api/tools") {
+        setAssetTab("tools");
+        setPage("assets");
         return;
       }
       const reviewMatch = path.match(/^\/api\/reviews\/([^/]+)(?:\/patch)?$/);
@@ -672,8 +775,45 @@ export default function App() {
         message: [
           `Skill: ${skillName}`,
           "Operation: create skill review",
-          `Risk: ${action?.risk || sourceMessage?.risk || "safe_write_preview"}`,
+          `Risk: ${riskLabel(action?.risk || sourceMessage?.risk || "safe_write_preview")}`,
           "This will create a pending review. It will not write SKILL.md directly.",
+        ].join("\n"),
+        patch: JSON.stringify(payload, null, 2),
+      });
+      return;
+    }
+    if (method === "POST" && path === "/api/tools/create") {
+      const payload = action?.payload || action?.body || {};
+      const toolName = payload.tool_name || sourceMessage?.data?.tool_name || "new_tool";
+      setConfirmAction({
+        kind: "chat_action",
+        action,
+        sourceMessage,
+        title: `Create ${toolName} tool?`,
+        message: [
+          `Tool: ${toolName}`,
+          "Operation: create tool files",
+          `Risk: ${riskLabel(action?.risk || sourceMessage?.risk || "safe_write_preview")}`,
+          "Preflight must pass before files are written.",
+        ].join("\n"),
+        patch: JSON.stringify(payload, null, 2),
+      });
+      return;
+    }
+    const toolUpdateMatch = path.match(/^\/api\/tools\/([^/]+)\/update-review$/);
+    if (method === "POST" && toolUpdateMatch) {
+      const payload = action?.payload || action?.body || {};
+      const toolName = decodeURIComponent(toolUpdateMatch[1]);
+      setConfirmAction({
+        kind: "chat_action",
+        action,
+        sourceMessage,
+        title: `Create ${toolName} update review?`,
+        message: [
+          `Tool: ${toolName}`,
+          "Operation: create tool update review",
+          `Risk: ${riskLabel(action?.risk || sourceMessage?.risk || "safe_write_preview")}`,
+          "This will create a pending review and will not overwrite tool files directly.",
         ].join("\n"),
         patch: JSON.stringify(payload, null, 2),
       });
@@ -692,8 +832,19 @@ export default function App() {
     const applyMatch = path.match(/^\/api\/reviews\/([^/]+)\/apply$/);
     if (method === "POST" && applyMatch) {
       const reviewId = decodeURIComponent(applyMatch[1]);
-      const patch = sourceMessage?.data?.patch?.patch;
-      if (patch) {
+      const patchData = sourceMessage?.data?.patch;
+      const patch = patchData?.patch;
+      const review = sourceMessage?.data?.review || reviews.find((item) => item.review_id === reviewId);
+      if (reviewNeedsPatch(review) && !patchData?.has_changes) {
+        setConfirmAction({
+          kind: "empty_patch",
+          reviewId,
+          title: "Cannot apply",
+          message: patchData?.apply_blocked_reason || "Cannot apply: patch preview is empty.",
+          patch: patch || "",
+          confirmLabel: "Regenerate patch",
+        });
+      } else if (patch) {
         setConfirmAction({
           kind: "apply_review",
           reviewId,
@@ -707,6 +858,53 @@ export default function App() {
       return;
     }
     appendAgentResult(`Action is not wired in the UI yet: ${method} ${path}`);
+  }
+
+  function appendExistingFileResult(error, action, sourceMessage) {
+    const payload = error.payload || {};
+    const data = payload.data || {};
+    const toolName = data.tool_name || action?.payload?.tool_name || sourceMessage?.data?.tool_name || "";
+    const reviewPath = data.review_endpoint || (toolName ? `/api/tools/${toolName}/update-review` : "");
+    const diffs = data.diffs || {};
+    appendAgentResult("Existing file detected. View the diff, create a review instead, or cancel.", {
+      type: "error",
+      data: {
+        ...data,
+        suggested_fix: "Existing file detected. View diff, create review instead, or cancel.",
+      },
+      actions: [
+        { label: "View diff", method: "LOCAL", path: "details", requires_confirmation: false },
+        reviewPath
+          ? {
+              label: "Create review instead",
+              method: "POST",
+              path: reviewPath,
+              requires_confirmation: true,
+              payload: action?.payload || action?.body || {},
+              kind: "create_tool_update_review",
+              risk: "high",
+            }
+          : null,
+        { label: "Cancel", method: "LOCAL", path: "cancel", requires_confirmation: false },
+      ].filter(Boolean),
+      trace: [
+        {
+          type: "preflight",
+          title: "Preflight",
+          status: "failed",
+          summary: "Existing file check failed.",
+          existing_file_check: "failed",
+        },
+        ...Object.keys(diffs).map((filePath) => ({
+          type: "file_trace",
+          title: "Existing file detected",
+          status: "failed",
+          operation: "write",
+          path: filePath,
+          summary: "Target file already exists with different content.",
+        })),
+      ],
+    });
   }
 
   const actionProps = {
@@ -748,6 +946,8 @@ export default function App() {
             memories={memories}
             knowledgeBases={knowledgeBases}
             versions={versions}
+            tab={assetTab}
+            onTabChange={setAssetTab}
           />
         ) : null}
         {page === "promotions" ? (
@@ -808,6 +1008,7 @@ export default function App() {
         message={confirmAction?.message || "Continue?"}
         patch={confirmAction?.patch || ""}
         busy={Boolean(busyReviewId || busyVersionKey)}
+        confirmLabel={confirmAction?.confirmLabel || "Continue"}
         onCancel={() => setConfirmAction(null)}
         onConfirm={confirmApply}
       />
@@ -828,6 +1029,19 @@ function reviewIdForAction(state, action) {
       ? "regression_review"
       : "skill_promotion_review";
   return steps.find((step) => step.name === reviewName)?.review_id || "";
+}
+
+function reviewNeedsPatch(review) {
+  const type = review?.type || "";
+  const toolName = review?.tool_name || "";
+  return ["skill.regression_case", "skill.promotion", "skill.creation", "file.write", "tool.update"].includes(type)
+    || ["write_file", "edit_file"].includes(toolName);
+}
+
+function riskLabel(risk) {
+  if (!risk) return "safe_write_preview";
+  if (typeof risk === "string") return risk;
+  return risk.level || "safe_write_preview";
 }
 
 function makeId() {

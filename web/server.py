@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime, timezone
+import difflib
 from pathlib import Path
 import json
 import re
@@ -24,6 +25,7 @@ from runtime.skill_evolution_flow import evolve_skill_from_promotion
 from runtime.skill_evolution_registry import SkillEvolutionRegistry, normalize_skill_name
 from runtime.skill_loader import SkillLoader
 from runtime.skill_memory import MEMORY_FILES, SkillMemoryManager, normalize_name
+from safety.audit import SECRET_PATTERNS as SECRET_SCAN_PATTERNS
 from safety.policy_config import load_policy
 from tools.schemas import build_tools
 
@@ -81,6 +83,29 @@ HANDLER_NAMES = {
     "plan_approval",
     "idle",
 }
+TOOL_ASSET_SCHEMA_FILES = ("tool.yaml", "tool.json")
+TOOL_CREATE_DEFAULT_DESCRIPTION = "Workspace tool asset created through Chat."
+MEANINGLESS_TOOL_WORDS = {
+    "tool",
+    "tools",
+    "create",
+    "build",
+    "make",
+    "write",
+    "new",
+    "query",
+    "search",
+    "runner",
+    "reader",
+    "writer",
+    "工具",
+    "查询",
+    "搜索",
+    "创建",
+    "新建",
+    "帮我",
+    "写一个",
+}
 
 
 def ok(
@@ -107,25 +132,35 @@ def fail(
     errors: list[str] | None = None,
     next_actions: list[str] | None = None,
     status_code: int = 400,
+    data: Any = None,
+    error_code: str = "",
+    path: str = "",
+    suggested_actions: list[str] | None = None,
 ) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "ok": False,
-            "data": None,
-            "message": message,
-            "next_actions": next_actions or [],
-            "errors": errors or [message],
-        },
-    )
+    content = {
+        "ok": False,
+        "data": data,
+        "message": message,
+        "next_actions": next_actions or [],
+        "errors": errors or [message],
+    }
+    if error_code:
+        content["error_code"] = error_code
+    if path:
+        content["path"] = path
+    if suggested_actions is not None:
+        content["suggested_actions"] = suggested_actions
+    return JSONResponse(status_code=status_code, content=content)
 
 
 def chat_ok(
     *,
     response_type: str,
     message: str,
-    intent: str = "unknown",
-    risk: str = "safe_read",
+    intent: Any = "unknown",
+    safety: dict[str, Any] | None = None,
+    asset_route: dict[str, Any] | None = None,
+    risk: Any = "safe_read",
     used_skill: str | None = None,
     why: str = "",
     memory_record_id: str = "",
@@ -140,7 +175,9 @@ def chat_ok(
         content={
             "ok": True,
             "run_id": run_id,
+            "safety": safety or {"safe": True, "risk_labels": [], "severity": "low"},
             "intent": intent,
+            "asset_route": asset_route or {"asset_type": "plain_answer", "asset_name": "", "reason": ""},
             "risk": risk,
             "type": response_type,
             "message": message,
@@ -294,6 +331,55 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
     def tools() -> JSONResponse:
         return ok(_tool_views(ctx))
 
+    @app.post("/api/tools/propose-create")
+    async def tool_propose_create(request: Request) -> JSONResponse:
+        body = await request.json()
+        tool_name = _tool_name_from_request_body(body)
+        if not tool_name:
+            return fail("Missing clear tool name or purpose.", status_code=400, data={"requires_clarification": True})
+        result = _propose_tool_create(
+            ctx,
+            tool_name,
+            str(body.get("description", "")),
+            files=body.get("files"),
+        )
+        if not result["ok"]:
+            return fail(
+                result["message"],
+                errors=result.get("errors"),
+                status_code=result.get("status_code", 400),
+                data=result.get("data"),
+                error_code=result.get("error_code", ""),
+                path=result.get("path", ""),
+                suggested_actions=result.get("suggested_actions"),
+            )
+        return ok(result["data"], result["message"], result.get("next_actions", []))
+
+    @app.post("/api/tools/create")
+    async def tool_create(request: Request) -> JSONResponse:
+        body = await request.json()
+        tool_name = _tool_name_from_request_body(body)
+        if not tool_name:
+            return fail("Missing clear tool name or purpose.", status_code=400, data={"requires_clarification": True})
+        result = _create_tool_asset(
+            ctx,
+            tool_name,
+            str(body.get("description", "")),
+            files=body.get("files"),
+            confirmed=bool(body.get("confirmed", False)),
+        )
+        if not result["ok"]:
+            return fail(
+                result["message"],
+                errors=result.get("errors"),
+                status_code=result.get("status_code", 400),
+                data=result.get("data"),
+                error_code=result.get("error_code", ""),
+                path=result.get("path", ""),
+                suggested_actions=result.get("suggested_actions"),
+            )
+        return ok(result["data"], result["message"], result.get("next_actions", []))
+
     @app.get("/api/tools/{tool_name}")
     def tool_detail(tool_name: str) -> JSONResponse:
         tool = next((item for item in _tool_views(ctx) if item["name"] == tool_name), None)
@@ -302,12 +388,36 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
         recent_reviews = [
             review for review in _reviews(ctx)
             if review.get("tool_name") == tool_name
+            or review.get("target_skill") == tool_name
+            or review.get("metadata", {}).get("tool_name") == tool_name
         ][-5:]
         recent_errors = [
             memory for memory in _memory_records(ctx)
             if memory.get("type") == "error" and tool_name.lower() in json.dumps(memory, ensure_ascii=False).lower()
         ][:5]
-        return ok({**tool, "recent_review_history": recent_reviews, "recent_errors": recent_errors})
+        return ok({**tool, **_tool_file_details(ctx, tool_name, tool), "recent_review_history": recent_reviews, "recent_errors": recent_errors})
+
+    @app.post("/api/tools/{tool_name}/update-review")
+    async def tool_update_review(tool_name: str, request: Request) -> JSONResponse:
+        body = await request.json()
+        result = _create_tool_update_review(
+            ctx,
+            tool_name,
+            str(body.get("description", "")),
+            files=body.get("files"),
+        )
+        if not result["ok"]:
+            return fail(
+                result["message"],
+                errors=result.get("errors"),
+                status_code=result.get("status_code", 400),
+                data=result.get("data"),
+                error_code=result.get("error_code", ""),
+                path=result.get("path", ""),
+                suggested_actions=result.get("suggested_actions"),
+            )
+        return ok(result["data"], result["message"], result.get("next_actions", []))
+
 
     @app.get("/api/memories")
     def memories(
@@ -396,10 +506,20 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
         patch_path = ctx.project_root / ".reviews" / "patches" / f"{review_id}.diff"
         if not patch_path.exists():
             return ok(
-                {"has_patch": False, "patch": ""},
+                {"has_patch": False, "has_changes": False, "patch": "", "apply_blocked_reason": "Cannot apply: patch preview is empty."},
                 "No patch preview is needed for this review.",
             )
-        return ok({"has_patch": True, "patch_path": _display_path(ctx, patch_path), "patch": patch_path.read_text(encoding="utf-8")})
+        patch_text = patch_path.read_text(encoding="utf-8")
+        has_changes = _patch_has_changes(patch_text)
+        return ok(
+            {
+                "has_patch": True,
+                "has_changes": has_changes,
+                "patch_path": _display_path(ctx, patch_path),
+                "patch": patch_text,
+                "apply_blocked_reason": "" if has_changes else "Cannot apply: patch preview is empty.",
+            }
+        )
 
     @app.post("/api/reviews/{review_id}/approve")
     def approve_review(review_id: str) -> JSONResponse:
@@ -436,15 +556,35 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             return fail(f"Unknown review_id: {review_id}", status_code=404)
         if review.get("status") != "approved":
             return fail(f"Review {review_id} must be approved before apply.", next_actions=[f"/api/reviews/{review_id}/approve"])
+        if _review_requires_patch_preview(review):
+            patch = _patch_for_review(ctx, review_id)
+            if not _patch_has_changes(str(patch.get("patch", ""))):
+                return fail(
+                    "Cannot apply: patch preview is empty.",
+                    status_code=400,
+                    data={"review_id": review_id, "patch": patch},
+                    error_code="EMPTY_PATCH_PREVIEW",
+                    suggested_actions=["regenerate_patch", "cancel"],
+                    next_actions=[f"/api/reviews/{review_id}/approve"],
+                )
         before = _target_snapshots(ctx, review)
         try:
             applied, message = ctx.review_store.apply_review(review_id)
         except ValueError as exc:
-            return fail(str(exc))
+            structured = _structured_review_apply_error(str(exc))
+            return fail(
+                structured["message"],
+                errors=structured.get("errors"),
+                status_code=structured.get("status_code", 400),
+                data=structured.get("data"),
+                error_code=structured.get("error_code", ""),
+                path=structured.get("path", ""),
+                suggested_actions=structured.get("suggested_actions"),
+            )
         after = _target_snapshots(ctx, applied)
         modified_files = [path for path, value in after.items() if before.get(path) != value]
         recorded_version = ""
-        if applied.get("type") == "skill.promotion":
+        if applied.get("type") in {"skill.promotion", "skill.creation"}:
             recorded_version = _version_for_review(ctx, applied.get("target_skill", ""), review_id)
         return ok(
             {
@@ -647,6 +787,8 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             response_type=data.get("type", "answer"),
             message=data.get("message", ""),
             intent=data.get("intent", "unknown"),
+            safety=data.get("safety"),
+            asset_route=data.get("asset_route"),
             risk=data.get("risk", "safe_read"),
             used_skill=data.get("used_skill", ""),
             why=data.get("why", ""),
@@ -672,6 +814,8 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             response_type=data.get("type", "answer"),
             message=data.get("message", ""),
             intent=data.get("intent", "unknown"),
+            safety=data.get("safety"),
+            asset_route=data.get("asset_route"),
             risk=data.get("risk", "safe_read"),
             used_skill=data.get("used_skill", ""),
             why=data.get("why", ""),
@@ -854,25 +998,264 @@ def _missing_promotion_eligibility(candidate: Any) -> list[str]:
 
 
 def _tool_views(ctx: WebContext) -> list[dict[str, Any]]:
-    tools = []
+    tools_by_name: dict[str, dict[str, Any]] = {}
     policy_tools = ctx.policy.get("tools", {})
     for tool in build_tools(sorted(VALID_MSG_TYPES)):
         function = tool.get("function", {})
         name = function.get("name", "")
         policy = policy_tools.get(name, {})
-        tools.append(
+        tools_by_name[name] = {
+            "name": name,
+            "description": function.get("description", ""),
+            "capability": policy.get("capability", ""),
+            "risk_level": policy.get("risk", ""),
+            "requires_approval_by_policy": _policy_requires_approval(policy),
+            "handler_available": name in HANDLER_NAMES,
+            "schema": function,
+            "schema_path": "tools/schemas.py",
+            "eval_cases_count": 0,
+            "status": "registered",
+            "last_modified": "",
+            "provider_requirements": [],
+            "asset_path": "",
+            "asset_type": "registered_tool",
+            "safety_policy": policy,
+        }
+    for asset in _tool_asset_views(ctx):
+        existing = tools_by_name.get(asset["name"], {})
+        tools_by_name[asset["name"]] = {
+            **existing,
+            **asset,
+            "handler_available": existing.get("handler_available", False),
+            "capability": existing.get("capability", asset.get("capability", "")),
+            "risk_level": existing.get("risk_level", asset.get("risk_level", "medium")),
+            "requires_approval_by_policy": existing.get("requires_approval_by_policy", False),
+            "schema": existing.get("schema", asset.get("schema", {})),
+            "safety_policy": existing.get("safety_policy", {}),
+        }
+    return [tools_by_name[name] for name in sorted(tools_by_name)]
+
+
+def _tool_asset_views(ctx: WebContext) -> list[dict[str, Any]]:
+    tools_root = ctx.project_root / "tools"
+    if not tools_root.exists():
+        return []
+    assets = []
+    for tool_dir in sorted(path for path in tools_root.iterdir() if path.is_dir() and not path.name.startswith("__")):
+        schema_path = _first_existing(tool_dir / filename for filename in TOOL_ASSET_SCHEMA_FILES)
+        readme_path = tool_dir / "README.md"
+        eval_path = tool_dir / "eval" / "cases.yaml"
+        fields = _parse_tool_asset_fields(schema_path) if schema_path else {}
+        details = _parse_tool_schema_details(schema_path) if schema_path else {}
+        tool_name = _extract_tool_name(str(fields.get("name") or tool_dir.name))
+        if not tool_name:
+            continue
+        description = str(fields.get("description") or _read_first_paragraph(readme_path) or "")
+        provider_requirements = details.get("provider_requirements") or _provider_requirements_from_tool_file(schema_path) if schema_path else []
+        newest = max(
+            (_mtime(path) for path in [schema_path, readme_path, eval_path] if path),
+            default="",
+        )
+        assets.append(
             {
-                "name": name,
-                "description": function.get("description", ""),
-                "capability": policy.get("capability", ""),
-                "risk_level": policy.get("risk", ""),
-                "requires_approval_by_policy": _policy_requires_approval(policy),
-                "handler_available": name in HANDLER_NAMES,
-                "schema": function,
-                "safety_policy": policy,
+                "name": tool_name,
+                "description": description,
+                "schema_path": _display_path(ctx, schema_path) if schema_path else "",
+                "readme_path": _display_path(ctx, readme_path) if readme_path.exists() else f"tools/{tool_name}/README.md",
+                "eval_cases_path": _display_path(ctx, eval_path) if eval_path.exists() else f"tools/{tool_name}/eval/cases.yaml",
+                "eval_cases_count": _tool_eval_case_count(eval_path),
+                "status": str(fields.get("status") or "draft"),
+                "last_modified": newest,
+                "provider_requirements": provider_requirements,
+                "capability": details.get("capability", ""),
+                "inputs": details.get("inputs", {}),
+                "outputs": details.get("outputs", {}),
+                "safety": details.get("safety", []),
+                "asset_path": _display_path(ctx, tool_dir),
+                "asset_type": "tool",
+                "risk_level": "medium",
             }
         )
-    return tools
+    return assets
+
+
+def _first_existing(paths: Any) -> Path | None:
+    for path in paths:
+        if path and path.exists():
+            return path
+    return None
+
+
+def _parse_tool_asset_fields(path: Path | None) -> dict[str, Any]:
+    if not path or not path.exists():
+        return {}
+    if path.suffix.lower() == ".json":
+        data = _read_json(path)
+        return data if isinstance(data, dict) else {}
+    fields: dict[str, Any] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith(" ") or line.startswith("- "):
+            continue
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        value = value.strip().strip('"').strip("'")
+        if value:
+            fields[key.strip()] = value
+    return fields
+
+
+def _parse_tool_schema_details(path: Path | None) -> dict[str, Any]:
+    if not path or not path.exists():
+        return {
+            "provider_requirements": [],
+            "inputs": {},
+            "outputs": {},
+            "safety": [],
+            "capability": "",
+        }
+    if path.suffix.lower() == ".json":
+        data = _read_json(path)
+        if not isinstance(data, dict):
+            return {"provider_requirements": [], "inputs": {}, "outputs": {}, "safety": [], "capability": ""}
+        return {
+            "provider_requirements": _string_list(data.get("provider_requirements")),
+            "inputs": data.get("inputs") if isinstance(data.get("inputs"), dict) else data.get("schema", {}).get("input", {}) if isinstance(data.get("schema"), dict) else {},
+            "outputs": data.get("outputs") if isinstance(data.get("outputs"), dict) else data.get("schema", {}).get("output", {}) if isinstance(data.get("schema"), dict) else {},
+            "safety": _string_list(data.get("safety")),
+            "capability": data.get("capability", ""),
+        }
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return {
+        "provider_requirements": _yaml_list_section(lines, "provider_requirements"),
+        "inputs": _yaml_mapping_keys(lines, "inputs") or _yaml_mapping_keys(lines, "input"),
+        "outputs": _yaml_mapping_keys(lines, "outputs") or _yaml_mapping_keys(lines, "output"),
+        "safety": _yaml_list_section(lines, "safety"),
+        "capability": _yaml_scalar(lines, "capability"),
+    }
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, dict):
+        return [str(key) for key in value]
+    if value in (None, ""):
+        return []
+    return [str(value)]
+
+
+def _yaml_scalar(lines: list[str], key: str) -> str:
+    prefix = f"{key}:"
+    for raw_line in lines:
+        if raw_line.startswith(prefix):
+            return raw_line.split(":", 1)[1].strip().strip('"').strip("'")
+    return ""
+
+
+def _yaml_list_section(lines: list[str], key: str) -> list[str]:
+    values = []
+    in_section = False
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if stripped == f"{key}:":
+            in_section = True
+            continue
+        if in_section and raw_line and not raw_line.startswith(" "):
+            break
+        if in_section and stripped.startswith("- "):
+            values.append(stripped[2:].strip())
+    return values
+
+
+def _yaml_mapping_keys(lines: list[str], key: str) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    in_section = False
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if stripped == f"{key}:":
+            in_section = True
+            continue
+        if in_section and raw_line and not raw_line.startswith(" "):
+            break
+        if in_section and raw_line.startswith("  ") and not raw_line.startswith("    ") and stripped.endswith(":"):
+            values[stripped[:-1]] = {}
+    return values
+
+
+def _read_first_paragraph(path: Path) -> str:
+    if not path.exists():
+        return ""
+    lines = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            if lines:
+                break
+            continue
+        lines.append(stripped)
+    return " ".join(lines)
+
+
+def _provider_requirements_from_tool_file(path: Path | None) -> list[str]:
+    if not path or not path.exists():
+        return []
+    if path.suffix.lower() == ".json":
+        data = _read_json(path)
+        values = data.get("provider_requirements", []) if isinstance(data, dict) else []
+        return [str(item) for item in values] if isinstance(values, list) else []
+    requirements = []
+    in_section = False
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        stripped = raw_line.strip()
+        if stripped == "provider_requirements:":
+            in_section = True
+            continue
+        if in_section and raw_line and not raw_line.startswith(" "):
+            break
+        if in_section and stripped.startswith("- "):
+            requirements.append(stripped[2:].strip())
+    return requirements
+
+
+def _tool_eval_case_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return len(parse_regression_cases(path.read_text(encoding="utf-8")))
+
+
+def _tool_file_details(ctx: WebContext, tool_name: str, tool: dict[str, Any]) -> dict[str, Any]:
+    tool_dir = ctx.project_root / "tools" / tool_name
+    schema_path = _first_existing(tool_dir / filename for filename in TOOL_ASSET_SCHEMA_FILES)
+    readme_path = tool_dir / "README.md"
+    eval_path = tool_dir / "eval" / "cases.yaml"
+    details = _parse_tool_schema_details(schema_path) if schema_path else {}
+    return {
+        "schema_path": _display_path(ctx, schema_path) if schema_path else tool.get("schema_path", f"tools/{tool_name}/tool.yaml"),
+        "readme_path": _display_path(ctx, readme_path) if readme_path.exists() else f"tools/{tool_name}/README.md",
+        "eval_cases_path": _display_path(ctx, eval_path) if eval_path.exists() else f"tools/{tool_name}/eval/cases.yaml",
+        "provider_requirements": details.get("provider_requirements") or tool.get("provider_requirements", []),
+        "inputs": details.get("inputs") or tool.get("inputs", {}),
+        "outputs": details.get("outputs") or tool.get("outputs", {}),
+        "safety": details.get("safety") or tool.get("safety", []),
+        "capability": details.get("capability") or tool.get("capability", ""),
+        "files": {
+            "schema": _file_content_payload(ctx, schema_path, f"tools/{tool_name}/tool.yaml"),
+            "readme": _file_content_payload(ctx, readme_path, f"tools/{tool_name}/README.md"),
+            "eval_cases": _file_content_payload(ctx, eval_path, f"tools/{tool_name}/eval/cases.yaml"),
+        },
+    }
+
+
+def _file_content_payload(ctx: WebContext, path: Path | None, fallback_path: str) -> dict[str, Any]:
+    if not path or not path.exists():
+        return {"path": fallback_path, "exists": False, "content": "", "status": "missing"}
+    return {
+        "path": _display_path(ctx, path),
+        "exists": True,
+        "content": path.read_text(encoding="utf-8"),
+        "status": "present",
+    }
 
 
 def _memory_records(ctx: WebContext) -> list[dict[str, Any]]:
@@ -1163,6 +1546,745 @@ def _create_file_write_review(ctx: WebContext, relative_path: str, content: str)
     )
 
 
+def _tool_name_from_request_body(body: dict[str, Any]) -> str:
+    explicit = str(body.get("tool_name", "") or body.get("name", "")).strip()
+    if explicit:
+        return _normalize_tool_name(explicit)
+    return str(_infer_tool_request(str(body.get("message", ""))).get("tool_name") or "")
+
+
+def _propose_tool_create(
+    ctx: WebContext,
+    tool_name: str,
+    description: str = "",
+    files: Any = None,
+) -> dict[str, Any]:
+    normalized = _extract_tool_name(tool_name)
+    if not normalized:
+        return {"ok": False, "message": "Tool name may only contain letters, numbers, dot, underscore, and dash.", "status_code": 400}
+    invalid_paths = _invalid_tool_file_paths(normalized, files)
+    if invalid_paths:
+        return {
+            "ok": False,
+            "message": "Path guard failed for tool creation.",
+            "errors": [f"Invalid tool file path: {path}" for path in invalid_paths],
+            "status_code": 400,
+        }
+    proposed_files = _normalize_proposed_tool_files(normalized, description, files)
+    preflight = _tool_create_preflight(ctx, normalized, proposed_files)
+    return {
+        "ok": True,
+        "message": f"Prepared create plan for {normalized}. No files were written.",
+        "data": {
+            "tool_name": normalized,
+            "asset_type": "tool",
+            "description": description.strip() or _default_tool_description(normalized),
+            "files": _files_payload(proposed_files),
+            "preflight": preflight,
+            "requires_confirmation": preflight.get("ok") and preflight.get("risk") == "medium",
+        },
+        "next_actions": ["/api/tools/create"] if preflight.get("ok") and preflight.get("risk") == "medium" else [],
+    }
+
+
+def _create_tool_asset(
+    ctx: WebContext,
+    tool_name: str,
+    description: str = "",
+    files: Any = None,
+    *,
+    confirmed: bool,
+) -> dict[str, Any]:
+    normalized = _extract_tool_name(tool_name)
+    if not normalized:
+        return {"ok": False, "message": "Tool name may only contain letters, numbers, dot, underscore, and dash.", "status_code": 400}
+    invalid_paths = _invalid_tool_file_paths(normalized, files)
+    if invalid_paths:
+        return {
+            "ok": False,
+            "message": "Path guard failed for tool creation.",
+            "errors": [f"Invalid tool file path: {path}" for path in invalid_paths],
+            "status_code": 400,
+        }
+    proposed_files = _normalize_proposed_tool_files(normalized, description, files)
+    preflight = _tool_create_preflight(ctx, normalized, proposed_files)
+    if not preflight.get("workspace_scope_passed"):
+        return {
+            "ok": False,
+            "message": "Path guard failed for tool creation.",
+            "errors": ["All tool files must stay inside the workspace root and under tools/<tool_name>/."],
+            "status_code": 400,
+            "data": {"preflight": preflight},
+        }
+    if not preflight.get("secret_scan_passed"):
+        return {
+            "ok": False,
+            "message": "Secret scan failed for tool creation.",
+            "errors": ["Tool asset content must not contain API keys, tokens, passwords, or private secrets."],
+            "status_code": 400,
+            "error_code": "SECRET_SCAN_FAILED",
+            "data": {"preflight": preflight},
+            "suggested_actions": ["regenerate_patch", "cancel"],
+        }
+    differing = [item for item in preflight["files"] if item["status"] == "exists_different"]
+    if differing:
+        first = differing[0]
+        return {
+            "ok": False,
+            "message": "Existing file detected.",
+            "errors": [f"Existing file detected: {first['path']}"],
+            "status_code": 409,
+            "error_code": "FILE_ALREADY_EXISTS",
+            "path": first["path"],
+            "suggested_actions": [
+                "view_diff",
+                "create_review",
+                "overwrite_after_confirmation",
+                "cancel",
+            ],
+            "data": {
+                "tool_name": normalized,
+                "asset_type": "tool",
+                "preflight": preflight,
+                "diffs": {item["path"]: item.get("diff", "") for item in differing},
+                "review_endpoint": f"/api/tools/{normalized}/update-review",
+            },
+        }
+    missing = [item for item in preflight["files"] if item["status"] == "missing"]
+    if not missing:
+        _write_operation_log(
+            ctx,
+            "tool.create.noop",
+            {
+                "tool_name": normalized,
+                "files": list(proposed_files),
+                "reason": "all files already match",
+            },
+        )
+        return {
+            "ok": True,
+            "message": f"Tool {normalized} already exists with identical files; no file change was needed.",
+            "data": {
+                "tool_name": normalized,
+                "asset_type": "tool",
+                "status": "already_exists",
+                "created_files": [],
+                "preflight": preflight,
+                "operation_trace": _tool_operation_trace(normalized, preflight, [], "already_exists"),
+            },
+        }
+    if not confirmed:
+        return {
+            "ok": True,
+            "message": f"Preflight passed for {normalized}. Confirm before creating tool files.",
+            "data": {
+                "tool_name": normalized,
+                "asset_type": "tool",
+                "files": _files_payload(proposed_files),
+                "preflight": preflight,
+                "requires_confirmation": True,
+            },
+            "next_actions": ["/api/tools/create"],
+        }
+    created_files = []
+    for item in missing:
+        path = _safe_project_path(ctx, item["path"])
+        if not path:
+            return {"ok": False, "message": f"Path must stay inside the workspace: {item['path']}", "status_code": 400}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(proposed_files[item["path"]], encoding="utf-8")
+        created_files.append(item["path"])
+    _write_operation_log(
+        ctx,
+        "tool.create",
+        {
+            "tool_name": normalized,
+            "created_files": created_files,
+            "risk": preflight.get("risk", "medium"),
+        },
+    )
+    return {
+        "ok": True,
+        "message": f"Created {normalized} tool.",
+        "data": {
+            "tool_name": normalized,
+            "asset_type": "tool",
+            "status": "created",
+            "created_files": created_files,
+            "preflight": preflight,
+            "operation_trace": _tool_operation_trace(normalized, preflight, created_files, "created"),
+        },
+        "next_actions": ["/api/tools", f"/api/tools/{normalized}"],
+    }
+
+
+def _create_tool_update_review(
+    ctx: WebContext,
+    tool_name: str,
+    description: str = "",
+    files: Any = None,
+) -> dict[str, Any]:
+    normalized = _extract_tool_name(tool_name)
+    if not normalized:
+        return {"ok": False, "message": "Tool name may only contain letters, numbers, dot, underscore, and dash.", "status_code": 400}
+    invalid_paths = _invalid_tool_file_paths(normalized, files)
+    if invalid_paths:
+        return {
+            "ok": False,
+            "message": "Path guard failed for tool update review.",
+            "errors": [f"Invalid tool file path: {path}" for path in invalid_paths],
+            "status_code": 400,
+        }
+    proposed_files = _normalize_proposed_tool_files(normalized, description, files)
+    preflight = _tool_create_preflight(ctx, normalized, proposed_files)
+    if not preflight.get("workspace_scope_passed"):
+        return {
+            "ok": False,
+            "message": "Path guard failed for tool update review.",
+            "status_code": 400,
+            "data": {"preflight": preflight},
+        }
+    if not preflight.get("secret_scan_passed"):
+        return {
+            "ok": False,
+            "message": "Secret scan failed for tool update review.",
+            "status_code": 400,
+            "error_code": "SECRET_SCAN_FAILED",
+            "data": {"preflight": preflight},
+            "suggested_actions": ["regenerate_patch", "cancel"],
+        }
+    review = ctx.review_store.create_review(
+        type="tool.update",
+        source="chat_runtime",
+        target_skill=normalized,
+        target_files=list(proposed_files),
+        severity="high" if any(item["status"] == "exists_different" for item in preflight["files"]) else "medium",
+        reason=f"Review existing tool update for {normalized}.",
+        risk_type="safe_write_preview",
+        proposed_change=f"Update tool asset files for {normalized}.",
+        evaluation_plan="Inspect the diff preview, confirm provider requirements, and run the smallest relevant validation before applying.",
+        rollback_plan=f"Restore the previous files under tools/{normalized}/ if the update is incorrect.",
+        tool_name=normalized,
+        tool_arguments={"tool_name": normalized},
+        metadata={
+            "operation": "tool_update",
+            "tool_name": normalized,
+            "proposed_files": proposed_files,
+            "preflight": preflight,
+        },
+    )
+    return {
+        "ok": True,
+        "message": f"Created tool update review {review['review_id']} for {normalized}. No tool files were modified.",
+        "data": {
+            "review_id": review["review_id"],
+            "review": review,
+            "tool_name": normalized,
+            "preflight": preflight,
+            "preview_files": proposed_files,
+        },
+        "next_actions": [f"/api/reviews/{review['review_id']}", f"/api/reviews/{review['review_id']}/approve"],
+    }
+
+
+def _tool_create_preflight(ctx: WebContext, tool_name: str, proposed_files: dict[str, str]) -> dict[str, Any]:
+    file_results = []
+    workspace_scope_passed = True
+    secret_scan_passed = True
+    for relative_path, content in proposed_files.items():
+        path = _safe_project_path(ctx, relative_path)
+        in_tool_dir = relative_path.replace("\\", "/").startswith(f"tools/{tool_name}/")
+        if not path or not in_tool_dir:
+            workspace_scope_passed = False
+        secret_matches = _secret_scan_matches(content)
+        if secret_matches:
+            secret_scan_passed = False
+        status = "missing"
+        diff = ""
+        if path and path.exists():
+            current = path.read_text(encoding="utf-8")
+            if current == content:
+                status = "exists_same"
+            else:
+                status = "exists_different"
+                diff = _unified_diff(relative_path, current, content)
+        file_results.append(
+            {
+                "path": relative_path,
+                "status": status,
+                "exists": bool(path and path.exists()),
+                "secret_scan": "failed" if secret_matches else "passed",
+                "secret_matches": secret_matches,
+                "diff": diff,
+            }
+        )
+    risk = "high" if any(item["status"] == "exists_different" for item in file_results) else "medium"
+    if not workspace_scope_passed or not secret_scan_passed:
+        risk = "high"
+    existing_failed = any(item["status"] == "exists_different" for item in file_results)
+    return {
+        "ok": workspace_scope_passed and secret_scan_passed and not existing_failed,
+        "workspace_scope_passed": workspace_scope_passed,
+        "secret_scan_passed": secret_scan_passed,
+        "existing_file_check": "failed" if existing_failed else "passed",
+        "risk": risk,
+        "files": file_results,
+    }
+
+
+def _normalize_proposed_tool_files(tool_name: str, description: str, files: Any) -> dict[str, str]:
+    default_files = _tool_creation_files(tool_name, description)
+    proposed = dict(default_files)
+    if files is None:
+        return proposed
+    if not isinstance(files, list):
+        return proposed
+    allowed = set(default_files)
+    allowed.add(f"tools/{tool_name}/tool.json")
+    saw_schema = False
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path", "")).replace("\\", "/").strip()
+        content = str(item.get("content", ""))
+        if path == f"tools/{tool_name}/tool.json":
+            proposed.pop(f"tools/{tool_name}/tool.yaml", None)
+            proposed[path] = content
+            saw_schema = True
+            continue
+        if path in allowed:
+            proposed[path] = content
+            if path.endswith(TOOL_ASSET_SCHEMA_FILES):
+                saw_schema = True
+    if not saw_schema and not any(path.endswith(TOOL_ASSET_SCHEMA_FILES) for path in proposed):
+        proposed[f"tools/{tool_name}/tool.yaml"] = default_files[f"tools/{tool_name}/tool.yaml"]
+    return dict(sorted(proposed.items()))
+
+
+def _invalid_tool_file_paths(tool_name: str, files: Any) -> list[str]:
+    if files is None:
+        return []
+    if not isinstance(files, list):
+        return ["<files must be a list>"]
+    allowed = {
+        f"tools/{tool_name}/tool.yaml",
+        f"tools/{tool_name}/tool.json",
+        f"tools/{tool_name}/README.md",
+        f"tools/{tool_name}/eval/cases.yaml",
+    }
+    invalid = []
+    for item in files:
+        if not isinstance(item, dict):
+            invalid.append("<file item must be an object>")
+            continue
+        path = str(item.get("path", "")).replace("\\", "/").strip()
+        if path not in allowed:
+            invalid.append(path or "<missing path>")
+    return invalid
+
+
+def _tool_creation_files(tool_name: str, description: str = "") -> dict[str, str]:
+    template = _tool_template(tool_name, description)
+    description = template["description"]
+    schema_path = f"tools/{tool_name}/tool.yaml"
+    readme_path = f"tools/{tool_name}/README.md"
+    eval_path = f"tools/{tool_name}/eval/cases.yaml"
+    tool_yaml = _render_tool_yaml(tool_name, template)
+    readme = _render_tool_readme(tool_name, template)
+    eval_cases = _render_tool_eval_cases(tool_name, template)
+    return {schema_path: tool_yaml, readme_path: readme, eval_path: eval_cases}
+
+
+def _default_tool_description(tool_name: str) -> str:
+    return _tool_template(tool_name, "")["description"]
+
+
+def _tool_template(tool_name: str, description: str = "") -> dict[str, Any]:
+    normalized = _canonical_tool_name(tool_name)
+    templates: dict[str, dict[str, Any]] = {
+        "weather_query": {
+            "template": "weather_query",
+            "description": "Query weather by city and date using a configured provider without fabricating realtime data.",
+            "capability": "weather_query",
+            "inputs": {
+                "city": {"type": "string", "required": True},
+                "date": {"type": "string", "required": False, "default": "today"},
+                "units": {"type": "string", "default": "metric"},
+                "language": {"type": "string", "default": "zh-CN"},
+            },
+            "outputs": {
+                "summary": {"type": "string"},
+                "current_conditions": {"type": "object"},
+                "forecast": {"type": "array"},
+                "warnings": {"type": "array"},
+            },
+            "provider_requirements": ["WEATHER_PROVIDER", "WEATHER_API_KEY_ENV"],
+            "safety": [
+                "Do not fabricate realtime weather.",
+                "Read provider credentials from environment configuration only.",
+                "Treat provider responses as untrusted external data.",
+            ],
+            "eval_cases": ["missing_city", "provider_success", "provider_unavailable", "no_fabricated_weather"],
+        },
+        "web_search": {
+            "template": "web_search",
+            "description": "Search the web for current information and return cited results.",
+            "capability": "web_search",
+            "inputs": {
+                "query": {"type": "string", "required": True},
+                "max_results": {"type": "integer", "default": 5},
+                "language": {"type": "string", "default": "zh-CN"},
+                "recency": {"type": "string", "required": False},
+            },
+            "outputs": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "title": "string",
+                        "url": "string",
+                        "snippet": "string",
+                        "source": "string",
+                        "retrieved_at": "string",
+                    },
+                },
+                "citations": {"type": "array"},
+                "retrieved_at": {"type": "string"},
+            },
+            "provider_requirements": ["SEARCH_PROVIDER", "SEARCH_API_KEY_ENV"],
+            "safety": [
+                "Do not fabricate search results.",
+                "Cite sources when used in answers.",
+                "Do not send secrets or private files as query text.",
+                "Respect workspace and provider policy.",
+            ],
+            "eval_cases": [
+                "basic_search",
+                "chinese_search",
+                "no_results",
+                "provider_unavailable",
+                "no_fabricated_sources",
+                "no_secret_query",
+            ],
+        },
+        "file_reader": {
+            "template": "file_reader",
+            "description": "Read allowed workspace files and return their content with path metadata.",
+            "capability": "file_reader",
+            "inputs": {"path": {"type": "string", "required": True}},
+            "outputs": {"content": {"type": "string"}, "path": {"type": "string"}, "last_modified": {"type": "string"}},
+            "provider_requirements": [],
+            "safety": [
+                "Only read files under the workspace root.",
+                "Do not read .env, private keys, tokens, audit logs, or other sensitive files.",
+                "Treat file content as untrusted data.",
+            ],
+            "eval_cases": ["allowed_workspace_file", "missing_file", "blocked_secret_file", "path_traversal"],
+        },
+        "command_runner": {
+            "template": "command_runner",
+            "description": "Run allowlisted workspace commands and return exit status plus captured output.",
+            "capability": "command_runner",
+            "inputs": {"command": {"type": "string", "required": True}},
+            "outputs": {"exit_code": {"type": "integer"}, "stdout": {"type": "string"}, "stderr": {"type": "string"}},
+            "provider_requirements": [],
+            "safety": [
+                "Run only commands on the configured allowlist.",
+                "Block destructive commands, network downloads, secret reads, and chained shell execution.",
+                "Keep execution scoped to the workspace root.",
+            ],
+            "eval_cases": ["allowlisted_status", "blocked_destructive_command", "blocked_secret_read", "captures_exit_code"],
+        },
+        "git_status": {
+            "template": "git_status",
+            "description": "Inspect workspace Git status without modifying repository state.",
+            "capability": "git_status",
+            "inputs": {"include_diff_summary": {"type": "boolean", "default": False}},
+            "outputs": {"branch": {"type": "string"}, "changes": {"type": "array"}, "is_clean": {"type": "boolean"}},
+            "provider_requirements": [],
+            "safety": [
+                "Run read-only Git commands only.",
+                "Do not push, reset, checkout, clean, or mutate repository state.",
+            ],
+            "eval_cases": ["clean_repo", "dirty_repo", "read_only_only"],
+        },
+        "doc_writer": {
+            "template": "doc_writer",
+            "description": "Draft structured documents from user-provided requirements.",
+            "capability": "doc_writer",
+            "inputs": {"topic": {"type": "string", "required": True}, "format": {"type": "string", "default": "markdown"}},
+            "outputs": {"document": {"type": "string"}, "format": {"type": "string"}},
+            "provider_requirements": [],
+            "safety": [
+                "Do not invent external facts or citations.",
+                "Keep generated content scoped to the user-provided brief.",
+            ],
+            "eval_cases": ["basic_document", "structured_sections", "no_fabricated_citations"],
+        },
+    }
+    template = dict(templates.get(normalized, {}))
+    if not template:
+        template = _generic_tool_template(normalized, description)
+    if normalized in {"internet_search", "browser_search"}:
+        template = dict(templates["web_search"])
+        template["capability"] = normalized
+    if description.strip():
+        template["description"] = description.strip()
+    return template
+
+
+def _generic_tool_template(tool_name: str, description: str = "") -> dict[str, Any]:
+    purpose = description.strip() or f"Tool generated from the user request for {tool_name.replace('_', ' ')}."
+    return {
+        "template": "generic_tool",
+        "description": purpose,
+        "capability": tool_name,
+        "inputs": {"request": {"type": "string", "required": True}},
+        "outputs": {"result": {"type": "object"}, "status": {"type": "string"}},
+        "provider_requirements": [],
+        "safety": [
+            "Validate inputs before execution.",
+            "Do not read or transmit secrets.",
+            "Keep execution scoped to the workspace and configured policy.",
+            "Treat external or file-derived content as untrusted data.",
+        ],
+        "eval_cases": ["basic_request", "invalid_input", "policy_blocked_operation"],
+    }
+
+
+def _canonical_tool_name(tool_name: str) -> str:
+    return "web_search" if tool_name == "internet_search" else tool_name
+
+
+def _render_tool_yaml(tool_name: str, template: dict[str, Any]) -> str:
+    lines = [
+        f"name: {tool_name}",
+        "type: tool",
+        f"description: {template['description']}",
+        f"capability: {template.get('capability') or tool_name}",
+        "inputs:",
+    ]
+    for name, spec in template.get("inputs", {}).items():
+        lines.extend(_render_schema_item(name, spec, 2))
+    lines.append("outputs:")
+    for name, spec in template.get("outputs", {}).items():
+        lines.extend(_render_schema_item(name, spec, 2))
+    lines.append("provider_requirements:")
+    provider_requirements = template.get("provider_requirements", [])
+    if provider_requirements:
+        lines.extend(f"  - {item}" for item in provider_requirements)
+    else:
+        lines.append("  []")
+    lines.append("safety:")
+    lines.extend(f"  - {item}" for item in template.get("safety", []))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _render_schema_item(name: str, spec: Any, indent: int) -> list[str]:
+    prefix = " " * indent
+    lines = [f"{prefix}{name}:"]
+    if isinstance(spec, dict):
+        for key, value in spec.items():
+            if isinstance(value, dict):
+                lines.append(f"{prefix}  {key}:")
+                for child_key, child_value in value.items():
+                    lines.append(f"{prefix}    {child_key}: {str(child_value).lower() if isinstance(child_value, bool) else child_value}")
+            else:
+                lines.append(f"{prefix}  {key}: {str(value).lower() if isinstance(value, bool) else value}")
+    else:
+        lines.append(f"{prefix}  type: {spec}")
+    return lines
+
+
+def _render_tool_readme(tool_name: str, template: dict[str, Any]) -> str:
+    provider_requirements = template.get("provider_requirements", [])
+    provider_lines = [f"- `{item}`" for item in provider_requirements] if provider_requirements else ["- No external provider credentials are required."]
+    input_lines = [f"- `{name}`: {spec.get('type', 'object') if isinstance(spec, dict) else spec}." for name, spec in template.get("inputs", {}).items()]
+    output_lines = [f"- `{name}`: {spec.get('type', 'object') if isinstance(spec, dict) else spec}." for name, spec in template.get("outputs", {}).items()]
+    safety_lines = [f"- {item}" for item in template.get("safety", [])]
+    example_input = _example_input_for_tool(template)
+    return "\n".join(
+        [
+            f"# {tool_name}",
+            "",
+            template["description"],
+            "",
+            "## Purpose",
+            "",
+            f"`{tool_name}` provides the `{template.get('capability') or tool_name}` capability for workspace workflows.",
+            "",
+            "## Inputs",
+            "",
+            *input_lines,
+            "",
+            "## Outputs",
+            "",
+            *output_lines,
+            "",
+            "## Provider Configuration",
+            "",
+            *provider_lines,
+            "",
+            "Provider credentials must be configured outside the repository and read from the runtime environment.",
+            "",
+            "## Safety Rules",
+            "",
+            *safety_lines,
+            "",
+            "## Example Call",
+            "",
+            "```json",
+            json.dumps({"tool": tool_name, "input": example_input}, ensure_ascii=False, indent=2),
+            "```",
+            "",
+        ]
+    )
+
+
+def _example_input_for_tool(template: dict[str, Any]) -> dict[str, Any]:
+    capability = str(template.get("capability", ""))
+    if capability in {"web_search", "internet_search", "browser_search"}:
+        return {"query": "OpenAI latest model", "max_results": 5, "language": "zh-CN"}
+    if capability == "weather_query":
+        return {"city": "Shanghai", "date": "today", "units": "metric", "language": "zh-CN"}
+    if capability == "file_reader":
+        return {"path": "docs/README.md"}
+    if capability == "command_runner":
+        return {"command": "git status --short"}
+    if capability == "git_status":
+        return {"include_diff_summary": False}
+    if capability == "doc_writer":
+        return {"topic": "Feature requirements", "format": "markdown"}
+    return {"request": "Describe the operation to perform."}
+
+
+def _render_tool_eval_cases(tool_name: str, template: dict[str, Any]) -> str:
+    capability = str(template.get("capability", ""))
+    if capability in {"web_search", "internet_search", "browser_search"}:
+        return "\n".join(
+            [
+                f"tool: {tool_name}",
+                "cases:",
+                "  - id: basic_search",
+                "    input:",
+                "      query: OpenAI API documentation",
+                "      max_results: 5",
+                "    expect_fields: [results, citations, retrieved_at]",
+                "  - id: chinese_search",
+                "    input:",
+                "      query: 上海 今日 科技 新闻",
+                "      language: zh-CN",
+                "    expect_fields: [results]",
+                "  - id: no_results",
+                "    input:",
+                "      query: unlikely-query-with-no-results-0000",
+                "    allow_empty_results: true",
+                "  - id: provider_unavailable",
+                "    simulate_provider_error: true",
+                "    expect_error: provider_unavailable",
+                "  - id: no_fabricated_sources",
+                "    input:",
+                "      query: current source verification",
+                "    must_not_fabricate_sources: true",
+                "  - id: no_secret_query",
+                "    input:",
+                "      query: ${SEARCH_API_KEY_ENV}",
+                "    expect_error: secret_query_blocked",
+                "",
+            ]
+        )
+    cases = template.get("eval_cases", ["basic_request"])
+    lines = [f"tool: {tool_name}", "cases:"]
+    for case_id in cases:
+        lines.extend(
+            [
+                f"  - id: {case_id}",
+                "    input: {}",
+                "    expect_fields:",
+                "      - status",
+            ]
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _files_payload(files: dict[str, str]) -> list[dict[str, str]]:
+    return [{"path": path, "content": content} for path, content in files.items()]
+
+
+def _secret_scan_matches(content: str) -> list[str]:
+    matches = []
+    for pattern in SECRET_SCAN_PATTERNS:
+        if pattern.search(content):
+            matches.append(pattern.pattern)
+    return matches
+
+
+def _unified_diff(relative_path: str, current: str, proposed: str) -> str:
+    return "".join(
+        difflib.unified_diff(
+            current.splitlines(keepends=True),
+            proposed.splitlines(keepends=True),
+            fromfile=relative_path,
+            tofile=f"{relative_path} (proposed)",
+        )
+    )
+
+
+def _write_operation_log(ctx: WebContext, event: str, payload: dict[str, Any]) -> None:
+    audit_dir = ctx.project_root / ".audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    record = {
+        "timestamp": _now_iso(),
+        "event": event,
+        "payload": payload,
+    }
+    with (audit_dir / "operation_log.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _tool_operation_trace(
+    tool_name: str,
+    preflight: dict[str, Any],
+    written_files: list[str],
+    final_status: str,
+) -> list[dict[str, Any]]:
+    trace = [
+        _trace("analyze", "Analyze request", status="completed", summary="Recognized tool_creation_request."),
+        _trace("asset_route", "Asset route", status="completed", asset_type="tool", target=tool_name, summary=f"Tool: {tool_name}. Reason: external/actionable capabilities belong in Tool assets, not Skills."),
+        _trace(
+            "preflight",
+            "Preflight",
+            status="completed" if preflight.get("ok") else "failed",
+            workspace_scope="passed" if preflight.get("workspace_scope_passed") else "failed",
+            secret_scan="passed" if preflight.get("secret_scan_passed") else "failed",
+            existing_file_check=preflight.get("existing_file_check", ""),
+            risk=preflight.get("risk", ""),
+            summary=_preflight_summary(preflight),
+        ),
+    ]
+    for path in written_files:
+        trace.append(_trace("file_trace", "Write", operation="write", path=path, status="completed", summary=f"Wrote {path}."))
+    trace.append(
+        _trace(
+            "final_result",
+            "Final result",
+            status="completed",
+            summary=f"{'Created' if final_status == 'created' else final_status}: {tool_name} tool. View in Assets > Tools.",
+        )
+    )
+    return trace
+
+
+def _preflight_summary(preflight: dict[str, Any]) -> str:
+    parts = [
+        f"workspace scope {'passed' if preflight.get('workspace_scope_passed') else 'failed'}",
+        f"secret scan {'passed' if preflight.get('secret_scan_passed') else 'failed'}",
+        f"existing file check {preflight.get('existing_file_check', 'unknown')}",
+    ]
+    return "; ".join(parts)
+
+
 def _create_skill_creation_review(
     ctx: WebContext,
     skill_name: str,
@@ -1445,20 +2567,345 @@ def _next_evolution_action(regression: dict[str, Any], skill_review: dict[str, A
     return "waiting"
 
 
+def _input_safety_gate(message: str) -> dict[str, Any]:
+    text = message.lower()
+    labels: list[str] = []
+
+    def add(label: str, condition: bool) -> None:
+        if condition and label not in labels:
+            labels.append(label)
+
+    add("prompt_injection", _has_any(message, ["忽略之前", "忽略所有", "忽略安全", "忽略安全规则", "ignore previous", "ignore all", "system prompt", "developer message"]))
+    add("jailbreak", _has_any(message, ["jailbreak", "越狱", "dan mode", "no restrictions"]))
+    add("policy_bypass", _has_any(message, ["不要再做安全检查", "不要安全检查", "绕过安全", "bypass policy", "disable safety", "ignore safety", "关闭安全"]))
+    add("memory_poisoning", _has_any(message, ["以后不要", "记住不要", "always ignore", "remember to ignore", "以后绕过", "以后不检查"]))
+    add("secret_request", _has_any(message, [".env", "api key", "apikey", "secret", "token", "password", "密钥", "令牌", "私钥"]))
+    add("illegal_request", _has_any(message, ["非法", "盗号", "洗钱", "伪造证件", "bypass paywall"]))
+    add("harmful_request", _has_any(message, ["钓鱼邮件", "phishing", "恶意软件", "malware", "勒索", "木马", "攻击", "exploit", "ddos"]))
+    add("dangerous_command", _has_any(message, ["rm -rf", "del /s", "remove-item", "删除整个", "删掉整个", "delete entire", "curl | bash", "wget ", "git push"]))
+    add("workspace_escape", bool(re.search(r"(^|[\s`'\"])(?:/[A-Za-z0-9_.-]+|[A-Za-z]:\\)", message)))
+    add("path_traversal", "../" in message or "..\\" in message)
+    add("false_claim_or_fabrication", _has_any(message, ["编一个真实", "伪造引用", "fake citation", "fabricate citation", "made-up citation"]))
+    add("unsafe_write", _has_any(message, ["覆盖已有", "overwrite existing", "修改安全策略", "改安全策略", "删除文件", "delete file"]))
+    add("tool_abuse", _has_any(message, ["创建绕过", "tool to bypass", "steal secret tool", "读取密钥的工具"]))
+
+    blocked_labels = {
+        "prompt_injection",
+        "jailbreak",
+        "policy_bypass",
+        "secret_request",
+        "illegal_request",
+        "harmful_request",
+        "dangerous_command",
+        "workspace_escape",
+        "path_traversal",
+        "tool_abuse",
+    }
+    if "memory_poisoning" in labels and "policy_bypass" in labels:
+        blocked_labels.add("memory_poisoning")
+    if labels and any(label in blocked_labels for label in labels):
+        return {
+            "safe": False,
+            "risk_labels": labels,
+            "severity": "blocked",
+            "reason": f"Blocked by input safety gate: {', '.join(labels)}.",
+            "allowed_next_step": "refuse",
+        }
+    if "false_claim_or_fabrication" in labels:
+        return {
+            "safe": False,
+            "risk_labels": labels,
+            "severity": "medium",
+            "reason": "The request asks for fabricated real-world evidence or citations.",
+            "allowed_next_step": "refuse",
+        }
+    severity = "medium" if labels else "low"
+    return {
+        "safe": True,
+        "risk_labels": labels,
+        "severity": severity,
+        "reason": "No blocking prompt injection, secret request, or harmful behavior detected.",
+        "allowed_next_step": "plan",
+    }
+
+
+def _supervisor_intent_route(message: str, safety: dict[str, Any]) -> dict[str, Any]:
+    if not safety.get("safe"):
+        return {
+            "primary": "unsafe_request",
+            "candidates": [{"intent": "unsafe_request", "confidence": 1.0}],
+            "needs_clarification": False,
+            "reason": safety.get("reason", "Unsafe request."),
+        }
+    if not re.search(r"[A-Za-z0-9\u4e00-\u9fff]", message):
+        return {
+            "primary": "clarification_needed",
+            "candidates": [{"intent": "clarification_needed", "confidence": 1.0}],
+            "needs_clarification": True,
+            "reason": "No actionable natural-language content was found.",
+        }
+
+    candidates: list[dict[str, Any]] = []
+
+    def score(intent: str, value: float) -> None:
+        if value <= 0:
+            return
+        candidates.append({"intent": intent, "confidence": round(min(value, 0.99), 2)})
+
+    text = message.lower()
+    weather = _has_any(message, ["天气", "weather", "气温", "下雨"])
+    has_create = _has_any(message, ["创建", "写一个", "写", "设计", "实现", "生成", "create", "build", "implement"])
+    has_tool = _has_any(message, ["工具", "tool", "api", "接口"])
+    has_skill = "skill" in text or "技能" in message
+    has_update = _has_any(message, ["修改", "改成", "改掉", "更新", "调整", "默认输出", "update", "change", "modify"])
+    has_direct_weather = weather and (_weather_city_mentioned(message) or _has_any(message, ["今天", "明天", "现在", "当前", "today", "tomorrow"]))
+    ambiguous_weather = weather and _has_any(message, ["想要", "需要", "want", "要一个"]) and not has_create and not has_update and not has_direct_weather
+
+    if ambiguous_weather:
+        return {
+            "primary": "clarification_needed",
+            "candidates": [
+                {"intent": "direct_tool_use", "confidence": 0.42},
+                {"intent": "tool_creation_request", "confidence": 0.37},
+                {"intent": "skill_creation_request", "confidence": 0.21},
+            ],
+            "needs_clarification": True,
+            "reason": "Weather query could mean using a tool now, creating a tool, or creating a skill/workflow.",
+        }
+
+    if _looks_like_tool_update_request(message):
+        score("tool_update_request", 0.9)
+    if _looks_like_tool_creation_request(message):
+        score("tool_creation_request", 0.86)
+    if _looks_like_skill_creation_request(message):
+        score("skill_creation_request", 0.86)
+    if _looks_like_skill_update_request(message) or (has_update and has_skill):
+        score("skill_update_request", 0.82)
+    if _looks_like_memory_request(message):
+        score("memory_preference", 0.88)
+    if has_direct_weather:
+        score("direct_tool_use", 0.82)
+        score("external_realtime_query", 0.68)
+    if _looks_like_skill_read_request(message):
+        score("skill_read_request", 0.84)
+    elif _looks_like_file_read_request(message):
+        score("file_read_request", 0.82)
+    if _looks_like_file_write_request(message):
+        score("file_write_request", 0.82)
+    if _looks_like_command_request(message):
+        score("command_run_request", 0.84)
+    if _looks_like_review_action_request(message):
+        score("review_action_request", 0.88)
+    elif _looks_like_review_request(message):
+        score("review_query", 0.74)
+    if _looks_like_evolution_action_request(message):
+        score("evolution_action_request", 0.8)
+        score("workflow_request", 0.74)
+    if _looks_like_promotion_query(message):
+        score("workspace_status_query", 0.6)
+        score("promotion_query", 0.74)
+    if _has_any(message, ["搜索", "search", "联网", "查一下最新", "latest"]):
+        score("search_request", 0.78)
+    if _has_any(message, ["当前有哪些 skills", "有哪些 skills", "有哪些技能", "当前技能", "available skills"]) or "available skills" in text:
+        score("skill_list_query", 0.82)
+        score("workspace_status_query", 0.52)
+    if _has_any(message, ["系统卡在哪", "卡在哪", "当前进度", "系统状态", "workspace status"]):
+        score("workspace_status_query", 0.82)
+
+    if not candidates:
+        primary = _chat_intent(message)
+        score(primary, 0.64 if primary != "general_chat" else 0.55)
+
+    candidates = sorted(
+        {item["intent"]: item for item in candidates}.values(),
+        key=lambda item: item["confidence"],
+        reverse=True,
+    )[:5]
+    primary = candidates[0]["intent"] if candidates else "general_chat"
+    if primary == "external_realtime_query":
+        primary = "direct_tool_use"
+    return {
+        "primary": primary,
+        "candidates": candidates,
+        "needs_clarification": False,
+        "reason": _intent_summary(primary),
+    }
+
+
+def _asset_route_for_intent(ctx: WebContext, message: str, intent_route: dict[str, Any]) -> dict[str, Any]:
+    primary = intent_route.get("primary", "general_chat")
+    if primary in {"tool_creation_request", "tool_update_request", "direct_tool_use"}:
+        tool_name = _skill_name_for_tool_request(message)
+        return {
+            "asset_type": "tool",
+            "asset_name": tool_name,
+            "reason": f"{tool_name or 'The requested capability'} is external/actionable, better represented as a Tool than a Skill.",
+        }
+    if primary in {"skill_creation_request", "skill_update_request", "skill_use_request"}:
+        skill_name = _extract_skill_name(message) or _skill_from_path(_extract_path(message)) or "self_improvement"
+        return {"asset_type": "skill", "asset_name": skill_name, "reason": "The request changes or uses reusable task behavior."}
+    if primary == "memory_preference":
+        return {"asset_type": "memory", "asset_name": _extract_skill_name(message) or "self_improvement", "reason": "The request describes a durable preference or lesson."}
+    if primary in {"workflow_request", "evolution_action_request", "promotion_query"}:
+        return {"asset_type": "workflow", "asset_name": "self_evolution_flow", "reason": "The request advances a multi-step review/evolution workflow."}
+    if primary in {"review_action_request", "review_query", "rollback_request"}:
+        return {"asset_type": "review", "asset_name": _extract_review_id(message) or "", "reason": "The request must be mediated by ReviewQueue."}
+    if primary in {"file_read_request", "file_write_request"}:
+        return {"asset_type": "file", "asset_name": _extract_path(message), "reason": "The request targets a workspace file."}
+    if primary == "command_run_request":
+        return {"asset_type": "command", "asset_name": _extract_command(message), "reason": "The request targets a workspace command."}
+    if primary == "clarification_needed":
+        return {"asset_type": "unknown", "asset_name": "", "reason": "Multiple plausible routes require user clarification."}
+    if primary == "unsafe_request":
+        return {"asset_type": "blocked", "asset_name": "", "reason": "Input safety gate blocked execution."}
+    return {"asset_type": "plain_answer", "asset_name": "", "reason": "No workspace asset is required."}
+
+
+def _risk_decision_for_request(safety: dict[str, Any], intent_route: dict[str, Any], asset_route: dict[str, Any], message: str) -> dict[str, Any]:
+    if not safety.get("safe"):
+        return {"level": "blocked", "reason": safety.get("reason", "Unsafe request."), "severity": safety.get("severity", "blocked")}
+    primary = intent_route.get("primary", "general_chat")
+    path = _extract_path(message)
+    if primary == "clarification_needed":
+        return {"level": "safe_read", "reason": "Clarification only; no workspace action will run.", "severity": "low"}
+    if primary in {"file_read_request", "skill_read_request", "workspace_status_query", "review_query", "promotion_query", "direct_tool_use", "external_realtime_query", "general_chat", "skill_list_query"}:
+        return {"level": "safe_read", "reason": "Read-only or explanatory response.", "severity": "low"}
+    if primary in {"tool_creation_request", "file_write_request", "memory_preference"}:
+        return {"level": "safe_write_preview", "reason": "Workspace write is gated by preflight, confirmation, or constrained memory capture.", "severity": "medium"}
+    if primary in {"tool_update_request", "skill_update_request", "review_action_request", "rollback_request"}:
+        return {"level": "review_required", "reason": "Existing assets, reviews, rollbacks, or guarded files require review or explicit confirmation.", "severity": "high"}
+    if primary == "command_run_request":
+        decision = _command_decision(_extract_command(message))
+        level = decision.get("risk", "high_risk")
+        return {"level": "safe_read" if decision.get("allowed") and level == "safe_read" else "blocked", "reason": decision.get("reason", ""), "severity": "low" if decision.get("allowed") else "high"}
+    if path and _is_review_required_path(path):
+        return {"level": "review_required", "reason": "Guarded workspace target requires ReviewQueue.", "severity": "high"}
+    return {"level": "safe_read", "reason": "No mutating action is required.", "severity": "low"}
+
+
+def _orchestrator_trace(safety: dict[str, Any], intent_route: dict[str, Any], asset_route: dict[str, Any], risk_decision: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        _trace(
+            "safety_check",
+            "Input safety check",
+            status="completed" if safety.get("safe") else "failed",
+            risk_labels=", ".join(safety.get("risk_labels", [])) or "none",
+            severity=safety.get("severity", "low"),
+            summary=safety.get("reason", ""),
+        ),
+        _trace(
+            "analyze",
+            "Intent analysis",
+            status="waiting" if intent_route.get("needs_clarification") else "completed",
+            primary_intent=intent_route.get("primary", ""),
+            candidate_intents=", ".join(f"{item.get('intent')}:{item.get('confidence')}" for item in intent_route.get("candidates", [])),
+            needs_clarification=str(bool(intent_route.get("needs_clarification"))).lower(),
+            summary=intent_route.get("reason", ""),
+        ),
+        _trace(
+            "asset_route",
+            "Asset route",
+            status="completed",
+            asset_type=asset_route.get("asset_type", ""),
+            asset_name=asset_route.get("asset_name", ""),
+            summary=f"Routed to {asset_route.get('asset_type', 'unknown')}: {asset_route.get('asset_name', '')}. {asset_route.get('reason', '')}".strip(),
+        ),
+        _trace(
+            "risk_decision",
+            "Risk decision",
+            status="failed" if risk_decision.get("level") == "blocked" else "completed",
+            risk=risk_decision.get("level", ""),
+            severity=risk_decision.get("severity", ""),
+            summary=risk_decision.get("reason", ""),
+        ),
+    ]
+
+
+def _finalize_supervisor_response(
+    data: dict[str, Any],
+    safety: dict[str, Any],
+    intent_route: dict[str, Any],
+    asset_route: dict[str, Any],
+    risk_decision: dict[str, Any],
+) -> dict[str, Any]:
+    traces = [
+        item for item in list(data.get("trace", []))
+        if item.get("type") not in {"safety_check", "asset_route", "risk_decision"}
+        and not (item.get("type") == "analyze" and item.get("title") == "Analyze request")
+    ]
+    prefix = _orchestrator_trace(safety, intent_route, asset_route, risk_decision)
+    data["trace"] = prefix + traces
+    actual_level = data.get("risk")
+    if risk_decision.get("level") in {"review_required", "blocked"} and actual_level in (None, "", "safe_read", "safe_write_preview"):
+        actual_level = risk_decision.get("level")
+    if isinstance(actual_level, dict):
+        risk_payload = actual_level
+    else:
+        risk_payload = {
+            "level": str(actual_level or risk_decision.get("level", "safe_read")),
+            "reason": risk_decision.get("reason", ""),
+            "severity": risk_decision.get("severity", "low"),
+        }
+    data["risk_level"] = risk_payload.get("level", "safe_read")
+    data["risk"] = risk_payload
+    data["safety"] = safety
+    data["intent"] = intent_route
+    data["intent_primary"] = intent_route.get("primary", "unknown")
+    data["asset_route"] = asset_route
+    return data
+
+
 def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict[str, Any]:
     if message.startswith("/"):
         data = _handle_command(ctx, message)
         data.setdefault("intent", "workspace_status_query")
         return data
 
-    intent = _chat_intent(message)
-    loaded_context, load_trace = _load_chat_context(ctx, intent, context)
-    used_skill, skill_reason = _route_skill(ctx, message, context, intent, loaded_context)
-    base_trace = [_reasoning_trace(_intent_summary(intent)), *load_trace]
+    safety = _input_safety_gate(message)
+    intent_route = _supervisor_intent_route(message, safety)
+    asset_route = _asset_route_for_intent(ctx, message, intent_route)
+    risk_decision = _risk_decision_for_request(safety, intent_route, asset_route, message)
+    intent = str(intent_route.get("primary", "general_chat"))
+    execution_intent = "external_realtime_query" if intent == "direct_tool_use" and asset_route.get("asset_name") == "weather_query" else intent
+    if intent == "workflow_request":
+        execution_intent = "evolution_action_request"
+    loaded_context, load_trace = _load_chat_context(ctx, execution_intent, context)
+    used_skill, skill_reason = _route_skill(ctx, message, context, execution_intent, loaded_context)
+    base_trace = load_trace
 
     def done(data: dict[str, Any]) -> dict[str, Any]:
-        data["intent"] = intent
-        return data
+        return _finalize_supervisor_response(data, safety, intent_route, asset_route, risk_decision)
+
+    if not safety.get("safe"):
+        message_text = (
+            "我不能帮助执行这个请求。它触发了输入安全检查："
+            f"{', '.join(safety.get('risk_labels', []))}。"
+        )
+        if "false_claim_or_fabrication" in safety.get("risk_labels", []):
+            message_text = "我不能编造真实论文、来源或引用。你可以给我真实来源，我可以帮你整理、核验或格式化引用。"
+        return done(_chat_result(
+            "refused",
+            None,
+            "Blocked by input safety gate.",
+            message_text,
+            risk="blocked",
+            trace=base_trace,
+        ))
+
+    if intent_route.get("needs_clarification"):
+        return done(_chat_result(
+            "clarification",
+            None,
+            "Clarification is needed before choosing a workspace route.",
+            "你是想现在查询某个城市天气，还是想创建一个 weather_query 工具？如果是查询，请提供城市和日期；如果是创建工具，我可以生成工具设计并进入创建流程。天气查询通常更适合作为 Tool。",
+            risk="safe_read",
+            actions=[
+                _action("Create weather_query tool", "POST", "/api/tools/create", True, {"tool_name": "weather_query", "description": _default_tool_description("weather_query"), "confirmed": True}, kind="create_tool", risk="medium"),
+                _action("Cancel", "LOCAL", "cancel", False, kind="cancel"),
+            ],
+            trace=base_trace,
+        ))
+    intent = execution_intent
 
     if intent == "general_chat" and _is_greeting(message):
         return done(_chat_result(
@@ -1468,7 +2915,7 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
             "\u4f60\u597d\uff01\u6211\u5728\u3002\u4f60\u53ef\u4ee5\u76f4\u63a5\u8ddf\u6211\u804a\uff0c\u4e5f\u53ef\u4ee5\u8ba9\u6211\u5199\u5185\u5bb9\u3001\u770b workspace \u72b6\u6001\u3001\u5904\u7406 skills \u548c reviews\u3002",
             trace=base_trace,
         ))
-    if intent == "external_realtime_query":
+    if execution_intent == "external_realtime_query":
         city_known = _weather_city_mentioned(message)
         realtime_note = (
             "\u6211\u8bc6\u522b\u5230\u4f60\u95ee\u7684\u662f\u5b9e\u65f6\u5929\u6c14\u3002"
@@ -1498,52 +2945,160 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
             ],
         ))
     if intent == "tool_creation_request":
-        skill_name = _skill_name_for_tool_request(message)
-        description = _skill_description_for_tool_request(skill_name, message)
+        inference = _infer_tool_request(message)
+        if inference.get("needs_clarification") and (not inference.get("tool_name") or len(inference.get("candidates", [])) > 1):
+            candidates = inference.get("candidates", [])
+            if candidates:
+                question = f"你是想创建 {candidates[0]} 工具，还是 {candidates[1]} 工具？"
+            else:
+                question = "你想创建什么用途的工具？请告诉我工具名称或能力范围，例如 web_search、file_reader、git_status。"
+            return done(_chat_result(
+                "clarification",
+                used_skill,
+                skill_reason,
+                question,
+                "No files were created.",
+                risk="safe_read",
+                actions=[
+                    _action("Cancel", "LOCAL", "cancel", False, kind="cancel"),
+                ],
+                data={
+                    "intent": "tool_creation_request",
+                    "asset_type": "tool",
+                    "requires_clarification": True,
+                    "candidates": candidates,
+                    "reason": inference.get("reason", ""),
+                },
+                trace=[
+                    *base_trace,
+                    _trace("asset_type", "Asset type", status="waiting", asset_type="tool", summary="Tool creation needs a clearer name or capability before files can be proposed."),
+                ],
+            ))
+        tool_name = str(inference.get("tool_name") or "")
+        description = _skill_description_for_tool_request(tool_name, message)
+        proposal = _propose_tool_create(ctx, tool_name, description)
+        proposal_data = proposal.get("data", {})
+        preflight = proposal_data.get("preflight", {})
+        files = proposal_data.get("files", [])
+        conflict = preflight.get("existing_file_check") == "failed"
+        if conflict:
+            actions = [
+                _action(
+                    "Create review instead",
+                    "POST",
+                    f"/api/tools/{tool_name}/update-review",
+                    True,
+                    {"tool_name": tool_name, "description": description, "files": files},
+                    kind="create_tool_update_review",
+                    risk="high",
+                ),
+                _action("View diff", "LOCAL", "details", False, kind="view_details"),
+                _action("Cancel", "LOCAL", "cancel", False, kind="cancel"),
+            ]
+            result_text = f"Existing file detected for {tool_name}. I can show the diff or create a review; I will not overwrite it from Chat."
+        else:
+            actions = [
+                _action(
+                    f"Create {tool_name} tool",
+                    "POST",
+                    "/api/tools/create",
+                    True,
+                    {
+                        "tool_name": tool_name,
+                        "description": description,
+                        "files": files,
+                        "confirmed": True,
+                    },
+                    kind="create_tool",
+                    risk="medium",
+                ),
+                _action("Rename", "LOCAL", "rename", False, kind="rename_tool"),
+                _action("Cancel", "LOCAL", "cancel", False, kind="cancel"),
+                _action("View details", "LOCAL", "details", False, kind="view_details"),
+            ]
+            result_text = _tool_design_answer(message)
         return done(_chat_result(
-            "skill_result",
+            "tool_result",
             used_skill,
             skill_reason,
-            _tool_design_answer(message),
+            result_text,
+            "No durable memory was captured.",
+            risk="safe_write_preview",
+            actions=actions,
+            data={
+                "intent": "tool_creation_request",
+                "asset_type": "tool",
+                "target": tool_name,
+                "tool_name": tool_name,
+                "proposed_tool": {
+                    "tool_name": tool_name,
+                    "description": description,
+                    "target_files": [item.get("path", "") for item in files],
+                },
+                "files": files,
+                "preflight": preflight,
+            },
+            trace=[
+                *base_trace,
+                _trace(
+                    "asset_type",
+                    "Asset type",
+                    status="completed",
+                    asset_type="tool",
+                    target=tool_name,
+                    summary=f"tool: {tool_name}",
+                ),
+                _trace(
+                    "preflight",
+                    "Preflight",
+                    status="failed" if conflict else "completed",
+                    workspace_scope="passed" if preflight.get("workspace_scope_passed") else "failed",
+                    secret_scan="passed" if preflight.get("secret_scan_passed") else "failed",
+                    existing_file_check=preflight.get("existing_file_check", ""),
+                    risk=preflight.get("risk", ""),
+                    summary=_preflight_summary(preflight),
+                ),
+                *[
+                    _trace("file_trace", "Write", operation="write", path=item.get("path", ""), status="waiting", summary="Will write after confirmation.")
+                    for item in files
+                    if item.get("path")
+                ],
+            ],
+        ))
+    if intent == "tool_update_request":
+        tool_name = _skill_name_for_tool_request(message)
+        description = _skill_description_for_tool_request(tool_name, message)
+        files = _files_payload(_tool_creation_files(tool_name, description))
+        return done(_chat_result(
+            "proposed_action",
+            used_skill,
+            skill_reason,
+            f"{tool_name} is an existing tool update request. I will create a review instead of overwriting tool files directly.",
             "No durable memory was captured.",
             risk="safe_write_preview",
             actions=[
                 _action(
-                    f"Create {skill_name} skill review",
+                    f"Create {tool_name} tool update review",
                     "POST",
-                    "/api/skills/propose",
+                    f"/api/tools/{tool_name}/update-review",
                     True,
-                    {
-                        "skill_name": skill_name,
-                        "description": description,
-                    },
-                    kind="create_skill_review",
-                    risk="medium",
+                    {"tool_name": tool_name, "description": description, "files": files},
+                    kind="create_tool_update_review",
+                    risk="high",
                 ),
                 _action("Cancel", "LOCAL", "cancel", False, kind="cancel"),
                 _action("View details", "LOCAL", "details", False, kind="view_details"),
             ],
             data={
-                "tool_name": skill_name,
-                "proposed_skill": {
-                    "skill_name": skill_name,
-                    "description": description,
-                    "target_files": [
-                        f"skills/{skill_name}/SKILL.md",
-                        f"skills/{skill_name}/eval/cases.yaml",
-                    ],
-                },
+                "asset_type": "tool",
+                "target": tool_name,
+                "tool_name": tool_name,
+                "files": files,
             },
             trace=[
                 *base_trace,
-                _trace(
-                    "next_action",
-                    f"Create {skill_name} skill review",
-                    method="POST",
-                    path="/api/skills/propose",
-                    status="waiting",
-                    summary="Confirmation will create a pending review; no skill files are written by Chat.",
-                ),
+                _trace("asset_type", "Asset type", asset_type="tool", target=tool_name, summary=f"tool: {tool_name}"),
+                _trace("approval_event", "Review required", status="waiting", review_type="tool.update", severity="high", target_asset=f"tools/{tool_name}", summary="Existing tool changes must go through ReviewQueue."),
             ],
         ))
     if intent == "skill_creation_request":
@@ -1955,8 +3510,11 @@ def _intent_summary(intent: str) -> str:
         "promotion_query": "Recognized a promotion or self-evolution status query.",
         "evolution_action_request": "Recognized a request to advance an evolution flow through existing review APIs.",
         "tool_creation_request": "Recognized that the user wants to design or create a tool, not run the tool.",
+        "tool_update_request": "Recognized that the user wants to modify an existing tool asset, not evolve a skill.",
+        "direct_tool_use": "Recognized that the user wants to use a tool or external capability now.",
         "skill_creation_request": "Recognized that the user wants a new skill; file creation must be proposed for review.",
         "skill_update_request": "Recognized a skill update request and routed it to reviewable memory or skill-patch flow.",
+        "workflow_request": "Recognized a multi-step workflow request.",
         "file_read_request": "Recognized a safe file read request.",
         "file_write_request": "Recognized a file write request and prepared a confirmation-gated preview.",
         "file_edit_request": "Recognized a file edit request and routed it through the write safety gate.",
@@ -1964,6 +3522,9 @@ def _intent_summary(intent: str) -> str:
         "rollback_request": "Recognized a rollback request and kept it review-only.",
         "memory_preference": "Recognized an explicit durable preference that should be captured as memory.",
         "external_realtime_query": "Recognized a realtime external-information request and checked tool availability.",
+        "search_request": "Recognized a search request that requires an external information tool.",
+        "clarification_needed": "Multiple plausible intents were found; asking for the missing decision before acting.",
+        "unsafe_request": "The input safety gate blocked execution.",
         "unknown": "Could not confidently classify the request; choosing the safest general response.",
     }
     return summaries.get(intent, "I classified the request and selected the safest available response path.")
@@ -1973,14 +3534,16 @@ def _chat_intent(message: str) -> str:
     text = message.lower()
     if not re.search(r"[A-Za-z0-9\u4e00-\u9fff]", message):
         return "unknown"
+    if _looks_like_tool_creation_request(message):
+        return "tool_creation_request"
     if _looks_like_skill_creation_request(message):
         return "skill_creation_request"
+    if _looks_like_tool_update_request(message):
+        return "tool_update_request"
     if _looks_like_skill_update_request(message):
         return "skill_update_request"
     if _looks_like_memory_request(message):
         return "memory_preference"
-    if _looks_like_tool_creation_request(message):
-        return "tool_creation_request"
     if _has_any(message, ["\u5f53\u524d\u6709\u54ea\u4e9b skills", "\u6709\u54ea\u4e9b skills", "\u6709\u54ea\u4e9b\u6280\u80fd", "\u5f53\u524d\u6280\u80fd"]) or "available skills" in text:
         return "skill_list_query"
     if _looks_like_skill_read_request(message):
@@ -2033,7 +3596,7 @@ def _route_skill(
         return None, "Read a workspace file through the safe file API."
     if intent == "command_run_request":
         return None, "Run a safe allowlisted workspace command."
-    if intent in {"general_chat", "external_realtime_query", "unknown"}:
+    if intent in {"general_chat", "external_realtime_query", "direct_tool_use", "clarification_needed", "unsafe_request", "unknown"}:
         return None, "General assistant answer; no workspace skill is needed."
     if intent == "workspace_status_query":
         return "self_improvement", "Read dashboard, promotion, review, and version state."
@@ -2051,7 +3614,7 @@ def _route_skill(
         return _first_available(available, [current, "self_improvement"]), "The request is a durable preference that belongs in skill memory."
     if intent == "writing_request" or _has_any(message, ["markdown", "\u8bfb\u4e66\u7b14\u8bb0", "PRD", "\u6a21\u677f", "\u5927\u7eb2", "\u6b63\u5f0f"]):
         return _first_available(available, ["markdown_writer", current, "self_improvement"]), "The request is about writing or reusable markdown structure."
-    if intent in {"promotion_query", "evolution_action_request", "review_query", "review_action_request", "skill_creation_request", "rollback_request"}:
+    if intent in {"promotion_query", "evolution_action_request", "workflow_request", "review_query", "review_action_request", "skill_creation_request", "rollback_request"}:
         return "self_improvement", "The request touches promotion, review, memory, version, or self-evolution workflow."
     if intent in {"file_write_request", "file_edit_request"}:
         return _first_available(available, ["file_editing", "file_modification", current, "self_improvement"]), "The request is about file editing or patch advice."
@@ -2059,6 +3622,8 @@ def _route_skill(
         if _has_any(message, ["\u5929\u6c14", "weather"]):
             return _first_available(available, ["tool_usage", current, "self_improvement"]), "\u7528\u6237\u8bf7\u6c42\u521b\u5efa\u5929\u6c14\u67e5\u8be2\u5de5\u5177\uff0c\u800c\u4e0d\u662f\u67e5\u8be2\u5929\u6c14\u3002"
         return _first_available(available, ["tool_usage", current, "self_improvement"]), "The user wants to design or create a tool, not execute one."
+    if intent == "tool_update_request":
+        return _first_available(available, ["tool_usage", current, "self_improvement"]), "The user wants to update an existing tool asset; this uses review, not skill self-evolution."
     if _has_any(message, ["\u5de5\u5177", "\u547d\u4ee4", "tool", "api", "\u63a5\u53e3"]) or intent == "explanation_request":
         return _first_available(available, ["tool_usage", current, "self_improvement"]), "The request is about tools, commands, APIs, or error diagnosis."
     return None, "General assistant answer; no workspace skill is needed."
@@ -2081,7 +3646,9 @@ def _load_chat_context(
     if intent in {
         "skill_list_query",
         "writing_request",
+        "direct_tool_use",
         "tool_creation_request",
+        "tool_update_request",
         "skill_creation_request",
         "skill_update_request",
         "file_write_request",
@@ -2101,7 +3668,21 @@ def _load_chat_context(
                 summary=f"Loaded {len(skills)} workspace skills.",
             )
         )
-    if intent in {"workspace_status_query", "promotion_query", "evolution_action_request"}:
+    if intent in {"direct_tool_use", "tool_creation_request", "tool_update_request"}:
+        tools = _tool_views(ctx)
+        loaded["tools"] = tools
+        trace.append(
+            _trace(
+                "tool_call",
+                "API request",
+                tool_name="safeharness",
+                method="GET",
+                path="/api/tools",
+                status="completed",
+                summary=f"Loaded {len(tools)} workspace tools.",
+            )
+        )
+    if intent in {"workspace_status_query", "promotion_query", "evolution_action_request", "workflow_request"}:
         reviews = _reviews(ctx)
         promotions = _promotions(ctx)
         versions = _all_versions(ctx)
@@ -2171,6 +3752,13 @@ def _looks_like_tool_creation_request(message: str) -> bool:
     return has_tool_noun and has_creation_verb and "skill" not in text
 
 
+def _looks_like_tool_update_request(message: str) -> bool:
+    has_tool_noun = _has_any(message, ["\u5de5\u5177", "tool", "\u63a5\u53e3", "api"])
+    has_update_verb = _has_any(message, ["\u4fee\u6539", "\u6539\u6210", "\u66f4\u65b0", "\u8c03\u6574", "update", "change", "modify"])
+    has_existing_hint = _has_any(message, ["\u5df2\u6709", "\u73b0\u6709", "existing", "schema", "tools/"])
+    return has_tool_noun and has_update_verb and has_existing_hint
+
+
 def _looks_like_skill_creation_request(message: str) -> bool:
     text = message.lower()
     has_skill = "skill" in text or "\u6280\u80fd" in message
@@ -2200,7 +3788,7 @@ def _looks_like_file_read_request(message: str) -> bool:
 
 
 def _looks_like_file_write_request(message: str) -> bool:
-    return _has_any(message, ["\u5199\u5165", "\u5199\u4e00\u6bb5", "\u5199\u4e00\u4e2a", "\u521b\u5efa\u6587\u4ef6", "\u65b0\u589e\u6587\u4ef6", "write", "create file"]) and bool(_extract_path(message))
+    return _has_any(message, ["\u5199", "\u5199\u5165", "\u5199\u4e00\u6bb5", "\u5199\u4e00\u4e2a", "\u521b\u5efa\u6587\u4ef6", "\u65b0\u589e\u6587\u4ef6", "write", "create file"]) and bool(_extract_path(message))
 
 
 def _looks_like_command_request(message: str) -> bool:
@@ -2298,6 +3886,26 @@ def _extract_skill_name(message: str) -> str:
     if "markdown_writer" in text:
         return "markdown_writer"
     return normalize_name(text) if re.fullmatch(r"[A-Za-z0-9_.-]+", text) else ""
+
+
+def _extract_tool_name(message: str) -> str:
+    text = message.strip()
+    patterns = [
+        r"\b([A-Za-z0-9_.-]+)\s+tool\b",
+        r"\btool\s+([A-Za-z0-9_.-]+)\b",
+        r"tools[/\\]([A-Za-z0-9_.-]+)(?:[/\\]|$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            candidate = match.group(1)
+            if candidate.lower() not in {"create", "build", "new", "tool"}:
+                return normalize_name(candidate)
+    if _has_any(text, ["weather", "\u5929\u6c14"]):
+        return "weather_query"
+    if re.fullmatch(r"[A-Za-z0-9_.-]+", text):
+        return normalize_name(text)
+    return ""
 
 
 def _extract_write_content(message: str, path: str) -> str:
@@ -2654,6 +4262,32 @@ def _chat_review_action(
             ],
         )
     patch = _patch_for_review(ctx, review["review_id"])
+    if _review_requires_patch_preview(review) and not _patch_has_changes(str(patch.get("patch", ""))):
+        return _chat_result(
+            "approval_required",
+            used_skill,
+            skill_reason,
+            "Cannot apply: patch preview is empty.",
+            "No durable memory was captured.",
+            risk="safe_write_preview",
+            actions=[
+                _action("Regenerate patch", "POST", f"/api/reviews/{review['review_id']}/approve", True, kind="regenerate_patch"),
+                _action("Cancel", "LOCAL", "cancel", False, kind="cancel"),
+            ],
+            data={"review": review, "patch": patch},
+            trace=[
+                _reasoning_trace(_intent_summary("review_action_request")),
+                _trace(
+                    "tool_call",
+                    "API request",
+                    tool_name="safeharness",
+                    method="GET",
+                    path=f"/api/reviews/{review['review_id']}/patch",
+                    status="failed",
+                    summary="Cannot apply: patch preview is empty.",
+                ),
+            ],
+        )
     action = _action("Apply reviewed change", "POST", f"/api/reviews/{review['review_id']}/apply", True)
     output = (
         f"{review['review_id']} requires explicit confirmation before apply. "
@@ -2735,6 +4369,27 @@ def _draft_answer(message: str, intent: str) -> str:
 
 
 def _tool_design_answer(message: str) -> str:
+    inference = _infer_tool_request(message)
+    tool_name = str(inference.get("tool_name") or "tool")
+    template = _tool_template(tool_name, "")
+    provider_requirements = template.get("provider_requirements", [])
+    provider_text = ", ".join(provider_requirements) if provider_requirements else "none"
+    if template.get("capability") in {"web_search", "internet_search", "browser_search"}:
+        return "\n".join(
+            [
+                f"我理解你想创建一个联网搜索工具，建议命名为 {tool_name}。",
+                "它适合作为 Tool，而不是 Skill，因为它是外部信息检索能力。",
+                "",
+                "将创建：",
+                f"- tools/{tool_name}/tool.yaml",
+                f"- tools/{tool_name}/README.md",
+                f"- tools/{tool_name}/eval/cases.yaml",
+                "",
+                f"Provider requirements: {provider_text}",
+                "Capability: search web pages by query and return title, url, snippet, source, retrieved_at.",
+                "Risk level: medium, confirmation required before writing files.",
+            ]
+        )
     if _has_any(message, ["\u5929\u6c14", "weather"]):
         return "\n".join(
             [
@@ -2748,7 +4403,20 @@ def _tool_design_answer(message: str) -> str:
                 "- \u9a8c\u6536\uff1a\u8986\u76d6\u7f3a\u5c11\u57ce\u5e02\u3001\u4e0a\u6d77\u4eca\u65e5\u5929\u6c14\u3001provider \u5931\u8d25\u3001\u4e2d\u82f1\u6587\u8f93\u51fa\u56db\u7c7b\u7528\u4f8b",
             ]
         )
-    return "\u53ef\u4ee5\u3002\u6211\u4f1a\u5148\u5b9a\u4e49 tool \u7684\u8f93\u5165 schema\u3001\u6267\u884c\u8fb9\u754c\u3001\u9519\u8bef\u8bed\u4e49\u3001\u5b89\u5168\u7ea6\u675f\u548c\u9a8c\u6536\u7528\u4f8b\uff0c\u518d\u628a\u5b9e\u73b0\u653e\u5230 review/approval \u6d41\u7a0b\u91cc\u3002"
+    return "\n".join(
+        [
+            f"我理解你想创建 {tool_name} 工具。",
+            "",
+            "将创建：",
+            f"- tools/{tool_name}/tool.yaml",
+            f"- tools/{tool_name}/README.md",
+            f"- tools/{tool_name}/eval/cases.yaml",
+            "",
+            f"Provider requirements: {provider_text}",
+            f"Capability: {template.get('capability') or tool_name}",
+            "Risk level: medium, confirmation required before writing files.",
+        ]
+    )
 
 
 def _skill_creation_proposal(message: str) -> str:
@@ -2783,22 +4451,121 @@ def _skill_creation_design_answer(skill_name: str) -> str:
 
 
 def _skill_name_for_tool_request(message: str) -> str:
-    explicit = _extract_skill_name(message)
-    if explicit and explicit not in {"skill", "tool"}:
-        return explicit
-    if _has_any(message, ["weather", "\u5929\u6c14"]):
-        return "weather_query"
-    if _has_any(message, ["prd", "PRD"]):
-        return "prd_writer"
-    return "custom_tool"
+    inference = _infer_tool_request(message)
+    return str(inference.get("tool_name") or "")
 
 
 def _skill_description_for_tool_request(skill_name: str, message: str) -> str:
-    if skill_name == "weather_query":
-        return "Query weather by city and date using a configured provider without fabricating realtime data."
-    if skill_name == "prd_writer":
-        return "Draft PRD documents from structured product requirements."
-    return f"Workspace skill proposed from Chat request: {message[:120]}"
+    if not skill_name:
+        return ""
+    template = _tool_template(skill_name, "")
+    if template.get("template") != "generic_tool":
+        return str(template.get("description", ""))
+    return _description_from_tool_request(skill_name, message)
+
+
+def _infer_tool_request(message: str) -> dict[str, Any]:
+    explicit = _extract_explicit_tool_name(message)
+    candidates: list[str] = []
+    reason = ""
+    if explicit:
+        candidates.append(explicit)
+        reason = "Explicit tool name was provided."
+    if _has_any(message, ["weather", "\u5929\u6c14"]):
+        candidates.append("weather_query")
+        reason = "Weather lookup intent maps to weather_query."
+    if _looks_like_web_search_tool(message):
+        candidates.append("web_search")
+        reason = "External internet or webpage search maps to web_search."
+    if _has_any(message, ["browser search", "browser_search", "\u6d4f\u89c8\u5668\u641c\u7d22"]):
+        candidates.append("browser_search")
+        reason = "Browser-backed search was mentioned."
+    if _has_any(message, ["file reader", "read file", "\u6587\u4ef6\u8bfb\u53d6", "\u8bfb\u53d6\u6587\u4ef6"]):
+        candidates.append("file_reader")
+        reason = "Workspace file reading maps to file_reader."
+    if _has_any(message, ["git status", "git_status", "git \u72b6\u6001"]):
+        candidates.append("git_status")
+        reason = "Git status maps to git_status."
+    if _has_any(message, ["command runner", "command_runner", "\u547d\u4ee4\u6267\u884c", "\u8fd0\u884c\u547d\u4ee4"]):
+        candidates.append("command_runner")
+        reason = "Command execution maps to command_runner."
+    if _has_any(message, ["doc writer", "doc_writer", "\u6587\u6863\u751f\u6210", "\u5199\u6587\u6863"]):
+        candidates.append("doc_writer")
+        reason = "Document generation maps to doc_writer."
+    if _has_any(message, ["prd", "PRD"]):
+        candidates.append("doc_writer")
+        reason = "PRD drafting maps to doc_writer."
+
+    unique = []
+    for candidate in candidates:
+        normalized = _normalize_tool_name(candidate)
+        if normalized and normalized not in unique:
+            unique.append(normalized)
+
+    meaningful = [candidate for candidate in unique if candidate not in {"tool", "custom_tool"}]
+    if len(meaningful) > 1:
+        primary_family = {_canonical_tool_name(candidate) for candidate in meaningful}
+        if len(primary_family) == 1:
+            meaningful = [meaningful[0]]
+    if meaningful:
+        return {
+            "tool_name": meaningful[0],
+            "candidates": meaningful,
+            "needs_clarification": len(meaningful) > 1,
+            "reason": reason or "Tool name inferred from the request.",
+        }
+
+    return {
+        "tool_name": "",
+        "candidates": [],
+        "needs_clarification": True,
+        "reason": "The request asks for a tool but does not specify a clear purpose or name.",
+    }
+
+
+def _looks_like_web_search_tool(message: str) -> bool:
+    text = message.lower()
+    return (
+        _has_any(message, ["\u4e92\u8054\u7f51", "\u8054\u7f51", "\u7f51\u9875", "\u641c\u7d22\u7f51\u9875", "\u67e5\u8be2\u4e92\u8054\u7f51"])
+        or "web search" in text
+        or "internet search" in text
+        or "search web" in text
+        or "search webpages" in text
+    )
+
+
+def _extract_explicit_tool_name(message: str) -> str:
+    text = message.strip()
+    patterns = [
+        r"\b([A-Za-z][A-Za-z0-9_.-]*_[A-Za-z0-9_.-]+)\s+tool\b",
+        r"\btool\s+([A-Za-z][A-Za-z0-9_.-]*_[A-Za-z0-9_.-]+)\b",
+        r"tools[/\\]([A-Za-z0-9_.-]+)(?:[/\\]|$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            candidate = _normalize_tool_name(match.group(1))
+            if candidate and candidate not in MEANINGLESS_TOOL_WORDS:
+                return candidate
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", text):
+        candidate = _normalize_tool_name(text)
+        if candidate not in MEANINGLESS_TOOL_WORDS:
+            return candidate
+    return ""
+
+
+def _normalize_tool_name(value: str) -> str:
+    text = value.strip()
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    text = re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_").lower()
+    return normalize_name(text)
+
+
+def _description_from_tool_request(tool_name: str, message: str) -> str:
+    cleaned = message.strip()
+    if cleaned:
+        return f"Tool for {cleaned[:100]}"
+    return f"Workspace tool for {tool_name.replace('_', ' ')}."
 
 def _current_promo(ctx: WebContext, context: dict[str, Any]) -> dict[str, Any] | None:
     wanted = str(context.get("current_promo_id", "") or "").strip()
@@ -2810,6 +4577,11 @@ def _current_promo(ctx: WebContext, context: dict[str, Any]) -> dict[str, Any] |
         if promo.get("promotion_decision") == "promote" and promo.get("eligible_target") == "skill_rule"
     ]
     return actionable[0] if actionable else (promos[0] if promos else None)
+
+
+def _extract_review_id(message: str) -> str:
+    match = re.search(r"\bREV-[A-Z0-9]{8}\b", message.upper())
+    return match.group(0) if match else ""
 
 
 def _current_review(ctx: WebContext, message: str, context: dict[str, Any]) -> dict[str, Any] | None:
@@ -2860,17 +4632,78 @@ def _evolution_state_for_promo(ctx: WebContext, promo_id: str) -> dict[str, Any]
 def _patch_for_review(ctx: WebContext, review_id: str) -> dict[str, Any]:
     patch_path = ctx.project_root / ".reviews" / "patches" / f"{review_id}.diff"
     if patch_path.exists():
-        return {"has_patch": True, "patch_path": _display_path(ctx, patch_path), "patch": patch_path.read_text(encoding="utf-8")}
+        patch = patch_path.read_text(encoding="utf-8")
+        has_changes = _patch_has_changes(patch)
+        return {
+            "has_patch": True,
+            "has_changes": has_changes,
+            "patch_path": _display_path(ctx, patch_path),
+            "patch": patch,
+            "apply_blocked_reason": "" if has_changes else "Cannot apply: patch preview is empty.",
+        }
     review = ctx.review_store.get_review(review_id)
     if review and review.get("status") == "approved":
         try:
             _review, generated = ctx.review_store.approve_review(review_id)
             if generated and Path(generated).exists():
                 path = Path(generated)
-                return {"has_patch": True, "patch_path": _display_path(ctx, path), "patch": path.read_text(encoding="utf-8")}
+                patch = path.read_text(encoding="utf-8")
+                has_changes = _patch_has_changes(patch)
+                return {
+                    "has_patch": True,
+                    "has_changes": has_changes,
+                    "patch_path": _display_path(ctx, path),
+                    "patch": patch,
+                    "apply_blocked_reason": "" if has_changes else "Cannot apply: patch preview is empty.",
+                }
         except ValueError:
             pass
-    return {"has_patch": False, "patch_path": "", "patch": ""}
+    return {"has_patch": False, "has_changes": False, "patch_path": "", "patch": "", "apply_blocked_reason": "Cannot apply: patch preview is empty."}
+
+
+def _patch_has_changes(patch: str) -> bool:
+    for line in patch.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            return True
+        if line.startswith("-") and not line.startswith("---"):
+            return True
+    return False
+
+
+def _review_requires_patch_preview(review: dict[str, Any]) -> bool:
+    review_type = str(review.get("type", ""))
+    if review_type in {"skill.regression_case", "skill.promotion", "skill.creation", "file.write", "tool.update"}:
+        return True
+    return bool(review.get("tool_name") in {"write_file", "edit_file"})
+
+
+def _structured_review_apply_error(message: str) -> dict[str, Any]:
+    overwrite_match = re.search(r"Refusing to overwrite existing file:\s*(.+)$", message)
+    if overwrite_match:
+        path = overwrite_match.group(1).strip()
+        return {
+            "message": "Existing file detected.",
+            "errors": [message],
+            "status_code": 409,
+            "error_code": "FILE_ALREADY_EXISTS",
+            "path": path,
+            "suggested_actions": [
+                "view_diff",
+                "create_review",
+                "overwrite_after_confirmation",
+                "cancel",
+            ],
+            "data": {
+                "path": path,
+                "suggested_actions": [
+                    "view_diff",
+                    "create_review",
+                    "overwrite_after_confirmation",
+                    "cancel",
+                ],
+            },
+        }
+    return {"message": message, "errors": [message], "status_code": 400}
 
 
 def _chat_continue_promotion(

@@ -79,7 +79,7 @@ Production direction: PostgreSQL or Redis with TTL, idempotent updates, actor at
 - `LocalMessageStore`: `.team/inbox/*.jsonl`
 - `LocalJobQueue`: daemon threads and in-process job dictionary
 - `LocalAgentRunner`: daemon threads and `.team/config.json`
-- `LocalReviewStore`: in-process dictionaries for legacy plan/shutdown state plus `.reviews/REV-*.json`, `.reviews/patches/*.diff`, and `.reviews/apply_audit.jsonl` for human review items, patch previews, and guarded apply events. Approved applies support reviewed skill loads, regression cases, skill promotions, skill creation reviews, and reviewed file writes.
+- `LocalReviewStore`: in-process dictionaries for legacy plan/shutdown state plus `.reviews/REV-*.json`, `.reviews/patches/*.diff`, and `.reviews/apply_audit.jsonl` for human review items, patch previews, and guarded apply events. Approved applies support reviewed skill loads, regression cases, skill promotions, skill creation reviews, tool update reviews, and reviewed file writes.
 
 LocalBackend preserves existing behavior for development and demos.
 

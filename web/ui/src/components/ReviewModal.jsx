@@ -37,6 +37,7 @@ export default function ReviewModal({
   const canPreview = status === "pending";
   const canApply = status === "approved";
   const canReject = status === "pending";
+  const emptyPatch = canApply && reviewNeedsPatch(review) && !patch?.has_changes;
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-zinc-950/20 px-4 py-8 backdrop-blur-sm">
@@ -98,6 +99,11 @@ export default function ReviewModal({
 
               <Section title="Diff Preview">
                 <DiffPreview patch={patch?.patch} />
+                {emptyPatch ? (
+                  <p className="mt-3 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-sm font-medium text-risk">
+                    {patch?.apply_blocked_reason || "Cannot apply: patch preview is empty."}
+                  </p>
+                ) : null}
               </Section>
             </div>
           )}
@@ -114,7 +120,12 @@ export default function ReviewModal({
               Approve Preview
             </button>
           ) : null}
-          {canApply ? (
+          {emptyPatch ? (
+            <button className="subprimary-button" onClick={onApprove} disabled={busy}>
+              Regenerate Patch
+            </button>
+          ) : null}
+          {canApply && !emptyPatch ? (
             <button className="primary-button" onClick={onApply} disabled={busy}>
               Apply Change
             </button>
@@ -123,4 +134,11 @@ export default function ReviewModal({
       </section>
     </div>
   );
+}
+
+function reviewNeedsPatch(review) {
+  const type = review?.type || "";
+  const toolName = review?.tool_name || "";
+  return ["skill.regression_case", "skill.promotion", "skill.creation", "file.write", "tool.update"].includes(type)
+    || ["write_file", "edit_file"].includes(toolName);
 }

@@ -166,6 +166,8 @@ class ReviewQueue:
             message = self._apply_skill_promotion(item)
         elif item.type == "skill.creation":
             message = self._apply_skill_creation(item)
+        elif item.type == "tool.update":
+            message = self._apply_tool_update(item)
         elif item.type == "file.write":
             message = self._apply_file_write(item)
         elif self._is_load_skill_review(item):
@@ -189,7 +191,7 @@ class ReviewQueue:
         tool_name = item.tool_name or item.metadata.get("tool_name", "")
         if item.type == "skill.promotion" and item.target_files:
             return self._diff_for_skill_promotion(item)
-        if item.type == "skill.creation" and item.target_files:
+        if item.type in {"skill.creation", "tool.update"} and item.target_files:
             return self._diff_for_proposed_files(item)
         if item.type == "skill.regression_case" and item.target_files:
             return self._diff_for_regression_case(item)
@@ -371,22 +373,66 @@ class ReviewQueue:
         proposed_files = item.metadata.get("proposed_files", {})
         if not isinstance(proposed_files, dict) or not proposed_files:
             raise ValueError("Skill creation review has no proposed files.")
+        missing_targets = []
         for target_file in item.target_files:
             if target_file not in proposed_files:
                 raise ValueError(f"Skill creation review is missing proposed content for {target_file}.")
-            if (self.workdir / target_file).exists():
+            path = (self.workdir / target_file).resolve()
+            try:
+                path.relative_to(self.workdir.resolve())
+            except ValueError:
+                raise ValueError(f"Refusing to write outside workdir: {target_file}")
+            if not path.exists():
+                missing_targets.append(target_file)
+                continue
+            current = path.read_text(encoding="utf-8")
+            proposed = str(proposed_files[target_file])
+            if current != proposed:
                 raise ValueError(f"Refusing to overwrite existing file: {target_file}")
-        for target_file in item.target_files:
+        for target_file in missing_targets:
             self._write_target(target_file, str(proposed_files[target_file]))
         skill_file = f"skills/{item.target_skill}/SKILL.md"
-        if skill_file in proposed_files:
+        existing_versions = self.evolution_registry.list_versions(item.target_skill)
+        review_already_recorded = any(
+            record.get("skill_review_id") == item.review_id
+            for record in existing_versions
+        )
+        if skill_file in proposed_files and not review_already_recorded and (missing_targets or not existing_versions):
             self.evolution_registry.record_skill_creation(
                 skill=item.target_skill,
                 skill_review=item.to_dict(),
                 target_file=skill_file,
                 new_content=str(proposed_files[skill_file]),
             )
+        if not missing_targets:
+            return f"Skill {item.target_skill} already matches the reviewed files; no file change was needed."
         return f"Created skill {item.target_skill} with {len(item.target_files)} reviewed files."
+
+    def _apply_tool_update(self, item: ReviewItem) -> str:
+        proposed_files = item.metadata.get("proposed_files", {})
+        if not isinstance(proposed_files, dict) or not proposed_files:
+            raise ValueError("Tool update review has no proposed files.")
+        written = []
+        for target_file in item.target_files:
+            if target_file not in proposed_files:
+                raise ValueError(f"Tool update review is missing proposed content for {target_file}.")
+            path = (self.workdir / target_file).resolve()
+            try:
+                path.relative_to(self.workdir.resolve())
+            except ValueError:
+                raise ValueError(f"Refusing to write outside workdir: {target_file}")
+            normalized = target_file.replace("\\", "/")
+            if not normalized.startswith(f"tools/{item.target_skill}/"):
+                raise ValueError(f"Tool update target must stay under tools/{item.target_skill}/.")
+            current = path.read_text(encoding="utf-8") if path.exists() else ""
+            proposed = str(proposed_files[target_file])
+            if current == proposed:
+                continue
+            self._write_target(target_file, proposed)
+            written.append(target_file)
+        if not written:
+            return f"Tool {item.target_skill} already matches the reviewed files; no file change was needed."
+        return f"Applied tool update for {item.target_skill} to {len(written)} file(s)."
 
     def _apply_skill_promotion(self, item: ReviewItem) -> str:
         if not item.target_files:

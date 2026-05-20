@@ -27,6 +27,8 @@ const TYPE_STYLES = {
   skill_result: { label: "Skill result", icon: Brain, className: "bg-blue-50 text-appleBlue" },
   memory_captured: { label: "Memory captured", icon: Brain, className: "bg-emerald-50 text-emerald-700" },
   proposed_action: { label: "Proposed action", icon: ShieldCheck, className: "bg-amber-50 text-risk" },
+  clarification: { label: "Clarification", icon: Route, className: "bg-blue-50 text-appleBlue" },
+  refused: { label: "Refused", icon: ShieldCheck, className: "bg-red-50 text-red-700" },
   review_created: { label: "Review created", icon: ClipboardCheck, className: "bg-amber-50 text-risk" },
   file_result: { label: "File result", icon: FileText, className: "bg-zinc-100 text-zinc-700" },
   command_result: { label: "Command result", icon: Terminal, className: "bg-zinc-100 text-zinc-700" },
@@ -75,12 +77,12 @@ function Bubble({ role, message, children, time, onAction }) {
               ) : null}
               {message.intent ? (
                 <span className="rounded bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-500">
-                  {message.intent}
+                  {displayIntent(message.intent)}
                 </span>
               ) : null}
               {message.risk ? (
                 <span className="rounded bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-500">
-                  {message.risk}
+                  {displayRisk(message.risk)}
                 </span>
               ) : null}
             </div>
@@ -136,6 +138,11 @@ const TRACE_ICONS = {
   approval_event: ClipboardCheck,
   final_result: Check,
   next_action: ShieldCheck,
+  asset_type: Database,
+  asset_route: Route,
+  preflight: ShieldCheck,
+  safety_check: ShieldCheck,
+  risk_decision: ShieldCheck,
 };
 
 const TRACE_LABELS = {
@@ -148,6 +155,11 @@ const TRACE_LABELS = {
   approval_event: "Approval",
   final_result: "Final",
   next_action: "Next action",
+  asset_type: "Asset type",
+  asset_route: "Asset route",
+  preflight: "Preflight",
+  safety_check: "Safety check",
+  risk_decision: "Risk decision",
 };
 
 function TraceList({ trace }) {
@@ -254,6 +266,17 @@ function traceDetails(item) {
     "review_type",
     "severity",
     "target_asset",
+    "asset_type",
+    "target",
+    "workspace_scope",
+    "secret_scan",
+    "existing_file_check",
+    "primary_intent",
+    "candidate_intents",
+    "needs_clarification",
+    "risk_labels",
+    "asset_name",
+    "risk",
     "preview_content",
     "stdout",
     "stderr",
@@ -266,6 +289,18 @@ function traceDetails(item) {
   return keys
     .filter((key) => item[key])
     .map((key) => [titleLabel(key), item[key]]);
+}
+
+function displayIntent(intent) {
+  if (!intent) return "";
+  if (typeof intent === "string") return intent;
+  return intent.primary || "unknown";
+}
+
+function displayRisk(risk) {
+  if (!risk) return "";
+  if (typeof risk === "string") return risk;
+  return risk.level || "safe_read";
 }
 
 function titleLabel(value) {

@@ -1,0 +1,19 @@
+tool: custom_tool
+cases:
+  - id: missing_city
+    input:
+      date: today
+    expect_error: missing_city
+  - id: provider_success
+    input:
+      city: Shanghai
+      date: today
+      units: metric
+    expect_fields:
+      - summary
+      - current_conditions
+  - id: provider_unavailable
+    input:
+      city: Shanghai
+    simulate_provider_error: true
+    must_not_fabricate: true

@@ -1062,6 +1062,47 @@ class SelfImprovementLoopTests(unittest.TestCase):
             self.assertIn("+# review queue test", patch)
             self.assertEqual(target.read_text(encoding="utf-8"), original)
 
+    def test_skill_creation_apply_is_idempotent_when_files_already_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill_file = root / "skills" / "weather_query" / "SKILL.md"
+            eval_file = root / "skills" / "weather_query" / "eval" / "cases.yaml"
+            skill_content = "---\nname: weather_query\n---\n\n# weather_query\n"
+            eval_content = "skill: weather_query\ncases: []\n"
+            skill_file.parent.mkdir(parents=True)
+            eval_file.parent.mkdir(parents=True)
+            skill_file.write_text(skill_content, encoding="utf-8")
+            eval_file.write_text(eval_content, encoding="utf-8")
+            queue = ReviewQueue(root / ".reviews", root)
+
+            item = queue.create(
+                type="skill.creation",
+                source="chat_runtime",
+                target_skill="weather_query",
+                target_files=[
+                    "skills/weather_query/SKILL.md",
+                    "skills/weather_query/eval/cases.yaml",
+                ],
+                reason="Create weather_query skill.",
+                proposed_change="Create weather_query skill files.",
+                metadata={
+                    "proposed_files": {
+                        "skills/weather_query/SKILL.md": skill_content,
+                        "skills/weather_query/eval/cases.yaml": eval_content,
+                    }
+                },
+            )
+            item = queue.approve(item.review_id)
+            patch = queue.write_patch_preview(item).read_text(encoding="utf-8")
+            self.assertIn("# No diff for skills/weather_query/SKILL.md", patch)
+
+            applied, message = queue.apply(item.review_id)
+
+            self.assertEqual(applied.status, "applied")
+            self.assertIn("already matches", message)
+            self.assertEqual(skill_file.read_text(encoding="utf-8"), skill_content)
+            self.assertEqual(eval_file.read_text(encoding="utf-8"), eval_content)
+
     def test_promotion_browser_lists_and_shows_existing_promo(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
