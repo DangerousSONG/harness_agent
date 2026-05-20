@@ -3,16 +3,16 @@ import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import { compact, formatDate, titleize } from "../lib/format";
 
-export default function ReviewsPage({ reviews, actionProps }) {
+export default function ReviewsPage({ reviews, actionProps, embedded = false }) {
   return (
     <section className="workbench-section">
       <div className="workbench-container">
-        <div className="mb-6">
+        {!embedded ? <div className="mb-6">
           <h1 className="page-title">Reviews</h1>
           <p className="page-subtitle">
             Approval, preview, apply, and reject actions stay behind the backend review queue.
           </p>
-        </div>
+        </div> : null}
         {!reviews?.length ? (
           <EmptyState title="No reviews waiting for approval." />
         ) : (

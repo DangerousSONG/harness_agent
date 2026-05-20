@@ -2,23 +2,28 @@ import {
   BotMessageSquare,
   Boxes,
   Check,
+  ChevronDown,
+  GitCommitHorizontal,
   GitPullRequest,
-  Layers3,
+  Library,
   Monitor,
-  Rocket,
+  Settings,
   ShieldCheck,
-  Sparkles,
 } from "lucide-react";
+import { useState } from "react";
 import { nextActionLabel, titleize } from "../lib/format";
 import StatusPill from "./StatusPill";
 
 const nav = [
   { id: "chat", label: "Chat", icon: BotMessageSquare },
-  { id: "reviews", label: "Reviews", icon: GitPullRequest },
-  { id: "assets", label: "Assets", icon: Boxes },
-  { id: "promotions", label: "Promotions", icon: Rocket },
-  { id: "evolution", label: "Evolution", icon: Sparkles },
-  { id: "versions", label: "Versions", icon: Layers3 },
+  { id: "workspace", label: "Workspace", icon: Monitor },
+  { id: "settings", label: "Settings", icon: Settings },
+];
+
+const assetNav = [
+  { id: "assets-library", label: "Library", icon: Library },
+  { id: "assets-changes", label: "Changes", icon: GitCommitHorizontal },
+  { id: "assets-governance", label: "Governance", icon: GitPullRequest },
 ];
 
 function StepDot({ status, active }) {
@@ -186,6 +191,13 @@ export default function AppShell({
   onNextAction,
   nextActionBusy,
 }) {
+  const assetsActive = page.startsWith("assets-");
+  const [assetsOpen, setAssetsOpen] = useState(true);
+  const mobileNav = [
+    ...nav.slice(0, 2),
+    ...assetNav,
+    nav[2],
+  ];
   return (
     <div className="flex h-screen overflow-hidden bg-mist text-ink">
       <aside className="hidden w-56 shrink-0 border-r border-line bg-white/70 px-4 py-5 backdrop-blur md:flex md:flex-col">
@@ -199,7 +211,61 @@ export default function AppShell({
           </div>
         </div>
         <nav className="mt-12 space-y-2">
-          {nav.map((item) => {
+          {nav.slice(0, 2).map((item) => {
+            const Icon = item.icon;
+            const active = page === item.id;
+            return (
+              <button
+                key={item.id}
+                className={[
+                  "flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm font-semibold transition",
+                  active ? "bg-blue-50 text-appleBlue" : "text-zinc-700 hover:bg-zinc-100",
+                ].join(" ")}
+                onClick={() => onPageChange(item.id)}
+              >
+                <Icon className="h-4 w-4" />
+                {item.label}
+              </button>
+            );
+          })}
+          <div>
+            <button
+              className={[
+                "flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm font-semibold transition",
+                assetsActive ? "bg-blue-50 text-appleBlue" : "text-zinc-700 hover:bg-zinc-100",
+              ].join(" ")}
+              onClick={() => {
+                setAssetsOpen((open) => !open);
+                if (!assetsActive) onPageChange("assets-library");
+              }}
+            >
+              <Boxes className="h-4 w-4" />
+              <span className="flex-1">Assets</span>
+              <ChevronDown className={["h-4 w-4 transition", assetsOpen ? "rotate-180" : ""].join(" ")} />
+            </button>
+            {assetsOpen ? (
+              <div className="mt-1 space-y-1 pl-5">
+                {assetNav.map((item) => {
+                  const Icon = item.icon;
+                  const active = page === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      className={[
+                        "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold transition",
+                        active ? "bg-white text-appleBlue shadow-hairline" : "text-zinc-600 hover:bg-zinc-100",
+                      ].join(" ")}
+                      onClick={() => onPageChange(item.id)}
+                    >
+                      <Icon className="h-4 w-4" />
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+          {nav.slice(2).map((item) => {
             const Icon = item.icon;
             const active = page === item.id;
             return (
@@ -234,7 +300,7 @@ export default function AppShell({
             value={page}
             onChange={(event) => onPageChange(event.target.value)}
           >
-            {nav.map((item) => (
+            {mobileNav.map((item) => (
               <option value={item.id} key={item.id}>
                 {titleize(item.label)}
               </option>

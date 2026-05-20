@@ -11,6 +11,7 @@ export default function VersionsPage({
   onSelectVersion,
   onCreateRollback,
   busyVersionKey,
+  embedded = false,
 }) {
   const [tab, setTab] = useState("snapshot");
   const selected = versions?.find((item) => versionKey(item) === selectedVersionKey);
@@ -18,12 +19,12 @@ export default function VersionsPage({
   return (
     <section className="workbench-section">
       <div className="workbench-container">
-        <div className="mb-6">
+        {!embedded ? <div className="mb-6">
           <h1 className="page-title">Versions</h1>
           <p className="page-subtitle">
             Skill version history is read-only here. Rollback creates a review instead of changing files.
           </p>
-        </div>
+        </div> : null}
 
         {!versions?.length ? (
           <EmptyState title="No recorded skill versions yet." />

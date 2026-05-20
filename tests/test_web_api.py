@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     from fastapi.testclient import TestClient
@@ -33,6 +34,64 @@ def write_skill(root: Path, skill: str = "markdown_writer") -> None:
         encoding="utf-8",
     )
     (skill_dir / "eval" / "cases.yaml").write_text(f"skill: {skill}\ncases: []\n", encoding="utf-8")
+
+
+def write_weather_tool(root: Path) -> None:
+    tool_dir = root / "tools" / "weather_query"
+    (tool_dir / "eval").mkdir(parents=True, exist_ok=True)
+    (tool_dir / "tool.yaml").write_text(
+        "\n".join(
+            [
+                "name: weather_query",
+                "type: tool",
+                "description: Query weather by city and date using Open-Meteo.",
+                "capability: weather_query",
+                "inputs:",
+                "  city:",
+                "    type: string",
+                "    required: true",
+                "  date:",
+                "    type: string",
+                "    default: today",
+                "outputs:",
+                "  temperature:",
+                "    type: string",
+                "  condition:",
+                "    type: string",
+                "provider_requirements:",
+                "  []",
+                "safety:",
+                "  - Do not fabricate realtime weather.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tool_dir / "README.md").write_text("# weather_query\n", encoding="utf-8")
+    (tool_dir / "eval" / "cases.yaml").write_text("tool: weather_query\ncases: []\n", encoding="utf-8")
+
+
+class FakeWeatherResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self) -> bytes:
+        return json.dumps(
+            {
+                "current": {
+                    "temperature_2m": 24.5,
+                    "weather_code": 2,
+                    "wind_speed_10m": 9.2,
+                },
+                "current_units": {
+                    "temperature_2m": "\u00b0C",
+                    "wind_speed_10m": "km/h",
+                },
+            }
+        ).encode("utf-8")
 
 
 @unittest.skipIf(TestClient is None, "fastapi is not installed")
@@ -336,10 +395,9 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertIntentPrimary(payload, "direct_tool_use")
-            self.assertEqual(payload["type"], "answer")
+            self.assertEqual(payload["type"], "clarification")
             self.assertIsNone(payload["used_skill"])
             self.assertIn("\u57ce\u5e02", payload["message"])
-            self.assertIn("\u5b9e\u65f6\u5929\u6c14", payload["message"])
             self.assertNotIn("I can help with writing", payload["message"])
             self.assertTrue(any(item.get("tool_name") == "weather_query" for item in payload["trace"]))
 
@@ -436,7 +494,81 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(weather["asset_type"], "tool")
             self.assertEqual(weather["schema_path"], "tools/weather_query/tool.yaml")
             self.assertGreaterEqual(weather["eval_cases_count"], 1)
-            self.assertIn("WEATHER_PROVIDER", weather["provider_requirements"])
+            self.assertEqual(weather["provider_requirements"], [])
+            self.assertTrue(weather["handler_available"])
+            self.assertTrue(weather["provider_configured"])
+            self.assertTrue(weather["executable"])
+
+    def test_tool_detail_reports_executable_weather_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_weather_tool(root)
+            client = self.make_client(root)
+            response = client.get("/api/tools/weather_query")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()["data"]
+            self.assertTrue(payload["asset_exists"])
+            self.assertTrue(payload["handler_available"])
+            self.assertTrue(payload["provider_configured"])
+            self.assertTrue(payload["executable"])
+            self.assertEqual(payload["missing"], [])
+
+    def test_tool_run_missing_city_returns_structured_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_weather_tool(root)
+            client = self.make_client(root)
+            response = client.post("/api/tools/weather_query/run", json={"inputs": {}})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["error_code"], "missing_city")
+            self.assertIn("city", payload["missing"])
+
+    def test_tool_run_unknown_asset_reports_not_executable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = self.make_client(root)
+            response = client.post("/api/tools/web_search/run", json={"inputs": {"query": "x"}})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["error_code"], "TOOL_NOT_EXECUTABLE")
+            self.assertIn("asset", payload["missing"])
+
+    def test_chat_weather_missing_city_asks_for_city(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            write_weather_tool(root)
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "\u73b0\u5728\u53ef\u4ee5\u67e5\u8be2\u5929\u6c14\u5417\uff1f"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIntentPrimary(payload, "direct_tool_use")
+            self.assertEqual(payload["type"], "clarification")
+            self.assertIn("\u57ce\u5e02", payload["message"])
+
+    def test_chat_weather_executes_tool_runtime_when_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            write_weather_tool(root)
+            client = self.make_client(root)
+            with patch("runtime.tool_registry.urlopen", return_value=FakeWeatherResponse()):
+                response = client.post("/api/chat", json={"message": "\u73b0\u5728\u53ef\u4ee5\u67e5\u8be2\u4e0a\u6d77\u5929\u6c14\u4e86\u5417\uff1f"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIntentPrimary(payload, "direct_tool_use")
+            self.assertEqual(payload["type"], "tool_result")
+            self.assertIn("weather_query", payload["message"])
+            self.assertIn("24.5", payload["message"])
+            trace_types = [item["type"] for item in payload["trace"]]
+            self.assertIn("safety_check", trace_types)
+            self.assertIn("analyze", trace_types)
+            self.assertIn("tool_route", trace_types)
+            self.assertIn("tool_registry_check", trace_types)
+            self.assertTrue(any(item.get("title") == "Tool run" for item in payload["trace"]))
 
     def test_chat_web_search_tool_creation_infers_semantic_template(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -483,6 +615,25 @@ class WebApiTests(unittest.TestCase):
             self.assertIn("no_secret_query", detail["files"]["eval_cases"]["content"])
             self.assertIn("query", detail["inputs"])
             self.assertIn("results", detail["outputs"])
+
+    def test_changes_endpoint_unifies_reviews_promos_and_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            chat = client.post("/api/chat", json={"message": "\u5e2e\u6211\u5199\u4e00\u4e2a\u67e5\u8be2\u4e92\u8054\u7f51\u7684\u5de5\u5177"}).json()
+            conflict_dir = root / "tools" / "web_search"
+            (conflict_dir / "eval").mkdir(parents=True, exist_ok=True)
+            (conflict_dir / "tool.yaml").write_text("name: web_search\nstatus: custom\n", encoding="utf-8")
+            proposed = client.post("/api/tools/web_search/update-review", json=chat["actions"][0]["payload"])
+            self.assertEqual(proposed.status_code, 200)
+            changes = client.get("/api/changes")
+            self.assertEqual(changes.status_code, 200)
+            rows = changes.json()["data"]
+            self.assertTrue(any(row["asset_type"] == "tool" and row["asset_name"] == "web_search" for row in rows))
+            row = next(row for row in rows if row["asset_type"] == "tool" and row["asset_name"] == "web_search")
+            self.assertEqual(row["operation"], "update")
+            self.assertEqual(row["review_id"], proposed.json()["data"]["review_id"])
 
     def test_chat_generic_tool_creation_asks_clarification(self):
         with tempfile.TemporaryDirectory() as tmp:

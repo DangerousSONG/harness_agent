@@ -4,6 +4,24 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-20
 
+### Console Navigation IA
+
+- Reorganized the SafeHarness Console navigation so Chat is the first entry, Workspace and Settings stay top-level, and Assets becomes the single expandable asset-management section.
+- Collapsed Assets sidebar children to Library, Changes, and Governance; moved fine-grained categories into page-level tabs for Library (Skills, Tools, Workflows, Memories, Eval Cases), Changes (Proposed, Review Required, Applied, Failed, Archived), and Governance (Reviews, Versions, Rollbacks, Safety Checks).
+- Added lightweight History API route mapping and legacy redirects for old asset/review/version/change paths to the new `/assets/...` structure.
+- Kept existing review, version, rollback, and change actions wired through their existing components under the new Governance and Changes pages.
+- Validation: `npm.cmd --prefix web/ui run build`.
+
+### Executable Tool Runtime
+
+- Added `runtime/tool_registry.py` with file-backed Tool Asset scanning, handler/provider checks, executable status, structured missing requirements, and a runtime `run` path separate from static `tools/<tool>/tool.yaml` assets.
+- Added `POST /api/tools/{tool_name}/run`; non-executable tools now return `TOOL_NOT_EXECUTABLE` with concrete missing items and suggested actions instead of a generic external-data note.
+- Implemented a minimal `weather_query` executable handler using the no-key Open-Meteo provider with baseline city resolution for 上海, 北京, Singapore, and San Francisco; missing city, unknown city, and provider outages return structured errors without fabricated weather.
+- Integrated direct weather Chat requests with ToolRegistry checks, Tool run traces, executable runtime calls, city clarification, and specific non-executable remediation actions.
+- Updated Assets > Tools details to show asset/handler/provider/executable status, provider requirements, missing requirements, and a Test tool runner backed by `/api/tools/{tool_name}/run`.
+- Removed weather API-key requirements from `weather_query` asset templates and the existing weather asset because Open-Meteo requires no key.
+- Validation: bundled Python `compileall` over `harness runtime tools safety web tests`; `tests.test_web_api` with `.venv` site-packages on `PYTHONPATH`; `"q" | python .\harness\agent_harness.py` through bundled Python plus `.venv` dependencies; `npm.cmd --prefix web/ui run build`.
+
 ### Chat Create vs Evolve Routing
 
 - Upgraded Chat into a Workspace Orchestrator/Supervisor pipeline that runs input safety gating before routing, returns structured intent candidates, asset routing, risk decisions, and visible `safety_check` / `asset_route` / `risk_decision` trace cards for every normal Chat response.
@@ -19,6 +37,8 @@ This file records meaningful project iterations. When judging current state, rea
 - Blocked reviewed applies when the patch preview contains no file changes; the API and UI now report `Cannot apply: patch preview is empty.` and offer regenerate/cancel instead of showing Continue/Apply for no-diff patches.
 - Expanded `GET /api/tools` and Assets > Tools to include file-backed tool assets with schema path, eval case count, status, last modified time, and provider requirements alongside registered runtime tools.
 - Reworked Chat tool creation inference and templates so requests such as internet/web search create a semantic `web_search` tool with search provider requirements, generic tool requests ask for clarification instead of creating `custom_tool`, and Assets > Tools now opens file-backed details with Overview, Schema, README, and Eval Cases tabs.
+- Reframed the Console into a Git-like SafeHarness Workspace UI: added Workspace Overview, a unified Changes page, Settings summary, and an asset detail model for Skill/Tool/Workflow assets with Files, Changes, Reviews, Versions, Eval Cases, and Memory tabs while keeping review/apply/rollback actions behind existing APIs.
+- Added `GET /api/changes` and dashboard asset/change metadata so Create route outputs, PROMO/evolve proposals, reviews, and versions can be shown as one Asset -> Change -> Review -> Apply -> Version -> Rollback chain.
 - Validation: bundled Python `compileall` over `harness runtime tools safety web tests`; `tests.test_web_api` with `.venv` site-packages on `PYTHONPATH`; `"q" | python .\harness\agent_harness.py` through the bundled Python plus `.venv` dependencies; `npm.cmd --prefix web/ui run build`.
 
 ## 2026-05-19

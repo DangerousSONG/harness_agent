@@ -46,6 +46,10 @@ Current tool families:
 - Persistent task board: `task_create`, `task_get`, `task_update`, `task_list`, `claim_task`
 - Messaging and team control: `send_message`, `read_inbox`, `broadcast`, `shutdown_request`, `plan_approval`
 
+File-backed Tool Assets under `tools/<tool_name>/` are separate from executable runtime tools. `runtime/tool_registry.py` scans `tools/*/tool.yaml` or `tool.json`, reads provider requirements, checks whether a handler is registered, reports executable status, and dispatches executable handlers through the web runtime. Static assets may exist without being executable; Chat and the UI must surface missing handler or provider configuration explicitly.
+
+The first executable file-backed tool is `weather_query`. It uses a no-key Open-Meteo handler, baseline city resolution, structured errors for `missing_city`, `city_not_found`, and `provider_unavailable`, and never fabricates realtime weather.
+
 ## Managers
 
 Managers expose stable behavior to tool handlers. They should not own runtime infrastructure directly:
@@ -106,6 +110,8 @@ When Chat sees an explicit long-term preference or correction, it records a lear
 
 Chat exposes workspace runtime APIs for general operations:
 
+- `GET /api/dashboard` returns workspace root, asset counts, pending changes/reviews, latest versions, and current workflow counters for the Workspace Overview.
+- `GET /api/changes` returns a unified change stream derived from reviews, PROMO/evolve proposals, and recorded versions with `change_id`, `asset_type`, `asset_name`, operation, risk, status, review id, version id, and next action.
 - `GET /api/workspace/files/read?path=...` reads non-sensitive workspace files inside the project root.
 - `POST /api/workspace/files/propose-write` creates a write preview for ordinary docs and writes only after confirmation; protected targets create reviews instead.
 - `POST /api/skills/propose` creates a `skill.creation` review for `SKILL.md` plus placeholder eval cases.
@@ -113,6 +119,7 @@ Chat exposes workspace runtime APIs for general operations:
 - `POST /api/tools/create` creates `tools/<tool>/tool.yaml`, `README.md`, and `eval/cases.yaml` after path guard, existing-file check, secret scan, risk classification, and user confirmation.
 - `GET /api/tools` lists registered runtime tools and file-backed tool assets with schema path, eval case count, status, last modified time, and provider requirements.
 - `GET /api/tools/{tool_name}` returns Tool Details metadata plus real file content for the schema, README, and eval cases, marking missing files explicitly.
+- `POST /api/tools/{tool_name}/run` executes a registered executable tool handler and returns either structured results or structured errors such as `TOOL_NOT_EXECUTABLE`, `missing_city`, `city_not_found`, or `provider_unavailable`.
 - `POST /api/tools/{tool_name}/update-review` creates a `tool.update` review for existing tool modifications.
 - `POST /api/workspace/commands/run` runs only small allowlisted commands such as `git status`, `git diff`, directory listing, unit-test, compile, and build validation commands.
 
@@ -124,6 +131,12 @@ Conversational evolution operations stay behind existing APIs:
 - Rollback is routed through the version rollback API and creates a review only.
 
 The Chat response shape includes `run_id`, `intent`, `risk`, `type`, `message`, `used_skill`, `why`, `memory_record_id`, `trace`, `actions`, and `data`, allowing the UI to render normal answers, skill results, file results, command results, memory captures, review-created states, proposed actions, tool results, approval-required states, and errors differently. Ordinary `answer` messages keep `message` as natural-language content and do not force a skill attribution.
+
+## Workspace UI Model
+
+The Console presents SafeHarness assets with a Git-like workspace structure without treating them as ordinary repository files. Workspace Overview summarizes root, asset counts, pending changes, pending reviews, and latest versions. Assets groups versionable Skills, Tools, Workflows/PROMO sources, and Eval Cases. Asset Detail uses Overview, Files, Changes, Reviews, Versions, Eval Cases, and Memory tabs so each agent asset shows its source files, schema/eval content, linked reviews, version snapshots, and memory/PROMO origins.
+
+The Changes page is the shared queue for Create route outputs, Evolve route PROMO proposals, ReviewQueue items, and applied versions. Reviews remain the Pull Request-like approval surface with diff preview, safety/eval metadata, approve/apply/reject actions, and no direct writes before confirmation. Versions remain release-like records with snapshots, patches, eval results, and rollback review creation. Settings is a read-only workspace/model/safety summary; mutating settings should use a reviewed change path.
 
 The minimal risk levels are `safe_read`, `safe_write_preview`, and `high_risk`. Safe reads can run directly. Safe writes must return a preview, proposed action, or review. First-time tool files are medium risk after preflight; differing existing files and existing tool updates are high risk and must not be silently overwritten. High-risk actions such as `.env` reads/writes, destructive deletes, `git push`, network download execution, permission changes, chained shell commands, and audit/git internals are refused or require an explicit higher-trust path outside Chat.
 

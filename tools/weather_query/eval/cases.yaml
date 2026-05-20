@@ -1,0 +1,18 @@
+tool: weather_query
+cases:
+  - id: missing_city
+    input: {}
+    expect_fields:
+      - status
+  - id: provider_success
+    input: {}
+    expect_fields:
+      - status
+  - id: provider_unavailable
+    input: {}
+    expect_fields:
+      - status
+  - id: no_fabricated_weather
+    input: {}
+    expect_fields:
+      - status

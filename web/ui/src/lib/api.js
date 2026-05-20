@@ -35,6 +35,7 @@ async function request(path, options = {}) {
 
 export const api = {
   dashboard: () => request("/api/dashboard"),
+  changes: () => request("/api/changes"),
   reviews: () => request("/api/reviews"),
   review: (id) => request(`/api/reviews/${encodeURIComponent(id)}`),
   reviewPatch: (id) => request(`/api/reviews/${encodeURIComponent(id)}/patch`),
@@ -54,6 +55,8 @@ export const api = {
   assets: () => request("/api/assets"),
   skills: () => request("/api/skills"),
   skill: (name) => request(`/api/skills/${encodeURIComponent(name)}`),
+  skillActive: (name) => request(`/api/skills/${encodeURIComponent(name)}/active`),
+  skillEvalCases: (name) => request(`/api/skills/${encodeURIComponent(name)}/eval-cases`),
   skillVersions: (name) => request(`/api/skills/${encodeURIComponent(name)}/versions`),
   skillVersion: (name, version) =>
     request(
@@ -66,6 +69,11 @@ export const api = {
     }),
   tools: () => request("/api/tools"),
   tool: (name) => request(`/api/tools/${encodeURIComponent(name)}`),
+  runTool: (name, inputs) =>
+    request(`/api/tools/${encodeURIComponent(name)}/run`, {
+      method: "POST",
+      body: JSON.stringify({ inputs: inputs || {} }),
+    }),
   proposeToolCreate: (body) =>
     request("/api/tools/propose-create", {
       method: "POST",

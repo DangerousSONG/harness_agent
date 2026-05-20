@@ -6,11 +6,12 @@ import ReviewModal from "./components/ReviewModal";
 import { api, getErrorMessage } from "./lib/api";
 import { formatDate } from "./lib/format";
 import AssetsPage from "./pages/AssetsPage";
+import ChangesPage from "./pages/ChangesPage";
 import ChatPage from "./pages/ChatPage";
-import EvolutionPage from "./pages/EvolutionPage";
-import PromotionsPage from "./pages/PromotionsPage";
-import ReviewsPage from "./pages/ReviewsPage";
-import VersionsPage, { versionKey } from "./pages/VersionsPage";
+import GovernancePage from "./pages/GovernancePage";
+import SettingsPage from "./pages/SettingsPage";
+import { versionKey } from "./pages/VersionsPage";
+import WorkspacePage from "./pages/WorkspacePage";
 
 const initialMessages = [
   {
@@ -22,8 +23,11 @@ const initialMessages = [
 ];
 
 export default function App() {
-  const [page, setPage] = useState("chat");
-  const [assetTab, setAssetTab] = useState("skills");
+  const initialRoute = routeFromLocation();
+  const [page, setPageState] = useState(initialRoute.page);
+  const [assetTab, setAssetTab] = useState(initialRoute.assetTab || "skills");
+  const [changesTab, setChangesTabState] = useState(initialRoute.changesTab || "proposed");
+  const [governanceTab, setGovernanceTabState] = useState(initialRoute.governanceTab || "reviews");
   const [dashboard, setDashboard] = useState(null);
   const [reviews, setReviews] = useState([]);
   const [promotions, setPromotions] = useState([]);
@@ -32,6 +36,7 @@ export default function App() {
   const [memories, setMemories] = useState([]);
   const [knowledgeBases, setKnowledgeBases] = useState([]);
   const [versions, setVersions] = useState([]);
+  const [changes, setChanges] = useState([]);
   const [messages, setMessages] = useState(initialMessages);
   const [selectedPromoId, setSelectedPromoId] = useState("");
   const [evolutionState, setEvolutionState] = useState(null);
@@ -50,6 +55,38 @@ export default function App() {
   const [sending, setSending] = useState(false);
   const [toast, setToast] = useState("");
 
+  function navigate(nextPage, options = {}) {
+    const normalized = normalizePage(nextPage, options);
+    if (normalized.assetTab) setAssetTab(normalized.assetTab);
+    if (normalized.changesTab) setChangesTabState(normalized.changesTab);
+    if (normalized.governanceTab) setGovernanceTabState(normalized.governanceTab);
+    setPageState(normalized.page);
+    updateUrl(normalized.page, {
+      assetTab: normalized.assetTab || assetTab,
+      changesTab: normalized.changesTab || changesTab,
+      governanceTab: normalized.governanceTab || governanceTab,
+    });
+  }
+
+  function setPage(nextPage) {
+    navigate(nextPage);
+  }
+
+  function setChangesTab(nextTab) {
+    setChangesTabState(nextTab);
+    updateUrl("assets-changes", { changesTab: nextTab });
+  }
+
+  function setGovernanceTab(nextTab) {
+    setGovernanceTabState(nextTab);
+    updateUrl("assets-governance", { governanceTab: nextTab });
+  }
+
+  function setLibraryTab(nextTab) {
+    setAssetTab(nextTab);
+    updateUrl("assets-library", { assetTab: nextTab });
+  }
+
   const refresh = useCallback(async () => {
     const settled = await Promise.allSettled([
       api.dashboard(),
@@ -59,8 +96,9 @@ export default function App() {
       api.tools(),
       api.memories(),
       api.knowledgeBases(),
+      api.changes(),
     ]);
-    const [dashboardResult, reviewsResult, promosResult, skillsResult, toolsResult, memoriesResult, kbResult] = settled;
+    const [dashboardResult, reviewsResult, promosResult, skillsResult, toolsResult, memoriesResult, kbResult, changesResult] = settled;
     let reviewItems = [];
     let promoItems = [];
     let skillItems = [];
@@ -85,6 +123,7 @@ export default function App() {
     if (toolsResult.status === "fulfilled") setTools(toolsResult.value.data || []);
     if (memoriesResult.status === "fulfilled") setMemories(memoriesResult.value.data || []);
     if (kbResult.status === "fulfilled") setKnowledgeBases(kbResult.value.data || []);
+    if (changesResult.status === "fulfilled") setChanges(changesResult.value.data || []);
     return { reviews: reviewItems, promotions: promoItems, skills: skillItems };
   }, []);
 
@@ -99,6 +138,20 @@ export default function App() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const route = routeFromLocation();
+    updateUrl(route.page, route, true);
+    const onPopState = () => {
+      const next = routeFromLocation();
+      setPageState(next.page);
+      setAssetTab(next.assetTab || "skills");
+      setChangesTabState(next.changesTab || "proposed");
+      setGovernanceTabState(next.governanceTab || "reviews");
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -406,8 +459,7 @@ export default function App() {
         });
         setConfirmAction(null);
         await refreshAfterOperation();
-        setAssetTab("tools");
-        setPage("assets");
+        navigate("assets-library", { assetTab: "tools" });
         return;
       }
       const toolReviewMatch = path.match(/^\/api\/tools\/([^/]+)\/update-review$/);
@@ -537,7 +589,7 @@ export default function App() {
       finishToolCall(toolId, "completed");
       appendAgentResult(payload.message || `Evolution flow updated for ${promoId}.`);
       setSelectedPromoId(promoId);
-      setPage("evolution");
+        navigate("assets-library", { assetTab: "workflows" });
       await refreshAfterOperation(promoId);
     } catch (error) {
       const message = getErrorMessage(error);
@@ -700,11 +752,11 @@ export default function App() {
     }
     if (method === "GET") {
       if (path === "/api/promotions") {
-        setPage("promotions");
+        navigate("assets-library", { assetTab: "workflows" });
         return;
       }
       if (path === "/api/skills") {
-        setPage("versions");
+        navigate("assets-library", { assetTab: "skills" });
         return;
       }
       if (path === "/api/reviews") {
@@ -712,8 +764,7 @@ export default function App() {
         return;
       }
       if (path === "/api/tools") {
-        setAssetTab("tools");
-        setPage("assets");
+        navigate("assets-library", { assetTab: "tools" });
         return;
       }
       const reviewMatch = path.match(/^\/api\/reviews\/([^/]+)(?:\/patch)?$/);
@@ -739,7 +790,7 @@ export default function App() {
           used_skill: "self_improvement",
         });
         await refreshAfterOperation();
-        setPage("promotions");
+        navigate("assets-library", { assetTab: "workflows" });
       } catch (error) {
         const message = getErrorMessage(error);
         finishToolCall(toolId, "failed");
@@ -927,6 +978,18 @@ export default function App() {
         onNextAction={continueEvolution}
         nextActionBusy={Boolean(busyPromoId || busyReviewId)}
       >
+        {page === "workspace" ? (
+          <WorkspacePage
+            dashboard={dashboard}
+            skills={skills}
+            tools={tools}
+            reviews={reviews}
+            changes={changes}
+            versions={versions}
+            promotions={promotions}
+            onNavigate={setPage}
+          />
+        ) : null}
         {page === "chat" ? (
           <ChatPage
             reviews={reviews}
@@ -938,48 +1001,47 @@ export default function App() {
             onChatAction={handleChatAction}
           />
         ) : null}
-        {page === "reviews" ? <ReviewsPage reviews={reviews} actionProps={actionProps} /> : null}
-        {page === "assets" ? (
+        {page === "assets-changes" ? (
+          <ChangesPage
+            changes={changes}
+            onOpenReview={openReview}
+            onOpenVersions={() => setPage("versions")}
+            activeTab={changesTab}
+            onTabChange={setChangesTab}
+          />
+        ) : null}
+        {page === "assets-library" ? (
           <AssetsPage
             skills={skills}
             tools={tools}
+            reviews={reviews}
+            changes={changes}
+            promotions={promotions}
             memories={memories}
             knowledgeBases={knowledgeBases}
             versions={versions}
+            onOpenReview={openReview}
+            onOpenVersions={() => setPage("versions")}
             tab={assetTab}
-            onTabChange={setAssetTab}
+            onTabChange={setLibraryTab}
           />
         ) : null}
-        {page === "promotions" ? (
-          <PromotionsPage
-            promotions={promotions}
-            busyPromoId={busyPromoId}
-            onView={viewPromotion}
-            onEvolve={evolvePromotion}
-            onRegenerate={regeneratePromotion}
-          />
-        ) : null}
-        {page === "evolution" ? (
-          <EvolutionPage
-            promotions={promotions}
-            selectedPromoId={selectedPromoId}
-            onSelectPromo={setSelectedPromoId}
-            evolutionState={evolutionState}
-            currentPromotion={currentPromotion}
-            busyPromoId={busyPromoId}
-            onContinue={continueEvolution}
-          />
-        ) : null}
-        {page === "versions" ? (
-          <VersionsPage
+        {page === "assets-governance" ? (
+          <GovernancePage
+            activeTab={governanceTab}
+            onTabChange={setGovernanceTab}
+            reviews={reviews}
+            actionProps={actionProps}
             versions={versions}
             versionDetail={versionDetail}
             selectedVersionKey={selectedVersionKey}
             onSelectVersion={(version) => setSelectedVersionKey(versionKey(version))}
             onCreateRollback={createRollbackReview}
             busyVersionKey={busyVersionKey}
+            changes={changes}
           />
         ) : null}
+        {page === "settings" ? <SettingsPage dashboard={dashboard} /> : null}
       </AppShell>
 
       <ReviewModal
@@ -1042,6 +1104,81 @@ function riskLabel(risk) {
   if (!risk) return "safe_write_preview";
   if (typeof risk === "string") return risk;
   return risk.level || "safe_write_preview";
+}
+
+function routeFromLocation() {
+  if (typeof window === "undefined") return { page: "chat" };
+  const path = window.location.pathname || "/chat";
+  const params = new URLSearchParams(window.location.search);
+  const tab = params.get("tab") || "";
+  const routes = {
+    "/chat": { page: "chat" },
+    "/workspace": { page: "workspace" },
+    "/assets/library": { page: "assets-library", assetTab: normalizeLibraryTab(tab) },
+    "/assets/changes": { page: "assets-changes", changesTab: normalizeChangesTab(tab) },
+    "/assets/governance": { page: "assets-governance", governanceTab: normalizeGovernanceTab(tab) },
+    "/settings": { page: "settings" },
+    "/assets/skills": { page: "assets-library", assetTab: "skills" },
+    "/assets/tools": { page: "assets-library", assetTab: "tools" },
+    "/assets/workflows": { page: "assets-library", assetTab: "workflows" },
+    "/assets/memories": { page: "assets-library", assetTab: "memories" },
+    "/assets/eval-cases": { page: "assets-library", assetTab: "eval-cases" },
+    "/reviews": { page: "assets-governance", governanceTab: "reviews" },
+    "/versions": { page: "assets-governance", governanceTab: "versions" },
+    "/changes": { page: "assets-changes", changesTab: "proposed" },
+    "/assets": { page: "assets-library", assetTab: "skills" },
+    "/": { page: "chat" },
+  };
+  return routes[path] || { page: "chat" };
+}
+
+function normalizePage(page, options = {}) {
+  if (page === "assets" || page === "assets-library") {
+    return { page: "assets-library", assetTab: normalizeLibraryTab(options.assetTab) };
+  }
+  if (page === "changes" || page === "assets-changes") {
+    return { page: "assets-changes", changesTab: normalizeChangesTab(options.changesTab) };
+  }
+  if (page === "reviews") return { page: "assets-governance", governanceTab: "reviews" };
+  if (page === "versions") return { page: "assets-governance", governanceTab: "versions" };
+  if (page === "promotions" || page === "evolution") {
+    return { page: "assets-library", assetTab: "workflows" };
+  }
+  if (page === "assets-governance") {
+    return { page: "assets-governance", governanceTab: normalizeGovernanceTab(options.governanceTab) };
+  }
+  if (["chat", "workspace", "settings"].includes(page)) return { page };
+  return { page: "chat" };
+}
+
+function updateUrl(page, state = {}, replace = false) {
+  if (typeof window === "undefined") return;
+  const path = routeForPage(page, state);
+  if (`${window.location.pathname}${window.location.search}` === path) return;
+  const method = replace ? "replaceState" : "pushState";
+  window.history[method]({}, "", path);
+}
+
+function routeForPage(page, state = {}) {
+  if (page === "workspace") return "/workspace";
+  if (page === "settings") return "/settings";
+  if (page === "assets-library") return `/assets/library?tab=${normalizeLibraryTab(state.assetTab)}`;
+  if (page === "assets-changes") return `/assets/changes?tab=${normalizeChangesTab(state.changesTab)}`;
+  if (page === "assets-governance") return `/assets/governance?tab=${normalizeGovernanceTab(state.governanceTab)}`;
+  return "/chat";
+}
+
+function normalizeLibraryTab(tab) {
+  const normalized = tab === "eval" ? "eval-cases" : tab;
+  return ["skills", "tools", "workflows", "memories", "eval-cases"].includes(normalized) ? normalized : "skills";
+}
+
+function normalizeChangesTab(tab) {
+  return ["proposed", "review-required", "applied", "failed", "archived"].includes(tab) ? tab : "proposed";
+}
+
+function normalizeGovernanceTab(tab) {
+  return ["reviews", "versions", "rollbacks", "safety-checks"].includes(tab) ? tab : "reviews";
 }
 
 function makeId() {

@@ -25,6 +25,7 @@ from runtime.skill_evolution_flow import evolve_skill_from_promotion
 from runtime.skill_evolution_registry import SkillEvolutionRegistry, normalize_skill_name
 from runtime.skill_loader import SkillLoader
 from runtime.skill_memory import MEMORY_FILES, SkillMemoryManager, normalize_name
+from runtime.tool_registry import ToolRegistry
 from safety.audit import SECRET_PATTERNS as SECRET_SCAN_PATTERNS
 from safety.policy_config import load_policy
 from tools.schemas import build_tools
@@ -213,6 +214,7 @@ class WebContext:
         )
         self.versions = SkillEvolutionRegistry(self.project_root)
         self.policy = load_policy()
+        self.tool_registry = ToolRegistry(self.project_root)
 
 
 def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
@@ -254,6 +256,10 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
                 "memories": memories,
             }
         )
+
+    @app.get("/api/changes")
+    def changes() -> JSONResponse:
+        return ok(_changes(ctx))
 
     @app.get("/api/skills")
     def skills() -> JSONResponse:
@@ -396,6 +402,15 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             if memory.get("type") == "error" and tool_name.lower() in json.dumps(memory, ensure_ascii=False).lower()
         ][:5]
         return ok({**tool, **_tool_file_details(ctx, tool_name, tool), "recent_review_history": recent_reviews, "recent_errors": recent_errors})
+
+    @app.post("/api/tools/{tool_name}/run")
+    async def tool_run(tool_name: str, request: Request) -> JSONResponse:
+        body = await request.json()
+        inputs = body.get("inputs", {}) if isinstance(body, dict) else {}
+        if not isinstance(inputs, dict):
+            inputs = {}
+        result = ctx.tool_registry.run(tool_name, inputs)
+        return JSONResponse(status_code=200, content=result)
 
     @app.post("/api/tools/{tool_name}/update-review")
     async def tool_update_review(tool_name: str, request: Request) -> JSONResponse:
@@ -834,7 +849,10 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
     @app.get("/api/dashboard")
     def dashboard() -> JSONResponse:
         pending = _reviews(ctx, "pending")
+        approved = _reviews(ctx, "approved")
         promotions_data = _promotions(ctx)
+        versions = _all_versions(ctx)
+        changes = _changes(ctx)
         missing_regression = sum(
             1
             for promo in promotions_data
@@ -844,10 +862,20 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
         )
         return ok(
             {
+                "workspace_root": str(ctx.project_root),
+                "asset_counts": {
+                    "skills": len(_skills(ctx)),
+                    "tools": len(_tool_views(ctx)),
+                    "workflows": len(promotions_data),
+                    "eval_cases": sum(1 for skill in _skills(ctx) if skill.get("has_eval_cases")),
+                },
+                "pending_changes": sum(1 for change in changes if change.get("status") in {"pending", "approved", "proposed", "waiting"}),
                 "pending_reviews": len(pending),
+                "approved_reviews": len(approved),
                 "promotions": len(promotions_data),
                 "missing_regression": missing_regression,
-                "applied_skill_versions": len(_all_versions(ctx)),
+                "applied_skill_versions": len(versions),
+                "latest_versions": sorted(versions, key=lambda item: item.get("created_at", ""), reverse=True)[:5],
                 "recent_events": _recent_events(ctx),
             }
         )
@@ -944,6 +972,130 @@ def _promotions(ctx: WebContext) -> list[dict[str, Any]]:
     return [_promotion_view(ctx, candidate) for candidate in ctx.promotions.list_candidates()]
 
 
+def _changes(ctx: WebContext) -> list[dict[str, Any]]:
+    changes: list[dict[str, Any]] = []
+    versions = _all_versions(ctx)
+    version_by_review = {
+        item.get("skill_review_id", ""): item
+        for item in versions
+        if item.get("skill_review_id")
+    }
+    version_by_promo = {
+        item.get("promotion_id", ""): item
+        for item in versions
+        if item.get("promotion_id")
+    }
+    for review in _reviews(ctx):
+        asset_type = _asset_type_for_review(review)
+        asset_name = _asset_name_for_review(review)
+        version = version_by_review.get(review.get("review_id", ""))
+        changes.append(
+            {
+                "change_id": review.get("review_id", ""),
+                "source": "review",
+                "asset_type": asset_type,
+                "asset_name": asset_name,
+                "operation": _operation_for_review(review),
+                "risk": review.get("severity", ""),
+                "status": review.get("status", ""),
+                "review_id": review.get("review_id", ""),
+                "version_id": version.get("version", "") if version else "",
+                "source_id": review.get("candidate_id", ""),
+                "source_type": "PROMO" if review.get("candidate_id") else "",
+                "next_action": _next_review_actions(review.get("review_id", ""), review.get("status", ""))[0] if _next_review_actions(review.get("review_id", ""), review.get("status", "")) else "",
+                "created_at": review.get("created_at", ""),
+                "target_files": review.get("target_files", []),
+                "reason": review.get("reason", ""),
+            }
+        )
+    for promo in _promotions(ctx):
+        promo_id = promo.get("promo_id", "")
+        if any(change.get("source_id") == promo_id for change in changes):
+            continue
+        version = version_by_promo.get(promo_id)
+        changes.append(
+            {
+                "change_id": promo_id,
+                "source": "promo",
+                "asset_type": "skill",
+                "asset_name": promo.get("target_skill", ""),
+                "operation": "evolve",
+                "risk": promo.get("risk_type", "") or "medium",
+                "status": promo.get("promotion_decision") or promo.get("status", "proposed"),
+                "review_id": "",
+                "version_id": version.get("version", "") if version else "",
+                "source_id": promo_id,
+                "source_type": "PROMO",
+                "next_action": "create_review" if not version else "view_version",
+                "created_at": promo.get("created_at", ""),
+                "target_files": promo.get("target_files", []),
+                "reason": promo.get("reason", ""),
+            }
+        )
+    for version in versions:
+        change_id = f"{version.get('skill', '')}:{version.get('version', '')}"
+        if any(change.get("version_id") == version.get("version") and change.get("asset_name") == version.get("skill") for change in changes):
+            continue
+        changes.append(
+            {
+                "change_id": change_id,
+                "source": "version",
+                "asset_type": "skill",
+                "asset_name": version.get("skill", ""),
+                "operation": "version",
+                "risk": "low",
+                "status": "applied",
+                "review_id": version.get("skill_review_id", ""),
+                "version_id": version.get("version", ""),
+                "source_id": version.get("promotion_id", ""),
+                "source_type": "PROMO" if version.get("promotion_id") else "",
+                "next_action": "rollback_review",
+                "created_at": version.get("created_at", ""),
+                "target_files": [f"skills/{version.get('skill', '')}/SKILL.md"],
+                "reason": "Applied version snapshot.",
+            }
+        )
+    return sorted(changes, key=lambda item: item.get("created_at", ""), reverse=True)
+
+
+def _asset_type_for_review(review: dict[str, Any]) -> str:
+    review_type = str(review.get("type", ""))
+    if review_type.startswith("tool."):
+        return "tool"
+    if review_type.startswith("skill."):
+        return "skill"
+    if review_type == "file.write":
+        return "file"
+    return "workflow" if review.get("candidate_id") else "asset"
+
+
+def _asset_name_for_review(review: dict[str, Any]) -> str:
+    metadata = review.get("metadata", {}) if isinstance(review.get("metadata"), dict) else {}
+    if metadata.get("tool_name"):
+        return str(metadata.get("tool_name"))
+    if review.get("target_skill"):
+        return str(review.get("target_skill"))
+    files = review.get("target_files", [])
+    if files:
+        first = str(files[0])
+        parts = first.replace("\\", "/").split("/")
+        if len(parts) >= 2 and parts[0] in {"skills", "tools"}:
+            return parts[1]
+        return first
+    return ""
+
+
+def _operation_for_review(review: dict[str, Any]) -> str:
+    mapping = {
+        "skill.creation": "create",
+        "skill.promotion": "evolve",
+        "skill.regression_case": "eval",
+        "tool.update": "update",
+        "file.write": "write",
+    }
+    return mapping.get(str(review.get("type", "")), "review")
+
+
 def _promotion_view(ctx: WebContext, candidate: Any) -> dict[str, Any]:
     data = candidate.to_dict() if hasattr(candidate, "to_dict") else asdict(candidate)
     promo_id = data.get("promo_id", "")
@@ -1011,6 +1163,10 @@ def _tool_views(ctx: WebContext) -> list[dict[str, Any]]:
             "risk_level": policy.get("risk", ""),
             "requires_approval_by_policy": _policy_requires_approval(policy),
             "handler_available": name in HANDLER_NAMES,
+            "asset_exists": False,
+            "provider_configured": True,
+            "executable": name in HANDLER_NAMES,
+            "missing": [] if name in HANDLER_NAMES else ["handler"],
             "schema": function,
             "schema_path": "tools/schemas.py",
             "eval_cases_count": 0,
@@ -1023,15 +1179,21 @@ def _tool_views(ctx: WebContext) -> list[dict[str, Any]]:
         }
     for asset in _tool_asset_views(ctx):
         existing = tools_by_name.get(asset["name"], {})
+        registry_status = ctx.tool_registry.status(asset["name"])
         tools_by_name[asset["name"]] = {
             **existing,
             **asset,
-            "handler_available": existing.get("handler_available", False),
+            "asset_exists": registry_status.get("asset_exists", True),
+            "handler_available": registry_status.get("handler_available", False) or existing.get("handler_available", False),
+            "provider_configured": registry_status.get("provider_configured", True),
+            "executable": registry_status.get("executable", False),
+            "missing": registry_status.get("missing", []),
             "capability": existing.get("capability", asset.get("capability", "")),
             "risk_level": existing.get("risk_level", asset.get("risk_level", "medium")),
             "requires_approval_by_policy": existing.get("requires_approval_by_policy", False),
             "schema": existing.get("schema", asset.get("schema", {})),
             "safety_policy": existing.get("safety_policy", {}),
+            "provider_requirements": registry_status.get("provider_requirements") or asset.get("provider_requirements", []),
         }
     return [tools_by_name[name] for name in sorted(tools_by_name)]
 
@@ -1918,10 +2080,10 @@ def _tool_template(tool_name: str, description: str = "") -> dict[str, Any]:
                 "forecast": {"type": "array"},
                 "warnings": {"type": "array"},
             },
-            "provider_requirements": ["WEATHER_PROVIDER", "WEATHER_API_KEY_ENV"],
+            "provider_requirements": [],
             "safety": [
                 "Do not fabricate realtime weather.",
-                "Read provider credentials from environment configuration only.",
+                "Use the no-key Open-Meteo provider for realtime data.",
                 "Treat provider responses as untrusted external data.",
             ],
             "eval_cases": ["missing_city", "provider_success", "provider_unavailable", "no_fabricated_weather"],
@@ -2916,33 +3078,87 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
             trace=base_trace,
         ))
     if execution_intent == "external_realtime_query":
-        city_known = _weather_city_mentioned(message)
-        realtime_note = (
-            "\u6211\u8bc6\u522b\u5230\u4f60\u95ee\u7684\u662f\u5b9e\u65f6\u5929\u6c14\u3002"
-            if city_known
-            else "\u6211\u8bc6\u522b\u5230\u4f60\u95ee\u7684\u662f\u5b9e\u65f6\u5929\u6c14\uff0c\u4f46\u8fd8\u7f3a\u5c11\u57ce\u5e02\u6216\u5730\u533a\u3002"
+        tool_name = asset_route.get("asset_name") or "weather_query"
+        registry_status = ctx.tool_registry.status(tool_name)
+        city = _extract_weather_city(message)
+        runtime_trace = [
+            *base_trace,
+            _trace("tool_route", "Tool route", status="completed", tool_name=tool_name, summary=f"Routed direct tool use to {tool_name}."),
+            _trace(
+                "tool_registry_check",
+                "Tool registry check",
+                status="completed" if registry_status.get("executable") else "failed",
+                tool_name=tool_name,
+                asset_exists=str(bool(registry_status.get("asset_exists"))).lower(),
+                handler_available=str(bool(registry_status.get("handler_available"))).lower(),
+                provider_configured=str(bool(registry_status.get("provider_configured"))).lower(),
+                executable=str(bool(registry_status.get("executable"))).lower(),
+                missing=", ".join(registry_status.get("missing", [])),
+                summary=f"Executable={bool(registry_status.get('executable'))}; missing={registry_status.get('missing', [])}.",
+            ),
+        ]
+        if not city:
+            return done(_chat_result(
+                "clarification",
+                used_skill,
+                skill_reason,
+                "可以查天气，但需要先告诉我城市。例如：查询上海今天的天气。",
+                "No durable memory was captured.",
+                risk="safe_read",
+                trace=runtime_trace,
+                data={"tool_name": tool_name, "requires_city": True, "tool_status": registry_status},
+            ))
+        if not registry_status.get("executable"):
+            missing = registry_status.get("missing", [])
+            return done(_chat_result(
+                "tool_result",
+                used_skill,
+                skill_reason,
+                _tool_not_executable_message(tool_name, missing),
+                "No durable memory was captured.",
+                risk="safe_read",
+                actions=_tool_runtime_actions(tool_name, missing),
+                trace=runtime_trace,
+                data={
+                    "tool_name": tool_name,
+                    "tool_status": registry_status,
+                    "error_code": "TOOL_NOT_EXECUTABLE",
+                    "missing": missing,
+                    "suggested_actions": [action["label"] for action in _tool_runtime_actions(tool_name, missing)],
+                },
+            ))
+        inputs = {"city": city, "date": "today", "units": "metric", "language": "zh-CN"}
+        run_result = ctx.tool_registry.run(tool_name, inputs)
+        tool_run_trace = _trace(
+            "tool_call",
+            "Tool run",
+            status="completed" if run_result.get("ok") else "failed",
+            tool_name=tool_name,
+            method="POST",
+            path=f"/api/tools/{tool_name}/run",
+            summary="Called executable tool runtime." if run_result.get("ok") else run_result.get("message", "Tool run failed."),
         )
-        message_text = (
-            "\u6211\u4e0d\u80fd\u5728\u8fd9\u4e2a workspace \u91cc\u76f4\u63a5\u7f16\u9020\u5b9e\u65f6\u5929\u6c14\u3002"
-            if city_known
-            else "\u8fd9\u4e2a\u95ee\u9898\u9700\u8981\u5148\u786e\u8ba4\u57ce\u5e02\uff0c\u7136\u540e\u8c03\u7528\u5b9e\u65f6\u5929\u6c14\u5de5\u5177\u3002"
-        )
+        if not run_result.get("ok"):
+            return done(_chat_result(
+                "tool_result",
+                used_skill,
+                skill_reason,
+                _tool_run_error_message(tool_name, run_result),
+                "No durable memory was captured.",
+                risk="safe_read",
+                actions=_tool_runtime_actions(tool_name, run_result.get("missing", [])),
+                trace=[*runtime_trace, tool_run_trace],
+                data=run_result,
+            ))
+        result = run_result.get("result", {})
         return done(_chat_result(
-            "answer",
+            "tool_result",
             used_skill,
             skill_reason,
-            f"{realtime_note}{message_text}\u5f53\u524d Chat API \u672a\u63a5\u5165 weather_query \u5de5\u5177\uff0c\u6240\u4ee5\u6211\u53ea\u80fd\u8bf4\u660e\u9700\u8981\u7684\u4fe1\u606f\uff0c\u4e0d\u4f1a\u4f2a\u9020\u5b9e\u65f6\u7ed3\u679c\u3002",
-            trace=[
-                *base_trace,
-                _trace(
-                    "tool_call",
-                    "Weather tool",
-                    status="waiting",
-                    tool_name="weather_query",
-                    method="GET",
-                    summary="\u9700\u8981\u57ce\u5e02\u548c\u5b9e\u65f6\u5929\u6c14\u5de5\u5177\u540e\u624d\u80fd\u67e5\u8be2\uff1b\u672a\u8c03\u7528\u5916\u90e8\u6570\u636e\u3002",
-                ),
-            ],
+            _weather_result_message(result),
+            "No durable memory was captured.",
+            trace=[*runtime_trace, tool_run_trace],
+            data=run_result,
         ))
     if intent == "tool_creation_request":
         inference = _infer_tool_request(message)
@@ -3851,6 +4067,76 @@ def _weather_city_mentioned(message: str) -> bool:
         return True
     known_cities = ["\u4e0a\u6d77", "\u5317\u4eac", "\u5e7f\u5dde", "\u6df1\u5733", "\u676d\u5dde", "\u5357\u4eac", "\u6210\u90fd", "\u7ebd\u7ea6", "\u4f26\u6566", "\u4e1c\u4eac"]
     return any(city in message for city in known_cities)
+
+
+def _extract_weather_city(message: str) -> str:
+    known_cities = {
+        "\u4e0a\u6d77": "\u4e0a\u6d77",
+        "\u5317\u4eac": "\u5317\u4eac",
+        "\u65b0\u52a0\u5761": "\u65b0\u52a0\u5761",
+        "\u65e7\u91d1\u5c71": "\u65e7\u91d1\u5c71",
+        "shanghai": "Shanghai",
+        "beijing": "Beijing",
+        "singapore": "Singapore",
+        "san francisco": "San Francisco",
+    }
+    lowered = message.lower()
+    for needle, city in known_cities.items():
+        if needle in lowered or needle in message:
+            return city
+    match = re.search(r"\b(?:in|for)\s+([A-Za-z][A-Za-z\s-]{1,40})", lowered)
+    if match:
+        city = match.group(1).strip(" ?.!,")
+        city = re.sub(r"\b(today|tomorrow|weather|now|please)\b", "", city).strip()
+        return " ".join(part.capitalize() for part in city.split())
+    return ""
+
+
+def _tool_not_executable_message(tool_name: str, missing: list[str]) -> str:
+    missing_text = ", ".join(missing) if missing else "unknown runtime requirement"
+    actions = ", ".join(action["label"] for action in _tool_runtime_actions(tool_name, missing))
+    if "asset" in missing:
+        return (
+            f"{tool_name} 还没有 Tool Asset，无法执行。缺少：{missing_text}。"
+            f"建议操作：{actions}。"
+        )
+    return (
+        f"{tool_name} 资产存在，但当前还不可执行。缺少：{missing_text}。"
+        f"建议操作：{actions}。"
+    )
+
+
+def _tool_run_error_message(tool_name: str, result: dict[str, Any]) -> str:
+    code = result.get("error_code", "tool_run_failed")
+    if code == "provider_unavailable":
+        return f"{tool_name} 已调用，但天气 provider 当前不可用；我不会编造天气。"
+    if code == "city_not_found":
+        return f"{tool_name} 已调用，但无法解析这个城市。请换成上海、北京、Singapore 或 San Francisco。"
+    if code == "missing_city":
+        return "需要先提供城市，才能调用天气查询工具。"
+    return f"{tool_name} 调用失败：{result.get('message', code)}"
+
+
+def _weather_result_message(result: dict[str, Any]) -> str:
+    return (
+        f"可以。已调用 weather_query 获取真实天气：{result.get('city', '')} {result.get('date', 'today')}，"
+        f"气温 {result.get('temperature', '')}，天气 {result.get('condition', '')}，"
+        f"风速 {result.get('wind', '')}。来源：{result.get('source', '')}；"
+        f"获取时间：{result.get('retrieved_at', '')}。"
+    )
+
+
+def _tool_runtime_actions(tool_name: str, missing: list[str]) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    if "asset" in missing:
+        actions.append(_action("Create tool asset", "POST", "/api/tools/create", True, {"tool_name": tool_name, "description": _default_tool_description(tool_name), "confirmed": True}, kind="create_tool", risk="medium"))
+    if "handler" in missing:
+        actions.append(_action("Create handler", "LOCAL", "create_handler", False, {"tool_name": tool_name}, kind="create_handler"))
+    if any(item not in {"asset", "handler", "city"} for item in missing):
+        actions.append(_action("Configure provider", "LOCAL", "configure_provider", False, {"tool_name": tool_name}, kind="configure_provider"))
+    actions.append(_action("Test tool", "POST", f"/api/tools/{tool_name}/run", False, {"inputs": {}}, kind="test_tool"))
+    actions.append(_action("Open tool details", "GET", f"/api/tools/{tool_name}", False, kind="open_tool"))
+    return actions
 
 
 def _extract_path(message: str) -> str:
