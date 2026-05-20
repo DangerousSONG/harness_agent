@@ -349,7 +349,13 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(payload["type"], "skill_result")
             self.assertEqual(payload["used_skill"], "tool_usage")
             self.assertIn("weather_query tool", payload["message"])
+            self.assertTrue(payload["actions"])
+            self.assertEqual(payload["actions"][0]["kind"], "create_skill_review")
+            self.assertEqual(payload["actions"][0]["path"], "/api/skills/propose")
+            self.assertEqual(payload["actions"][0]["payload"]["skill_name"], "weather_query")
+            self.assertTrue(payload["actions"][0]["requires_confirmation"])
             self.assertNotIn("\u5148\u544a\u8bc9\u6211\u57ce\u5e02", payload["message"])
+            self.assertFalse((root / "skills" / "weather_query" / "SKILL.md").exists())
 
     def test_chat_skill_creation_returns_proposed_action(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -360,12 +366,14 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertEqual(payload["intent"], "skill_creation_request")
-            self.assertEqual(payload["type"], "review_created")
+            self.assertEqual(payload["type"], "skill_result")
             self.assertEqual(payload["risk"], "safe_write_preview")
             self.assertIn("weather_query", payload["message"])
             self.assertTrue(any(item["type"] == "approval_event" for item in payload["trace"]))
+            self.assertEqual(payload["actions"][0]["kind"], "create_skill_review")
+            self.assertEqual(payload["actions"][0]["payload"]["skill_name"], "weather_query")
             reviews = client.get("/api/reviews").json()["data"]
-            self.assertEqual(reviews[0]["type"], "skill.creation")
+            self.assertEqual(reviews, [])
             self.assertFalse((root / "skills" / "weather_query" / "SKILL.md").exists())
 
     def test_skill_creation_review_apply_creates_files_and_version(self):
@@ -374,7 +382,10 @@ class WebApiTests(unittest.TestCase):
             write_skill(root, "self_improvement")
             client = self.make_client(root)
             chat = client.post("/api/chat", json={"message": "\u5e2e\u6211\u521b\u5efa weather_query skill"}).json()
-            review_id = chat["data"]["review"]["review_id"]
+            action = chat["actions"][0]
+            proposed = client.post(action["path"], json=action["payload"])
+            self.assertEqual(proposed.status_code, 200)
+            review_id = proposed.json()["data"]["review_id"]
             approve = client.post(f"/api/reviews/{review_id}/approve")
             self.assertEqual(approve.status_code, 200)
             apply = client.post(f"/api/reviews/{review_id}/apply")

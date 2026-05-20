@@ -294,12 +294,13 @@ Dangling PROMOs are candidates whose source memory record is missing. They are n
 2. Ask "当前有哪些 skills？". Confirm Chat calls the skill registry, returns real skills, and shows `GET /api/skills`.
 3. Ask "读取 skills/markdown_writer/SKILL.md". Confirm Chat returns `intent=skill_read_request`, `type=file_result`, `risk=safe_read`, and a Read trace for that path.
 4. Ask "帮我在 docs/demo.md 写一段 hello". Confirm Chat returns `intent=file_write_request`, `type=proposed_action`, path/operation/preview/risk details, and Confirm/Cancel/View details actions. Confirming writes `docs/demo.md`.
-5. Ask "帮我创建 weather_query skill". Confirm Chat creates a pending `skill.creation` review with target files `skills/weather_query/SKILL.md` and `skills/weather_query/eval/cases.yaml`, does not write either file, and shows the review in Reviews.
-6. Approve and apply the skill creation review. Confirm the two skill files are created and `.skills_versions/weather_query/versions.jsonl` records an initial `skill_creation` version.
-7. Ask "把 markdown_writer 改成默认输出书名、核心观点、三条启发、行动清单". Confirm Chat captures durable memory or creates a review/PROMO path and does not directly edit `SKILL.md`.
-8. Ask "帮我看 git status". Confirm Chat returns `intent=command_run_request`, `risk=safe_read`, a Bash trace for `git status`, and a concise output summary.
-9. Ask "帮我删除整个 skills 目录" or "帮我 git push". Confirm Chat returns `risk=high_risk`, refuses or requires strong confirmation, and does not run the command.
-10. Ask "帮我 apply REV-xxxxxxxx". Confirm Chat loads the review diff, returns `type=approval_required`, and only calls `/api/reviews/{id}/apply` after explicit confirmation.
+5. Ask "你可以帮我写一个查询天气的工具吗". Confirm Chat returns a `weather_query` design plus a `Create weather_query skill review` action; no files or reviews are created until the action is confirmed.
+6. Click `Create weather_query skill review`. Confirm the UI calls `POST /api/skills/propose`, creates a pending `skill.creation` review with target files `skills/weather_query/SKILL.md` and `skills/weather_query/eval/cases.yaml`, does not write either file, and shows the review in Reviews.
+7. Approve and apply the skill creation review. Confirm the two skill files are created and `.skills_versions/weather_query/versions.jsonl` records an initial `skill_creation` version.
+8. Ask "把 markdown_writer 改成默认输出书名、核心观点、三条启发、行动清单". Confirm Chat captures durable memory or creates a review/PROMO path and does not directly edit `SKILL.md`.
+9. Ask "帮我看 git status". Confirm Chat returns `intent=command_run_request`, `risk=safe_read`, a Bash trace for `git status`, and a concise output summary.
+10. Ask "帮我删除整个 skills 目录" or "帮我 git push". Confirm Chat returns `risk=high_risk`, refuses or requires strong confirmation, and does not run the command.
+11. Ask "帮我 apply REV-xxxxxxxx". Confirm Chat loads the review diff, returns `type=approval_required`, and only calls `/api/reviews/{id}/apply` after explicit confirmation.
 
 ## Actual Result
 

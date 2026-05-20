@@ -254,6 +254,10 @@ export default function App() {
     }
     if (confirmAction.kind === "workspace_write") {
       await confirmWorkspaceWrite(confirmAction.body);
+      return;
+    }
+    if (confirmAction.kind === "chat_action") {
+      await executeConfirmedChatAction(confirmAction.action, confirmAction.sourceMessage);
     }
   }
 
@@ -315,6 +319,51 @@ export default function App() {
         setPage("reviews");
         await openReview(payload.data.review.review_id);
       }
+    } catch (error) {
+      const message = getErrorMessage(error);
+      finishToolCall(toolId, "failed");
+      appendAgentResult(message, { type: "error" });
+      setToast(message);
+    }
+  }
+
+  async function executeConfirmedChatAction(action, sourceMessage) {
+    const path = action?.path || "";
+    const method = action?.method || "POST";
+    const payloadBody = action?.payload || action?.body || {};
+    const toolId = appendToolCall(`${method} ${path}`);
+    try {
+      let payload = null;
+      if (method === "POST" && path === "/api/skills/propose") {
+        payload = await api.proposeSkill(payloadBody);
+        finishToolCall(toolId, "completed");
+        const reviewId = payload.data?.review_id || payload.data?.review?.review_id;
+        appendAgentResult(payload.message || `Created review ${reviewId}.`, {
+          type: "review_created",
+          risk: sourceMessage?.risk || action?.risk || "safe_write_preview",
+          data: payload.data || {},
+          actions: reviewId
+            ? [
+                { label: "View details", method: "GET", path: `/api/reviews/${reviewId}`, requires_confirmation: false },
+                { label: "Approve", method: "POST", path: `/api/reviews/${reviewId}/approve`, requires_confirmation: true },
+                { label: "Reject", method: "POST", path: `/api/reviews/${reviewId}/reject`, requires_confirmation: true },
+              ]
+            : [],
+        });
+        setConfirmAction(null);
+        await refreshAfterOperation();
+        setPage("reviews");
+        if (reviewId) await openReview(reviewId);
+        return;
+      }
+      if (method === "POST" && path === "/api/workspace/files/propose-write") {
+        await confirmWorkspaceWrite(payloadBody);
+        finishToolCall(toolId, "completed");
+        return;
+      }
+      finishToolCall(toolId, "failed");
+      appendAgentResult(`Action is not wired in the UI yet: ${method} ${path}`, { type: "error" });
+      setConfirmAction(null);
     } catch (error) {
       const message = getErrorMessage(error);
       finishToolCall(toolId, "failed");
@@ -597,7 +646,7 @@ export default function App() {
       return;
     }
     if (method === "POST" && path === "/api/workspace/files/propose-write") {
-      const body = action?.body || {};
+      const body = action?.payload || action?.body || {};
       setConfirmAction({
         kind: "workspace_write",
         body,
@@ -609,6 +658,24 @@ export default function App() {
           "Confirming will write the preview content or create a review for protected files.",
         ].join("\n"),
         patch: body.content || sourceMessage?.data?.preview_content || "",
+      });
+      return;
+    }
+    if (method === "POST" && path === "/api/skills/propose") {
+      const payload = action?.payload || action?.body || {};
+      const skillName = payload.skill_name || sourceMessage?.data?.proposed_skill?.skill_name || "new_skill";
+      setConfirmAction({
+        kind: "chat_action",
+        action,
+        sourceMessage,
+        title: `Create ${skillName} skill review?`,
+        message: [
+          `Skill: ${skillName}`,
+          "Operation: create skill review",
+          `Risk: ${action?.risk || sourceMessage?.risk || "safe_write_preview"}`,
+          "This will create a pending review. It will not write SKILL.md directly.",
+        ].join("\n"),
+        patch: JSON.stringify(payload, null, 2),
       });
       return;
     }

@@ -611,10 +611,15 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
     @app.post("/api/skills/propose")
     async def skill_propose(request: Request) -> JSONResponse:
         body = await request.json()
-        skill_name = _extract_skill_name(str(body.get("name", "") or body.get("message", "")))
+        skill_name = _extract_skill_name(str(body.get("skill_name", "") or body.get("name", "") or body.get("message", "")))
         if not skill_name:
             return fail("Missing skill name.")
-        result = _create_skill_creation_review(ctx, skill_name, str(body.get("description", "")))
+        result = _create_skill_creation_review(
+            ctx,
+            skill_name,
+            str(body.get("description", "")),
+            files=body.get("files"),
+        )
         if not result["ok"]:
             return fail(result["message"], errors=result.get("errors"), status_code=result.get("status_code", 400))
         return ok(result["data"], result["message"], result.get("next_actions", []))
@@ -1158,7 +1163,12 @@ def _create_file_write_review(ctx: WebContext, relative_path: str, content: str)
     )
 
 
-def _create_skill_creation_review(ctx: WebContext, skill_name: str, description: str = "") -> dict[str, Any]:
+def _create_skill_creation_review(
+    ctx: WebContext,
+    skill_name: str,
+    description: str = "",
+    files: Any = None,
+) -> dict[str, Any]:
     normalized = normalize_name(skill_name)
     if not re.match(r"^[A-Za-z0-9._-]+$", normalized):
         return {"ok": False, "message": "Skill name may only contain letters, numbers, dot, underscore, and dash.", "status_code": 400}
@@ -1166,7 +1176,9 @@ def _create_skill_creation_review(ctx: WebContext, skill_name: str, description:
     eval_file = f"skills/{normalized}/eval/cases.yaml"
     if (ctx.project_root / skill_file).exists():
         return {"ok": False, "message": f"Skill already exists: {normalized}", "status_code": 409}
-    skill_content, eval_content = _skill_creation_files(normalized, description)
+    proposed_files = _normalize_proposed_skill_files(normalized, description, files)
+    skill_content = proposed_files[skill_file]
+    eval_content = proposed_files[eval_file]
     review = ctx.review_store.create_review(
         type="skill.creation",
         source="chat_runtime",
@@ -1180,16 +1192,14 @@ def _create_skill_creation_review(ctx: WebContext, skill_name: str, description:
         rollback_plan=f"Remove skills/{normalized} or create a rollback review if the new skill is unsafe.",
         metadata={
             "operation": "skill_create",
-            "proposed_files": {
-                skill_file: skill_content,
-                eval_file: eval_content,
-            },
+            "proposed_files": proposed_files,
         },
     )
     return {
         "ok": True,
         "message": f"Created skill creation review {review['review_id']} for {normalized}. No skill files were written.",
         "data": {
+            "review_id": review["review_id"],
             "review": review,
             "skill_name": normalized,
             "target_files": [skill_file, eval_file],
@@ -1197,6 +1207,23 @@ def _create_skill_creation_review(ctx: WebContext, skill_name: str, description:
         },
         "next_actions": [f"/api/reviews/{review['review_id']}", f"/api/reviews/{review['review_id']}/approve"],
     }
+
+
+def _normalize_proposed_skill_files(skill_name: str, description: str, files: Any) -> dict[str, str]:
+    skill_file = f"skills/{skill_name}/SKILL.md"
+    eval_file = f"skills/{skill_name}/eval/cases.yaml"
+    default_skill, default_eval = _skill_creation_files(skill_name, description)
+    proposed = {skill_file: default_skill, eval_file: default_eval}
+    if not isinstance(files, list):
+        return proposed
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path", "")).replace("\\", "/").strip()
+        content = str(item.get("content", ""))
+        if path in {skill_file, eval_file}:
+            proposed[path] = content
+    return proposed
 
 
 def _skill_creation_files(skill_name: str, description: str = "") -> tuple[str, str]:
@@ -1471,63 +1498,98 @@ def _handle_chat(ctx: WebContext, message: str, context: dict[str, Any]) -> dict
             ],
         ))
     if intent == "tool_creation_request":
+        skill_name = _skill_name_for_tool_request(message)
+        description = _skill_description_for_tool_request(skill_name, message)
         return done(_chat_result(
             "skill_result",
             used_skill,
             skill_reason,
             _tool_design_answer(message),
             "No durable memory was captured.",
-            data={"tool_name": "weather_query" if _has_any(message, ["\u5929\u6c14", "weather"]) else "custom_tool"},
-            trace=base_trace,
-        ))
-    if intent == "skill_creation_request":
-        skill_name = _extract_skill_name(message)
-        result = _create_skill_creation_review(ctx, skill_name or "new_skill")
-        if not result["ok"]:
-            return done(_chat_result(
-                "error",
-                used_skill,
-                skill_reason,
-                result["message"],
-                "No durable memory was captured.",
-                risk="safe_write_preview",
-                data={"suggested_fix": "Provide a skill name such as weather_query."},
-                trace=base_trace,
-            ))
-        review = result["data"]["review"]
-        return done(_chat_result(
-            "review_created",
-            used_skill,
-            skill_reason,
-            result["message"],
-            "No durable memory was captured.",
             risk="safe_write_preview",
             actions=[
-                _action("View details", "GET", f"/api/reviews/{review['review_id']}", False),
-                _action("Approve", "POST", f"/api/reviews/{review['review_id']}/approve", True),
-                _action("Reject", "POST", f"/api/reviews/{review['review_id']}/reject", True),
+                _action(
+                    f"Create {skill_name} skill review",
+                    "POST",
+                    "/api/skills/propose",
+                    True,
+                    {
+                        "skill_name": skill_name,
+                        "description": description,
+                    },
+                    kind="create_skill_review",
+                    risk="medium",
+                ),
+                _action("Cancel", "LOCAL", "cancel", False, kind="cancel"),
+                _action("View details", "LOCAL", "details", False, kind="view_details"),
             ],
-            data=result["data"],
+            data={
+                "tool_name": skill_name,
+                "proposed_skill": {
+                    "skill_name": skill_name,
+                    "description": description,
+                    "target_files": [
+                        f"skills/{skill_name}/SKILL.md",
+                        f"skills/{skill_name}/eval/cases.yaml",
+                    ],
+                },
+            },
             trace=[
                 *base_trace,
                 _trace(
-                    "tool_call",
-                    "API request",
-                    tool_name="safeharness",
+                    "next_action",
+                    f"Create {skill_name} skill review",
                     method="POST",
                     path="/api/skills/propose",
-                    status="completed",
-                    summary=result["message"],
+                    status="waiting",
+                    summary="Confirmation will create a pending review; no skill files are written by Chat.",
                 ),
+            ],
+        ))
+    if intent == "skill_creation_request":
+        skill_name = _extract_skill_name(message)
+        skill_name = skill_name or "new_skill"
+        description = f"{skill_name} workspace skill"
+        return done(_chat_result(
+            "skill_result",
+            used_skill,
+            skill_reason,
+            _skill_creation_design_answer(skill_name),
+            "No durable memory was captured.",
+            risk="safe_write_preview",
+            actions=[
+                _action(
+                    f"Create {skill_name} skill review",
+                    "POST",
+                    "/api/skills/propose",
+                    True,
+                    {"skill_name": skill_name, "description": description},
+                    kind="create_skill_review",
+                    risk="medium",
+                ),
+                _action("Cancel", "LOCAL", "cancel", False, kind="cancel"),
+                _action("View details", "LOCAL", "details", False, kind="view_details"),
+            ],
+            data={
+                "proposed_skill": {
+                    "skill_name": skill_name,
+                    "description": description,
+                    "target_files": [
+                        f"skills/{skill_name}/SKILL.md",
+                        f"skills/{skill_name}/eval/cases.yaml",
+                    ],
+                },
+            },
+            trace=[
+                *base_trace,
                 _trace(
                     "approval_event",
-                    "Review created",
+                    "Review required",
                     status="waiting",
-                    review_id=review["review_id"],
-                    review_type=review["type"],
-                    severity=review.get("severity", "medium"),
-                    target_asset=", ".join(review.get("target_files", [])),
-                    summary="Skill creation is pending review; no files were written.",
+                    review_type="skill.creation",
+                    severity="medium",
+                    target_asset=f"skills/{skill_name}/SKILL.md, skills/{skill_name}/eval/cases.yaml",
+                    summary="Confirmation will create a pending review; no skill files are written by Chat.",
                 ),
             ],
         ))
@@ -2705,6 +2767,39 @@ def _skill_creation_proposal(message: str) -> str:
         ]
     )
 
+
+def _skill_creation_design_answer(skill_name: str) -> str:
+    return "\n".join(
+        [
+            f"I can create a {skill_name} skill, but I will not write SKILL.md directly.",
+            "",
+            "Proposed review:",
+            f"- Target files: skills/{skill_name}/SKILL.md and skills/{skill_name}/eval/cases.yaml",
+            "- Review type: skill.creation",
+            "- Apply rule: files are created only after review approval and explicit apply",
+            "- Rollback: the created skill is versioned so rollback can be reviewed later",
+        ]
+    )
+
+
+def _skill_name_for_tool_request(message: str) -> str:
+    explicit = _extract_skill_name(message)
+    if explicit and explicit not in {"skill", "tool"}:
+        return explicit
+    if _has_any(message, ["weather", "\u5929\u6c14"]):
+        return "weather_query"
+    if _has_any(message, ["prd", "PRD"]):
+        return "prd_writer"
+    return "custom_tool"
+
+
+def _skill_description_for_tool_request(skill_name: str, message: str) -> str:
+    if skill_name == "weather_query":
+        return "Query weather by city and date using a configured provider without fabricating realtime data."
+    if skill_name == "prd_writer":
+        return "Draft PRD documents from structured product requirements."
+    return f"Workspace skill proposed from Chat request: {message[:120]}"
+
 def _current_promo(ctx: WebContext, context: dict[str, Any]) -> dict[str, Any] | None:
     wanted = str(context.get("current_promo_id", "") or "").strip()
     promos = _promotions(ctx)
@@ -2888,13 +2983,21 @@ def _action(
     path: str,
     requires_confirmation: bool,
     body: dict[str, Any] | None = None,
+    *,
+    kind: str = "",
+    risk: str = "",
 ) -> dict[str, Any]:
+    action_id = f"ACT-{uuid.uuid4().hex[:8].upper()}"
     return {
+        "id": action_id,
         "label": label,
+        "kind": kind,
         "method": method,
         "path": path,
         "requires_confirmation": requires_confirmation,
+        "risk": risk,
         **({"body": body} if body is not None else {}),
+        **({"payload": body} if body is not None else {}),
     }
 
 
