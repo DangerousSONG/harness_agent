@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from urllib.request import urlopen
 
 
@@ -179,7 +179,86 @@ class ToolRegistry:
 
 
 def default_tool_handlers() -> dict[str, ToolHandler]:
-    return {"weather_query": run_weather_query}
+    return {
+        "weather_query": run_weather_query,
+        "finance_quote": run_finance_quote,
+        "web_search": run_web_search,
+        "news_search": run_web_search,
+        "company_research": run_web_search,
+    }
+
+
+def run_finance_quote(inputs: dict[str, Any]) -> dict[str, Any]:
+    symbol = str(inputs.get("symbol", "") or inputs.get("ticker", "") or "").strip().upper()
+    if not symbol:
+        return {
+            "ok": False,
+            "error_code": "missing_symbol",
+            "message": "symbol is required before finance_quote can run.",
+            "missing": ["symbol"],
+            "suggested_actions": ["Provide symbol", "Test tool"],
+        }
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol)}?range=1d&interval=1m"
+    try:
+        with urlopen(url, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return tool_error("provider_unavailable", f"Finance quote provider is unavailable: {exc}")
+    result = (((payload.get("chart") or {}).get("result") or [None])[0] or {}) if isinstance(payload, dict) else {}
+    meta = result.get("meta") if isinstance(result, dict) else {}
+    if not isinstance(meta, dict):
+        return tool_error("provider_unavailable", "Finance quote provider response did not include quote metadata.")
+    price = meta.get("regularMarketPrice") or meta.get("previousClose")
+    if price is None:
+        return tool_error("provider_unavailable", "Finance quote provider did not return a market price.")
+    return {
+        "ok": True,
+        "result": {
+            "symbol": symbol,
+            "price": price,
+            "currency": meta.get("currency", ""),
+            "exchange": meta.get("exchangeName", ""),
+            "market_state": meta.get("marketState", ""),
+            "source": "Yahoo Finance chart API",
+            "retrieved_at": now_iso(),
+        },
+    }
+
+
+def run_web_search(inputs: dict[str, Any]) -> dict[str, Any]:
+    query = str(inputs.get("query", "") or inputs.get("company", "") or "").strip()
+    if not query:
+        return {
+            "ok": False,
+            "error_code": "missing_query",
+            "message": "query is required before web_search can run.",
+            "missing": ["query"],
+            "suggested_actions": ["Provide query", "Test tool"],
+        }
+    mock_results = os.environ.get("WEB_SEARCH_MOCK_RESULTS", "").strip()
+    if mock_results:
+        try:
+            parsed = json.loads(mock_results)
+            results = parsed if isinstance(parsed, list) else parsed.get("results", [])
+        except (json.JSONDecodeError, AttributeError):
+            results = []
+        return {
+            "ok": True,
+            "result": {
+                "query": query,
+                "results": results,
+                "citations": [item.get("url", "") for item in results if isinstance(item, dict) and item.get("url")],
+                "source": "WEB_SEARCH_MOCK_RESULTS",
+                "retrieved_at": now_iso(),
+            },
+        }
+    return {
+        "ok": False,
+        "error_code": "provider_unavailable",
+        "message": "web_search provider is configured but no runnable search adapter is available in this local runtime.",
+        "missing": [],
+        "suggested_actions": ["Configure provider", "Open tool details"],
+    }
 
 
 def run_weather_query(inputs: dict[str, Any]) -> dict[str, Any]:

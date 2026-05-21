@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+import os
 
 try:
     from fastapi.testclient import TestClient
@@ -69,6 +70,37 @@ def write_weather_tool(root: Path) -> None:
     )
     (tool_dir / "README.md").write_text("# weather_query\n", encoding="utf-8")
     (tool_dir / "eval" / "cases.yaml").write_text("tool: weather_query\ncases: []\n", encoding="utf-8")
+
+
+def write_runtime_tool(root: Path, name: str, capability: str | None = None, provider_requirements: list[str] | None = None) -> None:
+    tool_dir = root / "tools" / name
+    (tool_dir / "eval").mkdir(parents=True, exist_ok=True)
+    requirements = provider_requirements if provider_requirements is not None else []
+    requirement_lines = ["  []"] if not requirements else [f"  - {item}" for item in requirements]
+    (tool_dir / "tool.yaml").write_text(
+        "\n".join(
+            [
+                f"name: {name}",
+                "type: tool",
+                f"description: Runtime test asset for {name}.",
+                f"capability: {capability or name}",
+                "inputs:",
+                "  query:",
+                "    type: string",
+                "outputs:",
+                "  results:",
+                "    type: array",
+                "provider_requirements:",
+                *requirement_lines,
+                "safety:",
+                "  - Do not fabricate external information.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tool_dir / "README.md").write_text(f"# {name}\n", encoding="utf-8")
+    (tool_dir / "eval" / "cases.yaml").write_text(f"tool: {name}\ncases: []\n", encoding="utf-8")
 
 
 class FakeWeatherResponse:
@@ -569,6 +601,89 @@ class WebApiTests(unittest.TestCase):
             self.assertIn("tool_route", trace_types)
             self.assertIn("tool_registry_check", trace_types)
             self.assertTrue(any(item.get("title") == "Tool run" for item in payload["trace"]))
+
+    def test_chat_financial_research_missing_tools_is_structured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "\u6700\u8fd1\u9002\u5408\u6295\u8d44\u82f1\u4f1f\u8fbe\u5417\uff1f"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIntentPrimary(payload, "financial_research_query")
+            self.assertEqual(payload["type"], "tool_result")
+            self.assertTrue(payload["intent"]["requires_realtime_data"])
+            self.assertTrue(payload["intent"]["requires_disclaimer"])
+            self.assertIn("实时市场数据", payload["message"])
+            self.assertIn("没有可执行的 web_search / finance 工具", payload["message"])
+            self.assertIn("不是财务建议", payload["message"])
+            labels = [action["label"] for action in payload["actions"]]
+            self.assertIn("Create web_search tool", labels)
+            self.assertIn("Create finance_quote tool", labels)
+            self.assertIn("Configure provider", labels)
+            self.assertTrue(any(item["type"] == "tool_route" for item in payload["trace"]))
+            self.assertTrue(any(item["type"] == "tool_registry_check" and item["status"] == "failed" for item in payload["trace"]))
+
+    def test_chat_financial_research_uses_executable_web_search(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            write_runtime_tool(root, "web_search", "web_search")
+            client = self.make_client(root)
+            mock_results = json.dumps([
+                {
+                    "title": "NVIDIA quarterly results",
+                    "url": "https://example.com/nvda-results",
+                    "snippet": "NVIDIA reported strong data center demand.",
+                }
+            ])
+            with patch.dict(os.environ, {"WEB_SEARCH_MOCK_RESULTS": mock_results}, clear=False):
+                response = client.post("/api/chat", json={"message": "\u6700\u8fd1\u9002\u5408\u6295\u8d44\u82f1\u4f1f\u8fbe\u5417\uff1f"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIntentPrimary(payload, "financial_research_query")
+            self.assertEqual(payload["type"], "tool_result")
+            self.assertIn("不是财务建议", payload["message"])
+            self.assertIn("https://example.com/nvda-results", payload["message"])
+            self.assertNotIn("必涨", payload["message"])
+            self.assertTrue(any(item["type"] == "sources" for item in payload["trace"]))
+            self.assertTrue(any(item["type"] == "risk_note" for item in payload["trace"]))
+
+    def test_chat_finance_quote_missing_tool(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "\u82f1\u4f1f\u8fbe\u73b0\u5728\u80a1\u4ef7\u591a\u5c11\uff1f"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIntentPrimary(payload, "finance_quote_query")
+            self.assertIn("finance_quote", json.dumps(payload, ensure_ascii=False))
+            self.assertIn("实时市场数据", payload["message"])
+
+    def test_chat_ai_chip_news_routes_to_news_query(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "\u6700\u8fd1\u6709\u4ec0\u4e48 AI \u82af\u7247\u65b0\u95fb\uff1f"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIntentPrimary(payload, "news_query")
+            self.assertEqual(payload["type"], "tool_result")
+            self.assertIn("实时外部信息", payload["message"])
+
+    def test_chat_refuses_fabricated_nvidia_good_news(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "\u968f\u4fbf\u7f16\u51e0\u4e2a\u82f1\u4f1f\u8fbe\u5229\u597d\u65b0\u95fb"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIntentPrimary(payload, "unsafe_request")
+            self.assertEqual(payload["type"], "refused")
+            self.assertIn("false_claim_or_fabrication", payload["safety"]["risk_labels"])
 
     def test_chat_web_search_tool_creation_infers_semantic_template(self):
         with tempfile.TemporaryDirectory() as tmp:
