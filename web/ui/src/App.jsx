@@ -727,6 +727,19 @@ export default function App() {
         appendAgentResult("Canceled. No workspace change was made.", { type: "answer" });
         return;
       }
+      if (path === "configure_provider") {
+        setPage("settings");
+        appendAgentResult("Open Settings to configure the realtime provider. Creating a Tool Asset alone will not enable realtime access.", {
+          type: "tool_result",
+        });
+        return;
+      }
+      if (path === "ask_without_realtime_data") {
+        appendAgentResult("Without realtime data, I can give a general analysis framework, but I will not claim current prices, earnings, news, or sources.", {
+          type: "answer",
+        });
+        return;
+      }
       if (path === "details") {
         const data = sourceMessage?.data || {};
         const files = data.files || data.proposed_tool?.files || [];
@@ -764,6 +777,10 @@ export default function App() {
         return;
       }
       if (path === "/api/tools") {
+        navigate("assets-library", { assetTab: "tools" });
+        return;
+      }
+      if (path.startsWith("/api/tools/")) {
         navigate("assets-library", { assetTab: "tools" });
         return;
       }

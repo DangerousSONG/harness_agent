@@ -126,6 +126,20 @@ class FakeWeatherResponse:
         ).encode("utf-8")
 
 
+class FakeHtmlResponse:
+    def __init__(self, html: str):
+        self.html = html
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self) -> bytes:
+        return self.html.encode("utf-8")
+
+
 @unittest.skipIf(TestClient is None, "fastapi is not installed")
 class WebApiTests(unittest.TestCase):
     def make_client(self, root: Path) -> TestClient:
@@ -614,15 +628,115 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(payload["type"], "tool_result")
             self.assertTrue(payload["intent"]["requires_realtime_data"])
             self.assertTrue(payload["intent"]["requires_disclaimer"])
-            self.assertIn("实时市场数据", payload["message"])
-            self.assertIn("没有可执行的 web_search / finance 工具", payload["message"])
+            self.assertEqual(payload["intent"]["mode"], "one_shot_query")
+            self.assertIn("no-key fallback search", payload["message"])
+            self.assertIn("请配置搜索/金融 provider", payload["message"])
             self.assertIn("不是财务建议", payload["message"])
             labels = [action["label"] for action in payload["actions"]]
-            self.assertIn("Create web_search tool", labels)
-            self.assertIn("Create finance_quote tool", labels)
-            self.assertIn("Configure provider", labels)
+            self.assertEqual(labels[0], "Configure search provider")
+            self.assertIn("Ask without realtime data", labels)
+            self.assertIn("Create persistent web_search tool", labels)
+            self.assertIn("Create persistent finance_quote tool", labels)
             self.assertTrue(any(item["type"] == "tool_route" for item in payload["trace"]))
             self.assertTrue(any(item["type"] == "tool_registry_check" and item["status"] == "failed" for item in payload["trace"]))
+            self.assertTrue(any(item["type"] == "decision" and item["status"] == "blocked" for item in payload["trace"]))
+
+    def test_chat_nvidia_earnings_question_missing_tools_is_structured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "今天英伟达财报怎么样"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIntentPrimary(payload, "financial_research_query")
+            self.assertEqual(payload["type"], "tool_result")
+            self.assertIn("no-key fallback search", payload["message"])
+            self.assertTrue(any(item["type"] == "tool_registry_check" for item in payload["trace"]))
+
+    def test_chat_nvidia_earnings_uses_configured_one_shot_search_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            mock_results = json.dumps([
+                {
+                    "title": "NVIDIA earnings update",
+                    "url": "https://example.com/nvda-earnings",
+                    "snippet": "NVIDIA reported revenue growth in data center.",
+                }
+            ])
+            with patch.dict(os.environ, {"WEB_SEARCH_MOCK_RESULTS": mock_results}, clear=False):
+                response = client.post("/api/chat", json={"message": "今天英伟达财报如何？"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIntentPrimary(payload, "financial_research_query")
+            self.assertEqual(payload["data"]["provider_mode"], "one_shot_provider")
+            self.assertIn("https://example.com/nvda-earnings", payload["message"])
+            self.assertTrue(any(item["title"] == "One-shot provider run" for item in payload["trace"]))
+
+    def test_chat_url_research_crawls_markdown_before_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            page = {
+                "title": "NVIDIA earnings",
+                "url": "https://example.com/earnings",
+                "markdown": "# NVIDIA earnings\n\nRevenue grew from data center demand.",
+                "crawl_status": "completed",
+                "extracted_at": "2026-05-21T00:00:00+00:00",
+                "content_length": 58,
+            }
+            with patch("runtime.tool_registry.crawl_url_to_markdown", return_value=page):
+                response = client.post("/api/chat", json={"message": "总结 https://example.com/earnings"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIntentPrimary(payload, "web_search_query")
+            self.assertEqual(payload["data"]["provider_mode"], "one_shot_provider")
+            result = payload["data"]["tool_results"][0]["result"]
+            self.assertEqual(result["crawled_pages"][0]["markdown"], page["markdown"])
+            self.assertIn("Revenue grew", result["summary"])
+            self.assertTrue(any(item["type"] == "crawl4ai" for item in payload["trace"]))
+            self.assertTrue(any(item["type"] == "markdown_extracted" for item in payload["trace"]))
+
+    def test_tool_web_research_blocks_private_and_file_urls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_runtime_tool(root, "web_research", "web_research")
+            client = self.make_client(root)
+            for url in ["file:///D:/Code/self-evolving/.env", "http://127.0.0.1:8000"]:
+                response = client.post("/api/tools/web_research/run", json={"inputs": {"urls": [url]}})
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertFalse(payload["ok"])
+                self.assertEqual(payload["error_code"], "unsafe_url")
+
+    def test_web_research_no_key_fallback_search_still_crawls_selected_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_runtime_tool(root, "web_research", "web_research")
+            client = self.make_client(root)
+            html = '<a class="result__a" href="https://example.com/story">Story</a>'
+            page = {
+                "title": "Story",
+                "url": "https://example.com/story",
+                "markdown": "# Story\n\nFallback search found this public page.",
+                "crawl_status": "completed",
+                "extracted_at": "2026-05-21T00:00:00+00:00",
+                "content_length": 48,
+            }
+            with patch.dict(os.environ, {"WEB_SEARCH_MOCK_RESULTS": "", "SEARCH_PROVIDER": ""}, clear=False):
+                with patch("runtime.tool_registry.urlopen", return_value=FakeHtmlResponse(html)):
+                    with patch("runtime.tool_registry.crawl_url_to_markdown", return_value=page):
+                        response = client.post("/api/tools/web_research/run", json={"inputs": {"query": "latest AI news"}})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            result = payload["result"]
+            self.assertEqual(result["search_mode"], "no_key_fallback_search")
+            self.assertEqual(result["urls_selected"], ["https://example.com/story"])
+            self.assertEqual(result["crawled_pages"][0]["crawl_status"], "completed")
 
     def test_chat_financial_research_uses_executable_web_search(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -659,7 +773,10 @@ class WebApiTests(unittest.TestCase):
             payload = response.json()
             self.assertIntentPrimary(payload, "finance_quote_query")
             self.assertIn("finance_quote", json.dumps(payload, ensure_ascii=False))
-            self.assertIn("实时市场数据", payload["message"])
+            self.assertIn("实时财报/市场问题", payload["message"])
+            labels = [action["label"] for action in payload["actions"]]
+            self.assertEqual(labels[0], "Configure search provider")
+            self.assertIn("Create persistent finance_quote tool", labels)
 
     def test_chat_ai_chip_news_routes_to_news_query(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -671,7 +788,7 @@ class WebApiTests(unittest.TestCase):
             payload = response.json()
             self.assertIntentPrimary(payload, "news_query")
             self.assertEqual(payload["type"], "tool_result")
-            self.assertIn("实时外部信息", payload["message"])
+            self.assertIn("no-key fallback search", payload["message"])
 
     def test_chat_refuses_fabricated_nvidia_good_news(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -699,11 +816,60 @@ class WebApiTests(unittest.TestCase):
             self.assertNotEqual(payload["data"]["target"], "custom_tool")
             self.assertEqual(payload["actions"][0]["payload"]["tool_name"], "web_search")
             requirements = "\n".join(item["content"] for item in payload["data"]["files"] if item["path"].endswith("tool.yaml"))
-            self.assertIn("SEARCH_PROVIDER", requirements)
-            self.assertIn("SEARCH_API_KEY_ENV", requirements)
+            self.assertIn("crawl4ai", requirements)
             self.assertNotIn("WEATHER_PROVIDER", requirements)
             self.assertIn("Create web_search tool", payload["actions"][0]["label"])
             self.assertFalse((root / "tools" / "custom_tool").exists())
+
+    def test_chat_finance_tool_creation_is_persistent_tool_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "帮我创建一个财报查询工具"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIntentPrimary(payload, "tool_creation_request")
+            self.assertEqual(payload["intent"]["mode"], "create_persistent_tool")
+            self.assertEqual(payload["data"]["target"], "finance_quote")
+            self.assertEqual(payload["actions"][0]["label"], "Create finance_quote tool")
+            self.assertIn("不会自动获得实时金融数据能力", payload["message"])
+
+    def test_chat_future_finance_capability_prioritizes_provider_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "我希望以后都能查美股财报"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIntentPrimary(payload, "financial_research_query")
+            self.assertEqual(payload["intent"]["mode"], "configure_realtime_capability")
+            labels = [action["label"] for action in payload["actions"]]
+            self.assertEqual(labels[0], "Configure search provider")
+            self.assertIn("Create persistent finance_quote tool", labels)
+            self.assertIn("请配置搜索/金融 provider", payload["message"])
+
+    def test_chat_existing_web_search_asset_not_executable_exposes_status_and_actions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            write_runtime_tool(root, "web_search", "web_search", provider_requirements=["SEARCH_PROVIDER"])
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "今天英伟达财报如何？"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertIntentPrimary(payload, "financial_research_query")
+            web_search = next(item for item in payload["data"]["tool_statuses"] if item["name"] == "web_search")
+            self.assertTrue(web_search["asset_exists"])
+            self.assertTrue(web_search["handler_available"])
+            self.assertFalse(web_search["provider_configured"])
+            self.assertFalse(web_search["executable"])
+            labels = [action["label"] for action in payload["actions"]]
+            self.assertIn("Configure search provider", labels)
+            self.assertIn("Test tool", labels)
+            self.assertIn("Open tool details", labels)
+            self.assertIn("asset_exists=True", payload["message"])
 
     def test_create_web_search_tool_writes_file_backed_details(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -718,9 +884,9 @@ class WebApiTests(unittest.TestCase):
             self.assertTrue((root / "tools" / "web_search" / "eval" / "cases.yaml").exists())
             tools = client.get("/api/tools").json()["data"]
             web_search = next(item for item in tools if item["name"] == "web_search")
-            self.assertEqual(web_search["description"], "Search the web for current information and return cited results.")
+            self.assertIn("crawl selected URLs with crawl4ai", web_search["description"])
             self.assertEqual(web_search["capability"], "web_search")
-            self.assertEqual(web_search["provider_requirements"], ["SEARCH_PROVIDER", "SEARCH_API_KEY_ENV"])
+            self.assertEqual(web_search["provider_requirements"], [])
             self.assertGreaterEqual(web_search["eval_cases_count"], 6)
             detail = client.get("/api/tools/web_search").json()["data"]
             self.assertEqual(detail["files"]["schema"]["status"], "present")
@@ -730,6 +896,18 @@ class WebApiTests(unittest.TestCase):
             self.assertIn("no_secret_query", detail["files"]["eval_cases"]["content"])
             self.assertIn("query", detail["inputs"])
             self.assertIn("results", detail["outputs"])
+
+    def test_create_tool_response_clarifies_asset_is_not_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            chat = client.post("/api/chat", json={"message": "create web search tool"}).json()
+            created = client.post(chat["actions"][0]["path"], json=chat["actions"][0]["payload"])
+            self.assertEqual(created.status_code, 200)
+            payload = created.json()
+            self.assertIn("does not automatically provide realtime access", payload["message"])
+            self.assertIn("handler_available", payload["data"]["runtime_note"])
 
     def test_changes_endpoint_unifies_reviews_promos_and_versions(self):
         with tempfile.TemporaryDirectory() as tmp:

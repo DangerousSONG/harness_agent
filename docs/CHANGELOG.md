@@ -2,6 +2,30 @@
 
 This file records meaningful project iterations. When judging current state, read this before older design notes.
 
+## 2026-05-21
+
+### Chat Financial Query 500 Fix
+
+- Fixed `/api/chat` financial/news/company realtime intent routing so Chinese NVIDIA earnings questions such as `今天英伟达财报怎么样` return a structured missing-tool response instead of HTTP 500.
+- Added API regression coverage for the NVIDIA earnings question path.
+
+### Chat Realtime Query Product Flow
+
+- Split realtime Chat requests into one-shot query mode versus explicit persistent Tool creation, so questions such as `今天英伟达财报如何？` no longer promote `Create web_search tool` as the primary action.
+- Reordered missing-provider actions for realtime questions to prioritize provider configuration and non-realtime fallback, with persistent Tool Asset creation shown as a secondary option.
+- Added one-shot provider execution for configured search providers even when no file-backed Tool Asset exists, while keeping executable Tool Runtime checks explicit and visible.
+- Clarified Tool Asset creation responses: creating `tool.yaml` does not automatically provide realtime access without a handler, provider configuration, and passing tests.
+- Added Chat trace decision events for realtime queries blocked by missing providers or failed providers, plus API coverage for missing provider, one-shot provider, future finance capability, explicit finance tool creation, and non-executable asset status.
+
+### crawl4ai Web Research Pipeline
+
+- Added a `web_research` runtime handler and routed `web_search`, `news_search`, and `company_research` through the same pipeline: search selects URLs, every URL is crawled with crawl4ai, page content is represented as Markdown, and summaries use Markdown only.
+- Direct URL requests now skip search and go straight to crawl4ai; query-only requests use configured search results or a no-key DuckDuckGo HTML fallback before crawling the selected URLs.
+- Preserved crawl outputs with `title`, `url`, `markdown`, `crawl_status`, `extracted_at`, and `content_length`, and added Chat trace events for search mode, URLs selected, crawl4ai status, Markdown extraction, summarizer status, and sources used.
+- Added Bailian/Qwen summarization via an OpenAI-compatible DashScope endpoint when `BAILIAN_API_KEY` or `DASHSCOPE_API_KEY` is configured; without a key, the runtime returns Markdown excerpt summaries and notes the fallback.
+- Added URL/query safety checks blocking `file://`, localhost, loopback/private IPs, secret-looking URLs/queries, and paywall/login bypass requests.
+- Added `crawl4ai` to runtime requirements and API coverage for direct URL research, unsafe URL blocking, no-key fallback search, and Markdown-only summary flow.
+
 ## 2026-05-20
 
 ### Console Navigation IA

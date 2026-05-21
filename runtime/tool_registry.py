@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import asyncio
+from html import unescape
+import ipaddress
 import json
 import os
 from pathlib import Path
+import re
+import threading
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, quote
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from urllib.request import urlopen
 
 
@@ -182,6 +187,7 @@ def default_tool_handlers() -> dict[str, ToolHandler]:
     return {
         "weather_query": run_weather_query,
         "finance_quote": run_finance_quote,
+        "web_research": run_web_research,
         "web_search": run_web_search,
         "news_search": run_web_search,
         "company_research": run_web_search,
@@ -226,15 +232,140 @@ def run_finance_quote(inputs: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_web_search(inputs: dict[str, Any]) -> dict[str, Any]:
+    return run_web_research(inputs)
+
+
+def run_web_research(inputs: dict[str, Any]) -> dict[str, Any]:
     query = str(inputs.get("query", "") or inputs.get("company", "") or "").strip()
-    if not query:
+    direct_urls = [str(item).strip() for item in inputs.get("urls", []) if str(item).strip()] if isinstance(inputs.get("urls"), list) else []
+    direct_urls.extend(extract_urls(query))
+    direct_urls = dedupe(direct_urls)
+    if not query and not direct_urls:
         return {
             "ok": False,
             "error_code": "missing_query",
-            "message": "query is required before web_search can run.",
-            "missing": ["query"],
-            "suggested_actions": ["Provide query", "Test tool"],
+            "message": "query or url is required before web_research can run.",
+            "missing": ["query_or_url"],
+            "suggested_actions": ["Provide URL", "Provide query", "Test tool"],
         }
+    safety_error = validate_web_research_request(query, direct_urls)
+    if safety_error:
+        return safety_error
+    max_results = clamp_int(inputs.get("max_results", 5), minimum=1, maximum=5)
+    selected_urls = direct_urls[:max_results]
+    search_mode = "direct_url" if selected_urls else "provider_search"
+    search_results: list[dict[str, Any]] = []
+    search_error = ""
+    if not selected_urls:
+        search_result = search_urls(query, max_results)
+        if not search_result.get("ok"):
+            return search_result
+        search_mode = search_result.get("search_mode", "provider_search")
+        search_results = search_result.get("results", [])
+        selected_urls = [item.get("url", "") for item in search_results if isinstance(item, dict) and item.get("url")][:max_results]
+        search_error = search_result.get("message", "")
+    if not selected_urls:
+        return {
+            "ok": False,
+            "error_code": "provider_unavailable",
+            "message": search_error or "No URL was found. Configure a search provider or provide a URL.",
+            "missing": ["SEARCH_PROVIDER"],
+            "suggested_actions": ["Configure provider", "Provide URL"],
+            "search_mode": search_mode,
+        }
+
+    crawled_pages = [crawl_url_to_markdown(url) for url in selected_urls]
+    usable_pages = [page for page in crawled_pages if page.get("crawl_status") == "completed" and page.get("markdown", "").strip()]
+    summary = summarize_markdown_with_bailian(query or "Summarize the provided URL content.", usable_pages)
+    results = [
+        {
+            "title": page.get("title", ""),
+            "url": page.get("url", ""),
+            "snippet": first_markdown_paragraph(page.get("markdown", "")),
+            "source": page.get("url", ""),
+            "retrieved_at": page.get("extracted_at", ""),
+            "crawl_status": page.get("crawl_status", ""),
+            "content_length": page.get("content_length", 0),
+        }
+        for page in crawled_pages
+    ]
+    return {
+        "ok": True,
+        "result": {
+            "query": query,
+            "search_mode": search_mode,
+            "urls_selected": selected_urls,
+            "results": results,
+            "crawled_pages": crawled_pages,
+            "markdown_pages": crawled_pages,
+            "summary": summary.get("summary", ""),
+            "summary_provider": summary.get("provider", "markdown_fallback"),
+            "summary_note": summary.get("note", ""),
+            "citations": [page.get("url", "") for page in usable_pages if page.get("url")],
+            "source": search_mode,
+            "retrieved_at": now_iso(),
+        },
+    }
+
+
+def extract_urls(text: str) -> list[str]:
+    return re.findall(r"https?://[^\s<>'\")\]]+", text or "")
+
+
+def dedupe(items: list[str]) -> list[str]:
+    unique: list[str] = []
+    for item in items:
+        if item and item not in unique:
+            unique.append(item)
+    return unique
+
+
+def clamp_int(value: Any, *, minimum: int, maximum: int) -> int:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        numeric = maximum
+    return max(minimum, min(maximum, numeric))
+
+
+def validate_web_research_request(query: str, urls: list[str]) -> dict[str, Any] | None:
+    unsafe_terms = [".env", "api key", "apikey", "secret", "token", "password", "private key", "ssh key", "file://", "localhost", "127.0.0.1"]
+    lowered_query = query.lower()
+    if any(term in lowered_query for term in unsafe_terms):
+        return tool_error("unsafe_query", "Refused to send secrets, private file names, or credential-looking text to a search provider.")
+    if any(term in lowered_query for term in ["bypass paywall", "绕过付费墙", "绕过登录", "bypass login"]):
+        return tool_error("unsafe_query", "Refused to bypass login, access controls, or paywalls.")
+    for url in urls:
+        error = validate_public_http_url(url)
+        if error:
+            return tool_error("unsafe_url", error)
+    return None
+
+
+def validate_public_http_url(url: str) -> str:
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme in {"file", "ftp"} or scheme not in {"http", "https"}:
+        return "Only public http/https URLs may be crawled; file:// and non-web schemes are blocked."
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return "URL host is required."
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+        return "Localhost and local-network hosts are blocked."
+    if any(term in unquote(url).lower() for term in [".env", "secret", "token", "password", "private-key", "apikey", "api_key"]):
+        return "Secret-looking URLs or paths are blocked."
+    if any(term in unquote(url).lower() for term in ["bypass-paywall", "login-bypass", "paywall-bypass"]):
+        return "Paywall or login bypass URLs are blocked."
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return ""
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+        return "Private, loopback, link-local, reserved, and multicast IP addresses are blocked."
+    return ""
+
+
+def search_urls(query: str, max_results: int) -> dict[str, Any]:
     mock_results = os.environ.get("WEB_SEARCH_MOCK_RESULTS", "").strip()
     if mock_results:
         try:
@@ -242,23 +373,254 @@ def run_web_search(inputs: dict[str, Any]) -> dict[str, Any]:
             results = parsed if isinstance(parsed, list) else parsed.get("results", [])
         except (json.JSONDecodeError, AttributeError):
             results = []
-        return {
-            "ok": True,
-            "result": {
-                "query": query,
-                "results": results,
-                "citations": [item.get("url", "") for item in results if isinstance(item, dict) and item.get("url")],
-                "source": "WEB_SEARCH_MOCK_RESULTS",
-                "retrieved_at": now_iso(),
-            },
-        }
+        return {"ok": True, "search_mode": "configured_provider", "results": normalize_search_results(results, max_results)}
+    if search_provider_configured():
+        provider_result = configured_provider_search(query, max_results)
+        if provider_result.get("ok"):
+            return provider_result
+    fallback_result = duckduckgo_fallback_search(query, max_results)
+    if fallback_result.get("ok"):
+        return fallback_result
     return {
         "ok": False,
         "error_code": "provider_unavailable",
-        "message": "web_search provider is configured but no runnable search adapter is available in this local runtime.",
-        "missing": [],
-        "suggested_actions": ["Configure provider", "Open tool details"],
+        "message": "No search provider is configured and no-key fallback search did not return usable URLs. Configure a provider or provide a URL.",
+        "missing": ["SEARCH_PROVIDER"],
+        "suggested_actions": ["Configure provider", "Provide URL"],
     }
+
+
+def search_provider_configured() -> bool:
+    api_key_env = os.environ.get("SEARCH_API_KEY_ENV", "").strip()
+    return bool(
+        os.environ.get("SEARCH_PROVIDER", "").strip()
+        or os.environ.get("SEARCH_API_KEY", "").strip()
+        or (api_key_env and os.environ.get(api_key_env, "").strip())
+    )
+
+
+def configured_provider_search(query: str, max_results: int) -> dict[str, Any]:
+    provider = os.environ.get("SEARCH_PROVIDER", "").strip().lower()
+    # The current local runtime does not ship a vendor-specific search adapter yet.
+    # Provider-specific adapters can plug in here without changing the crawl/summarize pipeline.
+    return {
+        "ok": False,
+        "error_code": "provider_unavailable",
+        "message": f"Search provider '{provider or 'configured'}' is configured but no search adapter is available in this local runtime.",
+        "missing": [],
+        "suggested_actions": ["Configure provider", "Provide URL"],
+    }
+
+
+def duckduckgo_fallback_search(query: str, max_results: int) -> dict[str, Any]:
+    url = "https://duckduckgo.com/html/?" + urlencode({"q": query})
+    try:
+        with urlopen(url, timeout=8) as response:
+            html = response.read().decode("utf-8", errors="replace")
+    except (HTTPError, URLError, TimeoutError) as exc:
+        return {
+            "ok": False,
+            "error_code": "provider_unavailable",
+            "message": f"No-key fallback search failed: {exc}",
+            "missing": ["SEARCH_PROVIDER"],
+            "suggested_actions": ["Configure provider", "Provide URL"],
+        }
+    results = []
+    for match in re.finditer(r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html, re.IGNORECASE | re.DOTALL):
+        href = unescape(match.group(1))
+        title = strip_html(match.group(2))
+        parsed = urlparse(href)
+        if "duckduckgo.com" in (parsed.netloc or "") and parsed.path.startswith("/l/"):
+            target = parse_qs(parsed.query).get("uddg", [""])[0]
+            href = unquote(target) if target else href
+        if validate_public_http_url(href):
+            continue
+        results.append({"title": title, "url": href, "snippet": "", "source": "DuckDuckGo HTML fallback"})
+        if len(results) >= max_results:
+            break
+    return {"ok": bool(results), "search_mode": "no_key_fallback_search", "results": results} if results else {
+        "ok": False,
+        "error_code": "provider_unavailable",
+        "message": "No-key fallback search returned no usable public URLs.",
+        "missing": ["SEARCH_PROVIDER"],
+        "suggested_actions": ["Configure provider", "Provide URL"],
+    }
+
+
+def normalize_search_results(results: Any, max_results: int) -> list[dict[str, Any]]:
+    normalized = []
+    for item in results if isinstance(results, list) else []:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url", "") or item.get("link", "") or "").strip()
+        if not url or validate_public_http_url(url):
+            continue
+        normalized.append({
+            "title": str(item.get("title", "") or url),
+            "url": url,
+            "snippet": str(item.get("snippet", "") or item.get("description", "")),
+            "source": str(item.get("source", "") or "search_provider"),
+        })
+        if len(normalized) >= max_results:
+            break
+    return normalized
+
+
+def crawl_url_to_markdown(url: str) -> dict[str, Any]:
+    extracted_at = now_iso()
+    safety_error = validate_public_http_url(url)
+    if safety_error:
+        return {
+            "title": "",
+            "url": url,
+            "markdown": "",
+            "crawl_status": "blocked",
+            "error": safety_error,
+            "extracted_at": extracted_at,
+            "content_length": 0,
+        }
+    try:
+        from crawl4ai import AsyncWebCrawler  # type: ignore
+    except ImportError:
+        return {
+            "title": "",
+            "url": url,
+            "markdown": "",
+            "crawl_status": "crawl4ai_unavailable",
+            "error": "crawl4ai is not installed; raw HTML was not passed to the model.",
+            "extracted_at": extracted_at,
+            "content_length": 0,
+        }
+
+    async def run_crawl() -> Any:
+        async with AsyncWebCrawler() as crawler:
+            return await crawler.arun(url=url)
+
+    try:
+        result = run_async_blocking(run_crawl)
+    except Exception as exc:  # pragma: no cover - defensive around external crawler.
+        return {
+            "title": "",
+            "url": url,
+            "markdown": "",
+            "crawl_status": "failed",
+            "error": str(exc),
+            "extracted_at": extracted_at,
+            "content_length": 0,
+        }
+    markdown = str(getattr(result, "markdown", "") or getattr(result, "fit_markdown", "") or "")
+    title = str(getattr(result, "title", "") or "")
+    if not title:
+        metadata = getattr(result, "metadata", {}) or {}
+        title = str(metadata.get("title", "")) if isinstance(metadata, dict) else ""
+    status = "completed" if markdown.strip() else "empty"
+    return {
+        "title": title,
+        "url": url,
+        "markdown": markdown,
+        "crawl_status": status,
+        "extracted_at": extracted_at,
+        "content_length": len(markdown),
+    }
+
+
+def run_async_blocking(factory: Callable[[], Any]) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(factory())
+    box: dict[str, Any] = {}
+
+    def runner() -> None:
+        try:
+            box["result"] = asyncio.run(factory())
+        except Exception as exc:  # pragma: no cover - defensive thread bridge.
+            box["error"] = exc
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
+
+
+def summarize_markdown_with_bailian(query: str, pages: list[dict[str, Any]]) -> dict[str, str]:
+    markdown_bundle = "\n\n".join(
+        f"# {page.get('title') or page.get('url')}\nSource: {page.get('url')}\n\n{page.get('markdown', '')[:6000]}"
+        for page in pages
+        if page.get("markdown")
+    )
+    if not markdown_bundle.strip():
+        return {
+            "provider": "markdown_fallback",
+            "summary": "crawl4ai did not return usable Markdown for the selected URLs, so no factual summary was generated.",
+            "note": "No Markdown was available; raw HTML was not sent to the model.",
+        }
+    key = os.environ.get("BAILIAN_API_KEY", "").strip() or os.environ.get("DASHSCOPE_API_KEY", "").strip()
+    if not key:
+        return {
+            "provider": "markdown_fallback",
+            "summary": fallback_markdown_summary(pages),
+            "note": "Bailian/Qwen key is not configured; returned the first Markdown paragraphs instead.",
+        }
+    return call_bailian_summary(query, markdown_bundle, key, fallback_markdown_summary(pages))
+
+
+def call_bailian_summary(query: str, markdown: str, api_key: str, fallback_summary: str) -> dict[str, str]:
+    endpoint = os.environ.get("BAILIAN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+    model = os.environ.get("BAILIAN_MODEL", "qwen-plus")
+    payload = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "Summarize only from the provided Markdown. Cite source URLs. Do not use raw HTML or invent facts."},
+            {"role": "user", "content": f"Question: {query}\n\nMarkdown sources:\n{markdown[:18000]}"},
+        ],
+        "temperature": 0.2,
+    }).encode("utf-8")
+    try:
+        from urllib.request import Request
+        request = Request(
+            endpoint,
+            data=payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=20) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        if content:
+            return {"provider": "bailian_qwen", "summary": content, "note": ""}
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, KeyError) as exc:
+        return {
+            "provider": "markdown_fallback",
+            "summary": fallback_summary or "Bailian/Qwen summary failed; no model summary was generated.",
+            "note": f"Bailian/Qwen summary failed: {exc}.",
+        }
+    return {"provider": "markdown_fallback", "summary": fallback_summary, "note": "Bailian/Qwen returned an empty summary."}
+
+
+def fallback_markdown_summary(pages: list[dict[str, Any]]) -> str:
+    paragraphs: list[str] = []
+    for page in pages:
+        first = first_markdown_paragraph(page.get("markdown", ""))
+        if first:
+            paragraphs.append(f"{page.get('title') or page.get('url')}: {first}\n来源：{page.get('url')}")
+        if len(paragraphs) >= 3:
+            break
+    return "\n\n".join(paragraphs)
+
+
+def first_markdown_paragraph(markdown: str) -> str:
+    for block in re.split(r"\n\s*\n", markdown.strip()):
+        clean = re.sub(r"\s+", " ", block).strip()
+        if clean and not clean.startswith("#"):
+            return clean[:500]
+    return ""
+
+
+def strip_html(value: str) -> str:
+    return re.sub(r"<[^>]+>", "", unescape(value or "")).strip()
 
 
 def run_weather_query(inputs: dict[str, Any]) -> dict[str, Any]:

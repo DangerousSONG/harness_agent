@@ -108,7 +108,11 @@ function Bubble({ role, message, children, time, onAction }) {
                 <button
                   key={`${action.method}-${action.path}-${action.label}`}
                   type="button"
-                  className={action.requires_confirmation ? "primary-button" : "secondary-button"}
+                  className={
+                    action.primary === true || (action.requires_confirmation && action.primary !== false)
+                      ? "primary-button"
+                      : "secondary-button"
+                  }
                   onClick={() => onAction?.(action, message)}
                 >
                   {action.label}
@@ -281,6 +285,7 @@ function traceDetails(item) {
     "existing_file_check",
     "primary_intent",
     "candidate_intents",
+    "mode",
     "needs_clarification",
     "risk_labels",
     "requires_realtime_data",
@@ -289,6 +294,11 @@ function traceDetails(item) {
     "missing",
     "executable",
     "provider_configured",
+    "provider_mode",
+    "provider",
+    "urls",
+    "crawl_status",
+    "content_length",
     "handler_available",
     "asset_exists",
     "asset_name",

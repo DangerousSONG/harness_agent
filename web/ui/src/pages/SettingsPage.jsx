@@ -40,6 +40,15 @@ export default function SettingsPage({ dashboard }) {
               ["Rollback", "review required"],
             ]}
           />
+          <SettingsCard
+            icon={KeyRound}
+            title="Realtime Providers"
+            rows={[
+              ["Search", providerStatus(dashboard?.providers?.search)],
+              ["Finance", providerStatus(dashboard?.providers?.finance)],
+              ["Weather", providerStatus(dashboard?.providers?.weather)],
+            ]}
+          />
         </div>
       </div>
     </section>
@@ -70,4 +79,10 @@ function SettingsCard({ icon: Icon, title, rows }) {
 function formatAssetCounts(counts) {
   if (!counts) return "-";
   return `skills ${counts.skills || 0}, tools ${counts.tools || 0}, workflows ${counts.workflows || 0}, eval ${counts.eval_cases || 0}`;
+}
+
+function providerStatus(provider) {
+  if (!provider) return "not configured";
+  const state = provider.configured ? "configured" : "not configured";
+  return provider.provider ? `${state}: ${provider.provider}` : state;
 }

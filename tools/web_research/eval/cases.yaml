@@ -1,0 +1,26 @@
+tool: web_research
+cases:
+  - id: direct_url
+    input:
+      urls:
+        - https://example.com/story
+    expect_fields: [crawled_pages, summary, citations]
+  - id: provider_search_then_crawl
+    input:
+      query: latest AI chip news
+      max_results: 3
+    expect_fields: [urls_selected, crawled_pages, summary]
+  - id: no_key_fallback_search
+    input:
+      query: OpenAI documentation
+    allow_fallback_search: true
+  - id: bailian_missing_fallback
+    input:
+      urls:
+        - https://example.com/story
+    expect_summary_provider: markdown_fallback
+  - id: unsafe_url_blocked
+    input:
+      urls:
+        - http://127.0.0.1:8000
+    expect_error: unsafe_url

@@ -1,0 +1,42 @@
+tool: web_search
+cases:
+  - id: basic_search
+    input:
+      query: OpenAI API documentation
+      max_results: 5
+    expect_fields: [results, crawled_pages, summary, citations, retrieved_at]
+  - id: direct_url
+    input:
+      urls:
+        - https://example.com/story
+    expect_fields: [crawled_pages, summary]
+  - id: markdown_only_summary
+    input:
+      urls:
+        - https://example.com/story
+    assert_model_input: markdown_not_html
+  - id: chinese_search
+    input:
+      query: 上海 今日 科技 新闻
+      language: zh-CN
+    expect_fields: [results]
+  - id: no_results
+    input:
+      query: unlikely-query-with-no-results-0000
+    allow_empty_results: true
+  - id: provider_unavailable
+    simulate_provider_error: true
+    expect_error: provider_unavailable
+  - id: unsafe_url_blocked
+    input:
+      urls:
+        - http://127.0.0.1:8000
+    expect_error: unsafe_url
+  - id: no_fabricated_sources
+    input:
+      query: current source verification
+    must_not_fabricate_sources: true
+  - id: no_secret_query
+    input:
+      query: ${SEARCH_API_KEY_ENV}
+    expect_error: secret_query_blocked

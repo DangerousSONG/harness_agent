@@ -1,0 +1,48 @@
+name: web_search
+type: tool
+description: Search the web, crawl selected URLs with crawl4ai, convert pages to Markdown, and return cited summaries.
+capability: web_search
+inputs:
+  query:
+    type: string
+    required: true
+  urls:
+    type: array
+    required: false
+  max_results:
+    type: integer
+    default: 5
+  language:
+    type: string
+    default: zh-CN
+  recency:
+    type: string
+    required: false
+outputs:
+  results:
+    type: array
+    items:
+      title: string
+      url: string
+      snippet: string
+      crawl_status: string
+      content_length: integer
+      source: string
+      retrieved_at: string
+  crawled_pages:
+    type: array
+  summary:
+    type: string
+  citations:
+    type: array
+  retrieved_at:
+    type: string
+provider_requirements:
+  []
+safety:
+  - Do not fabricate search results.
+  - Always crawl selected URLs through crawl4ai and summarize Markdown, not raw HTML.
+  - Cite sources when used in answers.
+  - Do not send secrets or private files as query text.
+  - Block file://, localhost, loopback, private-network, paywall-bypass, and secret-looking URLs.
+  - Respect workspace and provider policy.
