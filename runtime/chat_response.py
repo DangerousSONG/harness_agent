@@ -13,12 +13,30 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+ESSENTIAL_TRACE_TYPES = {
+    "tool_call",
+    "skill_route",
+    "command_trace",
+    "file_trace",
+    "sources",
+    "risk_note",
+    "approval_event",
+    "crawl4ai",
+    "final_result",
+    "memory_capture",
+}
+
+
 def trace(trace_type: str, title: str, **fields: Any) -> dict[str, Any]:
     status = fields.pop("status", "completed")
+    essential = fields.pop("essential", None)
+    if essential is None:
+        essential = trace_type in ESSENTIAL_TRACE_TYPES or status in {"failed", "blocked", "waiting"}
     item = {
         "type": trace_type,
         "title": title,
         "status": status,
+        "essential": bool(essential),
         "started_at": fields.pop("started_at", now_iso()),
         "ended_at": fields.pop("ended_at", now_iso() if status in {"completed", "failed"} else ""),
         "duration": fields.pop("duration", "0ms" if status in {"completed", "failed"} else ""),

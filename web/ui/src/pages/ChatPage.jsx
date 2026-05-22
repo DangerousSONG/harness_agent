@@ -189,13 +189,34 @@ const TRACE_LABELS = {
 };
 
 function TraceList({ trace }) {
-  const visible = (trace || []).filter((item) => item.type !== "final_result");
-  if (!visible.length) return null;
+  const [showAll, setShowAll] = useState(false);
+  const items = (trace || []).filter((item) => item.type !== "final_result");
+  if (!items.length) return null;
+  const essential = items.filter((item) => item.essential || item.status === "failed" || item.status === "blocked" || item.status === "waiting");
+  const visible = showAll ? items : (essential.length ? essential : items);
+  const hiddenCount = items.length - visible.length;
   return (
     <div className="mt-3 space-y-2">
       {visible.map((item, index) => (
         <TraceCard key={`${item.type}-${item.title}-${index}`} item={item} />
       ))}
+      {hiddenCount > 0 ? (
+        <button
+          type="button"
+          className="text-xs text-zinc-500 hover:text-zinc-800 underline-offset-2 hover:underline"
+          onClick={() => setShowAll(true)}
+        >
+          Show all {items.length} steps ({hiddenCount} hidden)
+        </button>
+      ) : showAll && essential.length && essential.length < items.length ? (
+        <button
+          type="button"
+          className="text-xs text-zinc-500 hover:text-zinc-800 underline-offset-2 hover:underline"
+          onClick={() => setShowAll(false)}
+        >
+          Hide internal steps
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -350,19 +371,87 @@ function titleLabel(value) {
 function MarkdownText({ text }) {
   const lines = String(text || "").split("\n");
   return (
-    <div className="space-y-1">
+    <div className="space-y-1 text-sm leading-6 text-zinc-900">
       {lines.map((line, index) => {
-        if (line.startsWith("# ")) {
-          return <h2 key={index} className="pt-1 text-base font-semibold text-zinc-950">{line.slice(2)}</h2>;
+        // Strip stand-alone image lines entirely (scraped news pages dump these).
+        const imageStripped = line.replace(/!\[[^\]]*\]\([^)]*\)/g, "").trimEnd();
+        if (line.startsWith("### ")) {
+          return <h4 key={index} className="pt-2 text-sm font-semibold text-zinc-900">{renderInline(line.slice(4))}</h4>;
         }
         if (line.startsWith("## ")) {
-          return <h3 key={index} className="pt-2 text-sm font-semibold text-zinc-900">{line.slice(3)}</h3>;
+          return <h3 key={index} className="pt-2 text-sm font-semibold text-zinc-900">{renderInline(line.slice(3))}</h3>;
         }
-        if (!line.trim()) return <div key={index} className="h-1" />;
-        return <p key={index} className="whitespace-pre-wrap break-words text-sm leading-6">{line}</p>;
+        if (line.startsWith("# ")) {
+          return <h2 key={index} className="pt-1 text-base font-semibold text-zinc-950">{renderInline(line.slice(2))}</h2>;
+        }
+        const bulletMatch = imageStripped.match(/^(\s*)([-*•])\s+(.*)$/);
+        if (bulletMatch) {
+          const indent = bulletMatch[1].length;
+          return (
+            <div
+              key={index}
+              className="flex gap-2 break-words"
+              style={{ paddingLeft: `${indent * 0.5}rem` }}
+            >
+              <span className="select-none text-zinc-400">•</span>
+              <span className="min-w-0 flex-1">{renderInline(bulletMatch[3])}</span>
+            </div>
+          );
+        }
+        if (!imageStripped.trim()) return <div key={index} className="h-1" />;
+        return (
+          <p key={index} className="whitespace-pre-wrap break-words">
+            {renderInline(imageStripped)}
+          </p>
+        );
       })}
     </div>
   );
+}
+
+function renderInline(text) {
+  if (!text) return null;
+  // Tokenize: links [text](url), bold **x**, italic *x*, code `x`.
+  const tokens = [];
+  let cursor = 0;
+  const pattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*]+)\*\*|`([^`]+)`/g;
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > cursor) {
+      tokens.push({ type: "text", value: text.slice(cursor, match.index) });
+    }
+    if (match[1] && match[2]) {
+      tokens.push({ type: "link", text: match[1], url: match[2] });
+    } else if (match[3]) {
+      tokens.push({ type: "bold", value: match[3] });
+    } else if (match[4]) {
+      tokens.push({ type: "code", value: match[4] });
+    }
+    cursor = pattern.lastIndex;
+  }
+  if (cursor < text.length) tokens.push({ type: "text", value: text.slice(cursor) });
+  return tokens.map((token, idx) => {
+    if (token.type === "link") {
+      return (
+        <a
+          key={idx}
+          href={token.url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="text-appleBlue underline-offset-2 hover:underline break-all"
+        >
+          {token.text}
+        </a>
+      );
+    }
+    if (token.type === "bold") {
+      return <strong key={idx} className="font-semibold text-zinc-950">{token.value}</strong>;
+    }
+    if (token.type === "code") {
+      return <code key={idx} className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-xs">{token.value}</code>;
+    }
+    return <span key={idx}>{token.value}</span>;
+  });
 }
 
 function ToolStatus({ name, status }) {
