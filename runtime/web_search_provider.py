@@ -88,62 +88,101 @@ def bailian_mcp_websearch(
     _mcp_post(endpoint, initialized_notice, headers, ignore_response=True)
 
     available_tools: list[dict[str, Any]] = []
-    pinned = bool((tool_name or "").strip() and tool_name.lower() != "auto")
-    if not pinned:
+    tools_listed = False
+
+    def discover_tools() -> list[dict[str, Any]]:
+        nonlocal tools_listed
+        if tools_listed:
+            return available_tools
+        tools_listed = True
         list_response = _mcp_post(
             endpoint,
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
             headers,
         )
-        if list_response.get("ok"):
-            list_rpc = list_response.get("rpc") or {}
-            result = list_rpc.get("result") or {}
-            tools = result.get("tools") or []
-            if isinstance(tools, list):
-                available_tools = [item for item in tools if isinstance(item, dict)]
-            picked = _pick_search_tool(available_tools)
-            if picked:
-                tool_name = picked
+        if not list_response.get("ok"):
+            return []
+        list_rpc = list_response.get("rpc") or {}
+        result = list_rpc.get("result") or {}
+        tools = result.get("tools") or []
+        if isinstance(tools, list):
+            return [item for item in tools if isinstance(item, dict)]
+        return []
+
+    pinned = bool((tool_name or "").strip() and tool_name.lower() != "auto")
+    if not pinned:
+        available_tools = discover_tools()
+        picked = _pick_search_tool(available_tools)
+        if picked:
+            tool_name = picked
     if not tool_name:
         tool_name = "WebSearch"
 
-    arg_shapes = _candidate_argument_shapes(query, max_results, available_tools, tool_name)
+    attempt_names: list[str] = [tool_name]
     last_error_message = ""
     last_raw_result: dict[str, Any] | None = None
-    for shape in arg_shapes:
-        call_response = _mcp_post(
-            endpoint,
-            {
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {"name": tool_name, "arguments": shape},
-            },
-            headers,
-        )
-        if not call_response.get("ok"):
-            return call_response
-        rpc = call_response.get("rpc") or {}
-        if "error" in rpc:
-            last_error_message = str((rpc.get("error") or {}).get("message") or "tools/call error")
+    attempted: set[str] = set()
+    while attempt_names:
+        current_name = attempt_names.pop(0)
+        if current_name in attempted:
             continue
-        result = rpc.get("result") or {}
-        last_raw_result = result
-        items = _normalize_search_content(result)
-        if items:
-            return {
-                "ok": True,
-                "search_mode": "configured_provider",
-                "results": items[:max_results],
-            }
-        last_error_message = "tools/call returned no usable URLs (content shape unrecognized)"
+        attempted.add(current_name)
+        arg_shapes = _candidate_argument_shapes(query, max_results, available_tools, current_name)
+        attempt_failed_with_not_found = False
+        for shape in arg_shapes:
+            call_response = _mcp_post(
+                endpoint,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": current_name, "arguments": shape},
+                },
+                headers,
+            )
+            if not call_response.get("ok"):
+                return call_response
+            rpc = call_response.get("rpc") or {}
+            if "error" in rpc:
+                last_error_message = str((rpc.get("error") or {}).get("message") or "tools/call error")
+                continue
+            result = rpc.get("result") or {}
+            last_raw_result = result
+            embedded_error = _extract_is_error_text(result)
+            if embedded_error:
+                last_error_message = embedded_error
+                if "not found" in embedded_error.lower():
+                    attempt_failed_with_not_found = True
+                    break
+                continue
+            items = _normalize_search_content(result)
+            if items:
+                return {
+                    "ok": True,
+                    "search_mode": "configured_provider",
+                    "results": items[:max_results],
+                }
+            last_error_message = "tools/call returned no usable URLs (content shape unrecognized)"
+        if attempt_failed_with_not_found and not tools_listed:
+            available_tools = discover_tools()
+            picked = _pick_search_tool(available_tools)
+            if picked and picked not in attempted:
+                attempt_names.append(picked)
 
     diagnostic = last_error_message or "Bailian MCP returned no usable results."
     tools_hint = ""
+    fix_hint = ""
     if available_tools:
         names = [str(item.get("name", "")) for item in available_tools if item.get("name")]
         if names:
             tools_hint = f" Available tools: {', '.join(names[:8])}."
+            if pinned:
+                fix_hint = (
+                    f" Your SEARCH_TOOL_NAME='{tool_name}' does not match. "
+                    f"Either remove SEARCH_TOOL_NAME (auto mode will pick one) or set it to one of the names above."
+                )
+    elif pinned:
+        fix_hint = " Remove SEARCH_TOOL_NAME from .env to let auto-discovery pick the tool."
     raw_snippet = ""
     if last_raw_result is not None:
         try:
@@ -152,13 +191,32 @@ def bailian_mcp_websearch(
             raw_snippet = str(last_raw_result)[:600]
     error_payload = _error(
         "provider_unavailable",
-        f"Bailian MCP: {diagnostic} (tool='{tool_name}').{tools_hint} "
-        f"Override SEARCH_TOOL_NAME if the tool is named differently.",
+        f"Bailian MCP: {diagnostic} (tool='{tool_name}').{tools_hint}{fix_hint}",
     )
     if raw_snippet:
         error_payload["raw_response"] = raw_snippet
         error_payload["message"] = error_payload["message"] + f" Raw response sample: {raw_snippet}"
     return error_payload
+
+
+def _extract_is_error_text(result: dict[str, Any]) -> str:
+    if not isinstance(result, dict):
+        return ""
+    if not result.get("isError"):
+        return ""
+    parts: list[str] = []
+    blocks = result.get("content") or result.get("contents") or []
+    if isinstance(blocks, list):
+        for block in blocks:
+            if isinstance(block, dict):
+                text = str(block.get("text", "") or block.get("content", "") or "").strip()
+                if text:
+                    parts.append(text)
+    if not parts:
+        message = str(result.get("message", "") or result.get("error", "") or "").strip()
+        if message:
+            parts.append(message)
+    return " | ".join(parts) or "tools/call returned isError without detail"
 
 
 def _pick_search_tool(tools: list[dict[str, Any]]) -> str:

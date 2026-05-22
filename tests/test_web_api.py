@@ -1135,6 +1135,106 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(tool_call["body"]["params"]["name"], "alibaba_web_search")
             self.assertEqual(tool_call["body"]["params"]["arguments"], {"query": "今天英伟达财报如何", "count": 5})
 
+    def test_bailian_adapter_recovers_when_pinned_tool_name_is_not_found(self):
+        from runtime import web_search_provider
+
+        calls: list[dict[str, object]] = []
+
+        def fake_post(endpoint, body, headers, *, ignore_response=False):
+            method = body.get("method")
+            calls.append({"method": method, "name": body.get("params", {}).get("name", "")})
+            if method == "initialize":
+                return {"ok": True, "session_id": "sess-1", "rpc": {"result": {}}}
+            if method == "notifications/initialized":
+                return {"ok": True, "session_id": "sess-1", "rpc": {}}
+            if method == "tools/list":
+                return {
+                    "ok": True,
+                    "session_id": "sess-1",
+                    "rpc": {
+                        "result": {
+                            "tools": [
+                                {"name": "alibaba_web_search", "inputSchema": {"properties": {"query": {}, "count": {}}}}
+                            ]
+                        }
+                    },
+                }
+            if method == "tools/call":
+                requested = body.get("params", {}).get("name", "")
+                if requested == "WebSearch":
+                    return {
+                        "ok": True,
+                        "session_id": "sess-1",
+                        "rpc": {
+                            "result": {
+                                "content": [{"type": "text", "text": "Tool:WebSearch Not Found"}],
+                                "isError": True,
+                            }
+                        },
+                    }
+                return {
+                    "ok": True,
+                    "session_id": "sess-1",
+                    "rpc": {
+                        "result": {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": '[{"title":"R","url":"https://example.com/r","snippet":"s"}]',
+                                }
+                            ]
+                        }
+                    },
+                }
+            return {"ok": True, "session_id": "sess-1", "rpc": {}}
+
+        with patch.object(web_search_provider, "_mcp_post", side_effect=fake_post):
+            result = web_search_provider.bailian_mcp_websearch(
+                "OpenAI", 3, "sk-test", web_search_provider.BAILIAN_MCP_ENDPOINT, "WebSearch"
+            )
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["results"][0]["url"], "https://example.com/r")
+        method_sequence = [call["method"] for call in calls]
+        self.assertIn("tools/list", method_sequence)
+        tool_names_called = [call["name"] for call in calls if call["method"] == "tools/call"]
+        self.assertEqual(tool_names_called[0], "WebSearch")
+        self.assertIn("alibaba_web_search", tool_names_called)
+
+    def test_bailian_adapter_surfaces_is_error_text_with_available_tools(self):
+        from runtime import web_search_provider
+
+        def fake_post(endpoint, body, headers, *, ignore_response=False):
+            method = body.get("method")
+            if method == "initialize":
+                return {"ok": True, "session_id": "sess", "rpc": {"result": {}}}
+            if method == "notifications/initialized":
+                return {"ok": True, "session_id": "sess", "rpc": {}}
+            if method == "tools/list":
+                return {
+                    "ok": True,
+                    "session_id": "sess",
+                    "rpc": {"result": {"tools": [{"name": "fetch_url"}, {"name": "doc_qa"}]}},
+                }
+            return {
+                "ok": True,
+                "session_id": "sess",
+                "rpc": {
+                    "result": {
+                        "content": [{"type": "text", "text": "Tool:WebSearch Not Found"}],
+                        "isError": True,
+                    }
+                },
+            }
+
+        with patch.object(web_search_provider, "_mcp_post", side_effect=fake_post):
+            result = web_search_provider.bailian_mcp_websearch(
+                "OpenAI", 3, "sk-test", web_search_provider.BAILIAN_MCP_ENDPOINT, "WebSearch"
+            )
+        self.assertFalse(result["ok"])
+        self.assertIn("Tool:WebSearch Not Found", result["message"])
+        self.assertIn("fetch_url", result["message"])
+        self.assertIn("SEARCH_TOOL_NAME", result["message"])
+
     def test_bailian_mcp_provider_is_invoked_when_search_provider_is_bailian(self):
         from runtime import web_search_provider
 
