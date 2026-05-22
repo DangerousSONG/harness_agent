@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from typing import Any, Callable
+import json
+import os
 import re
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from runtime.chat_response import ResponseComposer, action, trace
 
@@ -51,6 +55,20 @@ class Executor:
             )
         if primary == "knowledge_question":
             return self._knowledge_answer(message, safety, task_mode, intent, asset_route, capability, risk, prefix_trace)
+        if primary == "general_chat":
+            llm_answer = _llm_free_form_answer(message)
+            if llm_answer:
+                return self.composer.compose(
+                    response_type="answer",
+                    message=llm_answer,
+                    safety=safety,
+                    task_mode=task_mode,
+                    intent=intent,
+                    asset_route=asset_route,
+                    capability=capability,
+                    risk=risk,
+                    traces=prefix_trace + [trace("model_call", "Model fallback", status="completed", summary="Used configured OPENAI_MODEL for the conversational answer.")],
+                )
         if self.legacy_handler:
             return self.legacy_handler(ctx, message, context)
         return self.composer.compose(
@@ -145,10 +163,19 @@ class Executor:
         risk: dict[str, Any],
         prefix_trace: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        used_llm = False
         if "渐进式 api" in message.lower() or "progressive api" in message.lower():
             answer = "渐进式 API 是一种先提供简单入口、再按需要逐步暴露高级能力的接口设计方式。新手可以用最少参数完成常见任务，进阶用户再打开配置、插件、回调或底层对象来处理复杂场景。"
         else:
-            answer = "这是一个知识型问题，我会直接解释概念，不创建工具或写入 workspace。你可以继续给我具体术语或上下文。"
+            llm_answer = _llm_free_form_answer(message)
+            if llm_answer:
+                answer = llm_answer
+                used_llm = True
+            else:
+                answer = "这是一个知识型问题，我会直接解释概念，不创建工具或写入 workspace。你可以继续给我具体术语或上下文。"
+        traces = list(prefix_trace)
+        if used_llm:
+            traces.append(trace("model_call", "Model fallback", status="completed", summary="Used configured OPENAI_MODEL for the knowledge answer."))
         return self.composer.compose(
             response_type="answer",
             message=answer,
@@ -158,7 +185,7 @@ class Executor:
             asset_route=asset_route,
             capability=capability,
             risk=risk,
-            traces=prefix_trace,
+            traces=traces,
         )
 
     def _capture_memory(
@@ -444,3 +471,40 @@ def _extract_urls(message: str) -> list[str]:
 
 def _is_greeting(message: str) -> bool:
     return message.strip().lower() in {"你好", "您好", "hi", "hello", "hey"}
+
+
+def _llm_free_form_answer(message: str) -> str:
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    model = os.environ.get("OPENAI_MODEL", "").strip()
+    if not api_key or not model:
+        return ""
+    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a helpful workspace chat assistant. Answer conversationally and concisely. "
+                        "If the user asks about realtime facts (news, prices, weather, scores) and you do not have "
+                        "verified sources, say you are not sure and recommend a web search rather than inventing facts."
+                    ),
+                },
+                {"role": "user", "content": message},
+            ],
+            "temperature": 0.4,
+        }
+    ).encode("utf-8")
+    try:
+        request = Request(
+            f"{base_url}/chat/completions",
+            data=payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=20) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        return str((((body.get("choices") or [{}])[0].get("message") or {}).get("content") or "")).strip()
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, KeyError):
+        return ""
