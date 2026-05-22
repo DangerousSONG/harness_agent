@@ -261,6 +261,12 @@ export default function SettingsPage({ dashboard }) {
                       <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
                         <div className="font-medium">error_code: {testResult.result?.error_code || "(unknown)"}</div>
                         <div className="mt-1 break-words">{testResult.result?.message || "No detail."}</div>
+                        {testResult.result?.raw_response ? (
+                          <details className="mt-2">
+                            <summary className="cursor-pointer text-rose-800">Raw MCP response (truncated)</summary>
+                            <pre className="mt-1 max-h-64 overflow-auto rounded bg-white/60 p-2 text-[11px] leading-tight text-zinc-800 whitespace-pre-wrap break-all">{testResult.result.raw_response}</pre>
+                          </details>
+                        ) : null}
                       </div>
                     )}
                   </div>

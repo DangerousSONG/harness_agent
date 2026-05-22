@@ -109,6 +109,7 @@ def bailian_mcp_websearch(
 
     arg_shapes = _candidate_argument_shapes(query, max_results, available_tools, tool_name)
     last_error_message = ""
+    last_raw_result: dict[str, Any] | None = None
     for shape in arg_shapes:
         call_response = _mcp_post(
             endpoint,
@@ -127,6 +128,7 @@ def bailian_mcp_websearch(
             last_error_message = str((rpc.get("error") or {}).get("message") or "tools/call error")
             continue
         result = rpc.get("result") or {}
+        last_raw_result = result
         items = _normalize_search_content(result)
         if items:
             return {
@@ -142,11 +144,21 @@ def bailian_mcp_websearch(
         names = [str(item.get("name", "")) for item in available_tools if item.get("name")]
         if names:
             tools_hint = f" Available tools: {', '.join(names[:8])}."
-    return _error(
+    raw_snippet = ""
+    if last_raw_result is not None:
+        try:
+            raw_snippet = json.dumps(last_raw_result, ensure_ascii=False)[:600]
+        except (TypeError, ValueError):
+            raw_snippet = str(last_raw_result)[:600]
+    error_payload = _error(
         "provider_unavailable",
         f"Bailian MCP: {diagnostic} (tool='{tool_name}').{tools_hint} "
         f"Override SEARCH_TOOL_NAME if the tool is named differently.",
     )
+    if raw_snippet:
+        error_payload["raw_response"] = raw_snippet
+        error_payload["message"] = error_payload["message"] + f" Raw response sample: {raw_snippet}"
+    return error_payload
 
 
 def _pick_search_tool(tools: list[dict[str, Any]]) -> str:
@@ -272,26 +284,39 @@ def _parse_mcp_payload(raw: str, content_type: str) -> dict[str, Any]:
 
 
 def _normalize_search_content(result: dict[str, Any]) -> list[dict[str, Any]]:
-    structured = result.get("structuredContent") or result.get("structured_content")
-    if isinstance(structured, dict):
-        candidate = structured.get("results") or structured.get("data") or structured.get("items")
-        if isinstance(candidate, list):
-            collected = [_normalize_item(item) for item in candidate]
+    structured_keys = ("structuredContent", "structured_content", "data", "result", "output")
+    for key in structured_keys:
+        structured = result.get(key)
+        if isinstance(structured, dict):
+            for inner_key in ("results", "data", "items", "list", "documents", "webPages", "pages", "links"):
+                candidate = structured.get(inner_key)
+                if isinstance(candidate, dict):
+                    candidate = candidate.get("value") or candidate.get("items") or candidate.get("list")
+                if isinstance(candidate, list):
+                    collected = [_normalize_item(item) for item in candidate if isinstance(item, dict)]
+                    collected = [item for item in collected if item]
+                    if collected:
+                        return collected
+            item = _normalize_item(structured)
+            if item:
+                return [item]
+        if isinstance(structured, list):
+            collected = [_normalize_item(item) for item in structured if isinstance(item, dict)]
             collected = [item for item in collected if item]
             if collected:
                 return collected
-    blocks = result.get("content")
+    blocks = result.get("content") or result.get("contents")
     collected: list[dict[str, Any]] = []
     if isinstance(blocks, list):
         for block in blocks:
             if not isinstance(block, dict):
                 continue
             kind = str(block.get("type", "")).lower()
-            if kind == "text":
-                text = str(block.get("text", "") or "")
+            if kind in {"text", ""}:
+                text = str(block.get("text", "") or block.get("content", "") or "")
                 collected.extend(_parse_text_to_items(text))
-            elif kind in {"resource", "resource_link", "json"}:
-                payload = block.get("json") or block.get("resource") or block
+            elif kind in {"resource", "resource_link", "json", "object", "data"}:
+                payload = block.get("json") or block.get("resource") or block.get("data") or block
                 if isinstance(payload, dict):
                     item = _normalize_item(payload)
                     if item:
@@ -302,7 +327,11 @@ def _normalize_search_content(result: dict[str, Any]) -> list[dict[str, Any]]:
                             item = _normalize_item(child)
                             if item:
                                 collected.append(item)
-    return collected
+    if collected:
+        return collected
+    raw_text = json.dumps(result, ensure_ascii=False) if result else ""
+    extracted = _extract_urls_from_text(raw_text)
+    return extracted
 
 
 def _parse_text_to_items(text: str) -> list[dict[str, Any]]:
@@ -317,30 +346,51 @@ def _parse_text_to_items(text: str) -> list[dict[str, Any]]:
         items = [_normalize_item(item) for item in parsed if isinstance(item, dict)]
         return [item for item in items if item]
     if isinstance(parsed, dict):
-        for key in ("results", "data", "items", "list"):
+        for key in ("results", "data", "items", "list", "documents", "webPages", "pages", "links"):
             candidate = parsed.get(key)
+            if isinstance(candidate, dict):
+                candidate = candidate.get("value") or candidate.get("items") or candidate.get("list")
             if isinstance(candidate, list):
                 items = [_normalize_item(item) for item in candidate if isinstance(item, dict)]
-                return [item for item in items if item]
+                kept = [item for item in items if item]
+                if kept:
+                    return kept
         item = _normalize_item(parsed)
-        return [item] if item else []
-    items = []
+        if item:
+            return [item]
+    return _extract_urls_from_text(text)
+
+
+def _extract_urls_from_text(text: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for match in re.finditer(r"\[([^\]]+?)\]\((https?://[^\s)]+)\)", text):
+        title = match.group(1).strip() or match.group(2)
+        url = match.group(2).strip()
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        items.append({"title": title, "url": url, "snippet": "", "source": "Bailian MCP WebSearch"})
     for url in re.findall(r"https?://[^\s<>'\")\]]+", text):
+        url = url.rstrip(".,;)")
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
         items.append({"title": url, "url": url, "snippet": "", "source": "Bailian MCP WebSearch"})
     return items
 
 
 def _normalize_item(item: dict[str, Any]) -> dict[str, Any] | None:
     url = ""
-    for key in ("url", "link", "href", "page_url"):
+    for key in ("url", "link", "href", "page_url", "pageUrl", "displayUrl", "displayLink", "webUrl", "source_url"):
         candidate = str(item.get(key, "") or "").strip()
-        if candidate:
+        if candidate.startswith("http"):
             url = candidate
             break
     if not url:
         return None
     title = ""
-    for key in ("title", "name", "headline"):
+    for key in ("title", "name", "headline", "displayName", "label"):
         candidate = str(item.get(key, "") or "").strip()
         if candidate:
             title = candidate
@@ -348,7 +398,7 @@ def _normalize_item(item: dict[str, Any]) -> dict[str, Any] | None:
     if not title:
         title = url
     snippet = ""
-    for key in ("snippet", "summary", "description", "abstract"):
+    for key in ("snippet", "summary", "description", "abstract", "content", "text"):
         candidate = str(item.get(key, "") or "").strip()
         if candidate:
             snippet = candidate
