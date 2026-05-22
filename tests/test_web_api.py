@@ -1135,6 +1135,43 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(tool_call["body"]["params"]["name"], "alibaba_web_search")
             self.assertEqual(tool_call["body"]["params"]["arguments"], {"query": "今天英伟达财报如何", "count": 5})
 
+    def test_web_research_surfaces_crawl4ai_unavailable_in_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_runtime_tool(root, "web_research", "web_research")
+            client = self.make_client(root)
+            unavailable = {
+                "title": "",
+                "url": "https://example.com/story",
+                "markdown": "",
+                "crawl_status": "crawl4ai_unavailable",
+                "error": "crawl4ai is not installed",
+                "extracted_at": "2026-05-22T00:00:00+00:00",
+                "content_length": 0,
+            }
+            with patch.dict(os.environ, {"WEB_SEARCH_MOCK_RESULTS": json.dumps([{"title": "X", "url": "https://example.com/story"}])}, clear=False):
+                with patch("runtime.tool_registry.crawl_url_to_markdown", return_value=unavailable):
+                    response = client.post(
+                        "/api/tools/web_research/run",
+                        json={"inputs": {"query": "test"}},
+                    )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            summary = payload["result"]["summary"]
+            self.assertIn("crawl4ai", summary.lower())
+            self.assertIn("playwright", summary.lower())
+            self.assertIn("crawl4ai_unavailable", payload["result"]["summary"])
+
+    def test_crawl4ai_health_endpoint_reports_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = self.make_client(Path(tmp))
+            response = client.get("/api/settings/crawl4ai/health")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            self.assertIn("installed", payload["data"])
+
     def test_bailian_adapter_recovers_when_pinned_tool_name_is_not_found(self):
         from runtime import web_search_provider
 

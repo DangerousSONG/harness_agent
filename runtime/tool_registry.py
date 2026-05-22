@@ -276,7 +276,10 @@ def run_web_research(inputs: dict[str, Any]) -> dict[str, Any]:
 
     crawled_pages = [crawl_url_to_markdown(url) for url in selected_urls]
     usable_pages = [page for page in crawled_pages if page.get("crawl_status") == "completed" and page.get("markdown", "").strip()]
-    summary = summarize_markdown_with_bailian(query or "Summarize the provided URL content.", usable_pages)
+    if usable_pages:
+        summary = summarize_markdown_with_bailian(query or "Summarize the provided URL content.", usable_pages)
+    else:
+        summary = _diagnostic_summary_when_all_crawls_failed(crawled_pages)
     results = [
         {
             "title": page.get("title", ""),
@@ -569,6 +572,51 @@ def run_async_blocking(factory: Callable[[], Any]) -> Any:
     if "error" in box:
         raise box["error"]
     return box.get("result")
+
+
+def _diagnostic_summary_when_all_crawls_failed(crawled_pages: list[dict[str, Any]]) -> dict[str, str]:
+    """All crawls failed → produce a summary that names the failing URLs and
+    points the user to the fix (install Playwright browsers, retry, etc.)."""
+    status_counts: dict[str, int] = {}
+    error_samples: list[str] = []
+    for page in crawled_pages:
+        status = str(page.get("crawl_status", "unknown")) or "unknown"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        err = str(page.get("error", "") or "").strip()
+        if err and err not in error_samples:
+            error_samples.append(err)
+    if status_counts.get("crawl4ai_unavailable"):
+        note = (
+            "crawl4ai is not installed in the runtime Python environment. "
+            "Run: pip install crawl4ai && playwright install chromium (or crawl4ai-setup)."
+        )
+    elif status_counts.get("failed"):
+        first = error_samples[0] if error_samples else ""
+        note = (
+            "crawl4ai is installed but raised an error while crawling — most often this means the Playwright "
+            "browser is missing. Run: playwright install chromium (or crawl4ai-setup). "
+            f"First error sample: {first[:200]}"
+        )
+    elif status_counts.get("empty"):
+        note = (
+            "crawl4ai ran but extracted no Markdown — the pages may be JS-heavy or anti-bot. "
+            "Try a different search provider, narrow the query so different URLs come back, or supply a direct URL."
+        )
+    else:
+        note = (
+            "crawl4ai did not return any usable Markdown for the selected URLs. "
+            "Statuses: " + ", ".join(f"{name}={count}" for name, count in sorted(status_counts.items()))
+        )
+    summary_lines = [
+        "未能抓取到可用的 Markdown，无法生成事实摘要。",
+        f"crawl_status 统计：{status_counts}.",
+        note,
+    ]
+    return {
+        "provider": "markdown_fallback",
+        "summary": "\n".join(summary_lines),
+        "note": note,
+    }
 
 
 def summarize_markdown_with_bailian(query: str, pages: list[dict[str, Any]]) -> dict[str, str]:
