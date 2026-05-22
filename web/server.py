@@ -972,6 +972,21 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
 
         result = search_urls(query, max_results)
         endpoint = os.environ.get("SEARCH_API_BASE", "").strip() or "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp"
+        loaded_env = {
+            key: bool(str(os.environ.get(key, "")).strip())
+            for key in (
+                "SEARCH_PROVIDER",
+                "SEARCH_API_KEY",
+                "SEARCH_API_KEY_ENV",
+                "SEARCH_API_BASE",
+                "SEARCH_TOOL_NAME",
+                "DASHSCOPE_API_KEY",
+                "BAILIAN_API_KEY",
+                "OPENAI_MODEL",
+                "OPENAI_API_KEY",
+                "OPENAI_BASE_URL",
+            )
+        }
         return ok(
             {
                 "query": query,
@@ -979,8 +994,10 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
                 "search_mode": result.get("search_mode", ""),
                 "endpoint": endpoint,
                 "provider": os.environ.get("SEARCH_PROVIDER", "").strip() or "(none)",
+                "tool_name": os.environ.get("SEARCH_TOOL_NAME", "").strip() or "(auto)",
                 "ok": bool(result.get("ok")),
                 "result": result,
+                "loaded_env": loaded_env,
             }
         )
 
