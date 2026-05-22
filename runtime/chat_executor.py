@@ -320,15 +320,16 @@ class Executor:
         status_note = _tool_status_note(capability.get("tool_statuses", []))
         if primary in {"financial_research_query", "finance_quote_query"}:
             failure_message = (
-                "我已自动尝试 crawl4ai + no-key fallback search，但没有返回可用结果。"
-                f"详情：{detail}。请配置搜索/金融 provider，或直接提供要总结的 URL。"
+                f"实时查询失败：{detail} "
+                "请到 Settings 检查 Realtime Search Provider（推荐配置百炼 / DashScope WebSearch 并填 API Key），或直接提供要总结的 URL。"
                 f"{status_note}\n\n"
                 "说明：这不是财务建议；没有实时来源时我不会编造股价、财报、新闻或分析师观点。"
             )
         else:
             failure_message = (
-                "我已自动尝试 crawl4ai + no-key fallback search，但没有返回可用结果。"
-                f"详情：{detail}。请配置搜索 provider，或直接提供要总结的 URL。{status_note}"
+                f"实时查询失败：{detail} "
+                "请到 Settings 检查 Realtime Search Provider，或直接提供要总结的 URL。"
+                f"{status_note}"
             )
         return self.composer.compose(
             response_type="tool_result",

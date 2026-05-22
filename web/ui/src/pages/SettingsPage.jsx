@@ -4,8 +4,9 @@ import { api, getErrorMessage } from "../lib/api";
 import { compact } from "../lib/format";
 
 const SEARCH_PROVIDER_OPTIONS = [
-  { value: "", label: "Not configured (no-key DuckDuckGo fallback)" },
-  { value: "bailian", label: "Bailian / DashScope WebSearch (MCP)" },
+  { value: "", label: "Not configured (Chat realtime queries will fail)" },
+  { value: "bailian", label: "Bailian / DashScope WebSearch (MCP) — recommended" },
+  { value: "duckduckgo", label: "DuckDuckGo (no key, opt-in, often blocked)" },
   { value: "bing", label: "Bing Web Search (no adapter yet)" },
   { value: "serper", label: "Serper / Google (no adapter yet)" },
   { value: "brave", label: "Brave Search (no adapter yet)" },
@@ -14,11 +15,13 @@ const SEARCH_PROVIDER_OPTIONS = [
 
 const SEARCH_PROVIDER_HINTS = {
   bailian:
-    "百炼 / DashScope: get the API key at bailian.console.aliyun.com (Manage → API-KEY). Endpoint is the MCP WebSearch URL; tool name defaults to 'WebSearch' (override with SEARCH_TOOL_NAME if needed).",
-  bing: "Bing adapter is not wired up yet; the key will be saved but search will fall back to DuckDuckGo.",
-  serper: "Serper adapter is not wired up yet; the key will be saved but search will fall back to DuckDuckGo.",
-  brave: "Brave adapter is not wired up yet; the key will be saved but search will fall back to DuckDuckGo.",
-  tavily: "Tavily adapter is not wired up yet; the key will be saved but search will fall back to DuckDuckGo.",
+    "百炼 / DashScope: get the API key at bailian.console.aliyun.com (Manage → API-KEY). Tool name is auto-discovered via MCP tools/list; override with SEARCH_TOOL_NAME if needed.",
+  duckduckgo:
+    "No API key required, but DuckDuckGo's HTML endpoint is often blocked or rate-limited in cloud / sandboxed environments. Use only as a manual opt-in.",
+  bing: "Bing adapter is not wired up yet; selecting this will fail until an adapter is added.",
+  serper: "Serper adapter is not wired up yet; selecting this will fail until an adapter is added.",
+  brave: "Brave adapter is not wired up yet; selecting this will fail until an adapter is added.",
+  tavily: "Tavily adapter is not wired up yet; selecting this will fail until an adapter is added.",
 };
 
 const MODEL_PRESETS = [
@@ -221,8 +224,9 @@ export default function SettingsPage({ dashboard }) {
               <div>
                 <h2 className="text-base font-semibold text-zinc-950">Realtime Search Provider</h2>
                 <p className="text-xs text-zinc-500">
-                  Used by Chat for realtime queries. Without a configured provider the runtime falls back to a no-key
-                  DuckDuckGo search before crawl4ai.
+                  Powers the built-in <code>web_search</code> / <code>web_research</code> tool. Configuration is read from
+                  the project <code>.env</code> at startup; saving here writes the same file and applies the change
+                  immediately. Without a provider, realtime Chat queries fail fast instead of silently falling back.
                 </p>
               </div>
             </div>
