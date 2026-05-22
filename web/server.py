@@ -1001,6 +1001,31 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             }
         )
 
+    @app.get("/api/settings/crawl4ai/health")
+    def crawl4ai_health() -> JSONResponse:
+        info: dict[str, Any] = {"installed": False, "version": "", "playwright_browser": "unknown", "error": ""}
+        try:
+            import crawl4ai  # type: ignore
+            info["installed"] = True
+            info["version"] = getattr(crawl4ai, "__version__", "unknown")
+        except ImportError as exc:
+            info["error"] = f"crawl4ai is not installed: {exc}"
+            return ok(info)
+        try:
+            import playwright  # type: ignore  # noqa: F401
+            info["playwright_module"] = "installed"
+        except ImportError as exc:
+            info["playwright_module"] = f"missing: {exc}"
+        try:
+            from playwright.sync_api import sync_playwright  # type: ignore
+
+            with sync_playwright() as pw:
+                browsers_path = getattr(pw, "chromium", None)
+                info["playwright_browser"] = "available" if browsers_path else "unknown"
+        except Exception as exc:  # pragma: no cover - environment probe
+            info["playwright_browser"] = f"check failed: {exc}"
+        return ok(info)
+
     @app.get("/api/evolution/{promo_id}/state")
     def evolution_state(promo_id: str) -> JSONResponse:
         promo = ctx.promotions.get_candidate(promo_id)
