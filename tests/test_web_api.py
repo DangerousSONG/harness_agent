@@ -851,6 +851,64 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(payload["type"], "tool_result")
             self.assertIn("no-key fallback search", payload["message"])
 
+    def test_settings_providers_writes_dotenv_and_applies_in_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = self.make_client(root)
+            with patch.dict(
+                os.environ,
+                {"SEARCH_PROVIDER": "", "SEARCH_API_KEY": "", "SEARCH_API_KEY_ENV": "", "WEB_SEARCH_MOCK_RESULTS": ""},
+                clear=False,
+            ):
+                initial = client.get("/api/settings/providers").json()
+                self.assertTrue(initial["ok"])
+                self.assertFalse(initial["data"]["search"]["configured"])
+                response = client.post(
+                    "/api/settings/providers",
+                    json={"search": {"provider": "bing", "api_key": "sk-test-abc123-xyz"}},
+                )
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertTrue(payload["ok"])
+                self.assertIn("SEARCH_PROVIDER", payload["data"]["written_keys"])
+                self.assertIn("SEARCH_API_KEY", payload["data"]["written_keys"])
+                self.assertEqual(payload["data"]["env_path"], ".env")
+                env_text = (root / ".env").read_text(encoding="utf-8")
+                self.assertIn("SEARCH_PROVIDER=bing", env_text)
+                self.assertIn("SEARCH_API_KEY=sk-test-abc123-xyz", env_text)
+                self.assertEqual(os.environ.get("SEARCH_PROVIDER"), "bing")
+                self.assertEqual(os.environ.get("SEARCH_API_KEY"), "sk-test-abc123-xyz")
+                after = client.get("/api/settings/providers").json()["data"]["search"]
+                self.assertTrue(after["configured"])
+                self.assertEqual(after["provider"], "bing")
+                self.assertTrue(after["has_api_key"])
+                self.assertNotIn("sk-test-abc123-xyz", after["api_key_masked"])
+
+    def test_settings_providers_rejects_unknown_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = self.make_client(root)
+            response = client.post("/api/settings/providers", json={"other": {"foo": "bar"}})
+            self.assertEqual(response.status_code, 400)
+            self.assertFalse(response.json()["ok"])
+
+    def test_settings_providers_clearing_key_removes_from_dotenv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("SEARCH_PROVIDER=bing\nSEARCH_API_KEY=keep-this\nOTHER=stay\n", encoding="utf-8")
+            client = self.make_client(root)
+            with patch.dict(os.environ, {"SEARCH_PROVIDER": "bing", "SEARCH_API_KEY": "keep-this"}, clear=False):
+                response = client.post(
+                    "/api/settings/providers",
+                    json={"search": {"provider": "", "api_key": ""}},
+                )
+                self.assertEqual(response.status_code, 200)
+                env_text = (root / ".env").read_text(encoding="utf-8")
+                self.assertNotIn("SEARCH_PROVIDER", env_text)
+                self.assertNotIn("SEARCH_API_KEY", env_text)
+                self.assertIn("OTHER=stay", env_text)
+                self.assertNotIn("SEARCH_PROVIDER", os.environ)
+
     def test_chat_general_realtime_queries_route_to_web_research(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -26,6 +26,15 @@ from runtime.skill_evolution_registry import SkillEvolutionRegistry, normalize_s
 from runtime.skill_loader import SkillLoader
 from runtime.skill_memory import MEMORY_FILES, SkillMemoryManager, normalize_name
 from runtime.chat_orchestrator import ChatOrchestrator
+from runtime.env_settings import (
+    ALLOWED_KEYS,
+    FINANCE_KEYS,
+    MODEL_KEYS,
+    SEARCH_KEYS,
+    apply_to_environ,
+    mask_secret,
+    update_env_file,
+)
 from runtime.tool_registry import ToolRegistry
 from safety.audit import SECRET_PATTERNS as SECRET_SCAN_PATTERNS
 from safety.policy_config import load_policy
@@ -910,6 +919,34 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
                 "latest_versions": sorted(versions, key=lambda item: item.get("created_at", ""), reverse=True)[:5],
                 "recent_events": _recent_events(ctx),
                 "providers": _provider_settings_summary(ctx),
+            }
+        )
+
+    @app.get("/api/settings/providers")
+    def get_provider_settings() -> JSONResponse:
+        return ok(_provider_settings_detail(ctx))
+
+    @app.post("/api/settings/providers")
+    async def set_provider_settings(request: Request) -> JSONResponse:
+        body = await request.json()
+        if not isinstance(body, dict):
+            return fail("Body must be a JSON object.")
+        updates = _provider_settings_updates_from_body(body)
+        if not updates:
+            return fail("No allowed settings keys were provided.")
+        env_path = ctx.project_root / ".env"
+        try:
+            written = update_env_file(env_path, updates)
+        except ValueError as exc:
+            return fail(str(exc), status_code=400)
+        except OSError as exc:
+            return fail(f"Failed to write .env: {exc}", status_code=500)
+        apply_to_environ(updates)
+        return ok(
+            {
+                "written_keys": written,
+                "env_path": str(env_path.relative_to(ctx.project_root)).replace("\\", "/"),
+                "providers": _provider_settings_detail(ctx),
             }
         )
 
@@ -4830,6 +4867,80 @@ def _finance_provider_configured(ctx: WebContext) -> bool:
         or str(env.get("FINANCE_API_KEY", "") or "").strip()
         or (api_key_env and str(env.get(api_key_env, "") or "").strip())
     )
+
+
+def _provider_settings_detail(ctx: WebContext) -> dict[str, Any]:
+    env = ctx.tool_registry.env
+    search_api_key = str(env.get("SEARCH_API_KEY", "") or "")
+    finance_api_key = str(env.get("FINANCE_API_KEY", "") or "")
+    model_api_key = str(env.get("OPENAI_API_KEY", "") or "")
+    return {
+        "search": {
+            "configured": _search_provider_configured(ctx),
+            "provider": str(env.get("SEARCH_PROVIDER", "") or ""),
+            "api_key_env": str(env.get("SEARCH_API_KEY_ENV", "") or ""),
+            "has_api_key": bool(search_api_key.strip()),
+            "api_key_masked": mask_secret(search_api_key.strip()),
+            "mock_enabled": bool(str(env.get("WEB_SEARCH_MOCK_RESULTS", "") or "").strip()),
+        },
+        "finance": {
+            "configured": _finance_provider_configured(ctx),
+            "provider": str(env.get("FINANCE_PROVIDER", "") or env.get("FINANCE_QUOTE_PROVIDER", "") or ""),
+            "api_key_env": str(env.get("FINANCE_API_KEY_ENV", "") or ""),
+            "has_api_key": bool(finance_api_key.strip()),
+            "api_key_masked": mask_secret(finance_api_key.strip()),
+        },
+        "model": {
+            "configured": bool(model_api_key.strip() and str(env.get("OPENAI_MODEL", "") or "").strip()),
+            "model": str(env.get("OPENAI_MODEL", "") or ""),
+            "base_url": str(env.get("OPENAI_BASE_URL", "") or ""),
+            "has_api_key": bool(model_api_key.strip()),
+            "api_key_masked": mask_secret(model_api_key.strip()),
+        },
+        "allowed_keys": sorted(ALLOWED_KEYS),
+    }
+
+
+def _provider_settings_updates_from_body(body: dict[str, Any]) -> dict[str, str | None]:
+    updates: dict[str, str | None] = {}
+    search = body.get("search")
+    if isinstance(search, dict):
+        if "provider" in search:
+            updates["SEARCH_PROVIDER"] = _normalize_setting_value(search.get("provider"))
+        if "api_key" in search:
+            updates["SEARCH_API_KEY"] = _normalize_setting_value(search.get("api_key"))
+        if "api_key_env" in search:
+            updates["SEARCH_API_KEY_ENV"] = _normalize_setting_value(search.get("api_key_env"))
+        if "mock_results" in search:
+            updates["WEB_SEARCH_MOCK_RESULTS"] = _normalize_setting_value(search.get("mock_results"))
+    finance = body.get("finance")
+    if isinstance(finance, dict):
+        if "provider" in finance:
+            updates["FINANCE_PROVIDER"] = _normalize_setting_value(finance.get("provider"))
+        if "quote_provider" in finance:
+            updates["FINANCE_QUOTE_PROVIDER"] = _normalize_setting_value(finance.get("quote_provider"))
+        if "api_key" in finance:
+            updates["FINANCE_API_KEY"] = _normalize_setting_value(finance.get("api_key"))
+        if "api_key_env" in finance:
+            updates["FINANCE_API_KEY_ENV"] = _normalize_setting_value(finance.get("api_key_env"))
+    model = body.get("model")
+    if isinstance(model, dict):
+        if "model" in model:
+            updates["OPENAI_MODEL"] = _normalize_setting_value(model.get("model"))
+        if "api_key" in model:
+            updates["OPENAI_API_KEY"] = _normalize_setting_value(model.get("api_key"))
+        if "base_url" in model:
+            updates["OPENAI_BASE_URL"] = _normalize_setting_value(model.get("base_url"))
+    return updates
+
+
+def _normalize_setting_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "1" if value else None
+    text = str(value).strip()
+    return text if text else None
 
 
 def _provider_settings_summary(ctx: WebContext) -> dict[str, Any]:
