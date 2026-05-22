@@ -125,6 +125,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body || {}),
     }),
+  testSearchProvider: (query) =>
+    request("/api/settings/providers/test-search", {
+      method: "POST",
+      body: JSON.stringify({ query: query || "OpenAI", max_results: 3 }),
+    }),
 };
 
 export function getErrorMessage(error) {

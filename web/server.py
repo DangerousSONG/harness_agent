@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import difflib
 from pathlib import Path
 import json
+import os
 import re
 import subprocess
 import uuid
@@ -949,6 +950,37 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
                 "written_keys": written,
                 "env_path": str(env_path.relative_to(ctx.project_root)).replace("\\", "/"),
                 "providers": _provider_settings_detail(ctx),
+            }
+        )
+
+    @app.post("/api/settings/providers/test-search")
+    async def test_search_provider(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        query = str(body.get("query", "") or "").strip() or "OpenAI"
+        max_results = body.get("max_results", 3)
+        try:
+            max_results = int(max_results)
+        except (TypeError, ValueError):
+            max_results = 3
+        max_results = max(1, min(5, max_results))
+        from runtime.tool_registry import search_urls
+
+        result = search_urls(query, max_results)
+        endpoint = os.environ.get("SEARCH_API_BASE", "").strip() or "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp"
+        return ok(
+            {
+                "query": query,
+                "max_results": max_results,
+                "search_mode": result.get("search_mode", ""),
+                "endpoint": endpoint,
+                "provider": os.environ.get("SEARCH_PROVIDER", "").strip() or "(none)",
+                "ok": bool(result.get("ok")),
+                "result": result,
             }
         )
 

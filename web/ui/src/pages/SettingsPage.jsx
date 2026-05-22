@@ -19,6 +19,10 @@ export default function SettingsPage({ dashboard }) {
   const [reloadError, setReloadError] = useState("");
   const [modelError, setModelError] = useState("");
   const [modelNotice, setModelNotice] = useState("");
+  const [testQuery, setTestQuery] = useState("OpenAI");
+  const [testRunning, setTestRunning] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [testError, setTestError] = useState("");
 
   async function reload() {
     setLoading(true);
@@ -103,6 +107,20 @@ export default function SettingsPage({ dashboard }) {
   const inputClass =
     "w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-zinc-900 shadow-hairline focus:border-appleBlue focus:outline-none focus:ring-1 focus:ring-appleBlue disabled:opacity-50";
 
+  async function runSearchTest() {
+    setTestRunning(true);
+    setTestError("");
+    setTestResult(null);
+    try {
+      const payload = await api.testSearchProvider(testQuery);
+      setTestResult(payload.data);
+    } catch (exc) {
+      setTestError(getErrorMessage(exc));
+    } finally {
+      setTestRunning(false);
+    }
+  }
+
   return (
     <section className="workbench-section">
       <div className="workbench-container space-y-5">
@@ -160,14 +178,80 @@ export default function SettingsPage({ dashboard }) {
           {loading ? (
             <div className="mt-4 text-sm text-zinc-500">Loading…</div>
           ) : (
-            <div className="mt-5 grid gap-3 text-xs text-zinc-500 lg:grid-cols-3">
-              <StatusRow label="Configured" value={providers?.search?.configured ? "yes" : "no"} />
-              <StatusRow label="Provider" value={providers?.search?.provider || "(none)"} />
-              <StatusRow
-                label="API key"
-                value={providers?.search?.has_api_key ? providers.search.api_key_masked : "not set"}
-              />
-            </div>
+            <>
+              <div className="mt-5 grid gap-3 text-xs text-zinc-500 lg:grid-cols-3">
+                <StatusRow label="Configured" value={providers?.search?.configured ? "yes" : "no"} />
+                <StatusRow label="Provider" value={providers?.search?.provider || "(none)"} />
+                <StatusRow
+                  label="API key"
+                  value={providers?.search?.has_api_key ? providers.search.api_key_masked : "not set"}
+                />
+              </div>
+
+              <div className="mt-5 border-t border-line pt-4">
+                <div className="flex flex-wrap items-end gap-3">
+                  <label className="flex-1 min-w-[14rem] space-y-1 text-sm">
+                    <span className="block text-xs font-medium text-zinc-600">Test query</span>
+                    <input
+                      className={inputClass}
+                      type="text"
+                      value={testQuery}
+                      onChange={(event) => setTestQuery(event.target.value)}
+                      placeholder="OpenAI"
+                      disabled={testRunning}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={runSearchTest}
+                    disabled={testRunning}
+                  >
+                    {testRunning ? "Testing…" : "Test search now"}
+                  </button>
+                </div>
+                <p className="mt-2 text-xs text-zinc-500">
+                  Runs a real search through the configured provider and shows the actual response. Use this to verify your
+                  key works end-to-end.
+                </p>
+
+                {testError ? (
+                  <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+                    {testError}
+                  </div>
+                ) : null}
+
+                {testResult ? (
+                  <div className="mt-3 space-y-2">
+                    <div className="grid gap-2 text-xs text-zinc-500 lg:grid-cols-3">
+                      <StatusRow label="Status" value={testResult.ok ? "ok" : "failed"} />
+                      <StatusRow label="Search mode" value={testResult.search_mode || "(unknown)"} />
+                      <StatusRow label="Endpoint" value={testResult.endpoint || "(default)"} />
+                    </div>
+                    {testResult.ok ? (
+                      <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                        <div className="text-xs font-medium text-emerald-700">
+                          {(testResult.result?.results || []).length} result(s) for "{testResult.query}"
+                        </div>
+                        <ul className="mt-2 space-y-1 text-xs text-zinc-800">
+                          {(testResult.result?.results || []).map((item, idx) => (
+                            <li key={idx} className="truncate">
+                              <span className="font-medium">{item.title || "(no title)"}</span>
+                              <span className="text-zinc-500"> — {item.url}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+                        <div className="font-medium">error_code: {testResult.result?.error_code || "(unknown)"}</div>
+                        <div className="mt-1 break-words">{testResult.result?.message || "No detail."}</div>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            </>
           )}
         </section>
 

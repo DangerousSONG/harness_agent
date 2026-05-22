@@ -975,6 +975,58 @@ class WebApiTests(unittest.TestCase):
                 self.assertIn("OTHER=stay", env_text)
                 self.assertNotIn("SEARCH_PROVIDER", os.environ)
 
+    def test_test_search_provider_endpoint_returns_configured_provider_outcome(self):
+        from runtime import web_search_provider
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = self.make_client(root)
+
+            def fake_call(provider, query, max_results):
+                self.assertEqual(provider, "bailian")
+                return {
+                    "ok": True,
+                    "search_mode": "configured_provider",
+                    "results": [
+                        {"title": "OpenAI homepage", "url": "https://openai.com", "snippet": "AI lab", "source": "Bailian MCP WebSearch"}
+                    ],
+                }
+
+            env_overrides = {"SEARCH_PROVIDER": "bailian", "DASHSCOPE_API_KEY": "sk-test"}
+            with patch.dict(os.environ, env_overrides, clear=False):
+                with patch.object(web_search_provider, "call_configured_provider", side_effect=fake_call):
+                    response = client.post(
+                        "/api/settings/providers/test-search",
+                        json={"query": "OpenAI"},
+                    )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            self.assertTrue(payload["data"]["ok"])
+            self.assertEqual(payload["data"]["provider"], "bailian")
+            self.assertEqual(payload["data"]["search_mode"], "configured_provider")
+            self.assertEqual(payload["data"]["result"]["results"][0]["url"], "https://openai.com")
+
+    def test_test_search_provider_endpoint_surfaces_failure_detail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = self.make_client(root)
+            env_overrides = {
+                "SEARCH_PROVIDER": "",
+                "SEARCH_API_KEY": "",
+                "DASHSCOPE_API_KEY": "",
+                "BAILIAN_API_KEY": "",
+                "WEB_SEARCH_MOCK_RESULTS": "",
+            }
+            with patch.dict(os.environ, env_overrides, clear=False):
+                response = client.post("/api/settings/providers/test-search", json={"query": "anything"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            self.assertFalse(payload["data"]["ok"])
+            self.assertEqual(payload["data"]["result"]["error_code"], "search_not_configured")
+            self.assertIn("SEARCH_PROVIDER", payload["data"]["result"]["message"])
+
     def test_dotenv_autoload_makes_persisted_settings_survive_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

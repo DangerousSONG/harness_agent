@@ -4,6 +4,12 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-22
 
+### Test Search Provider Button on Settings
+
+- Added `POST /api/settings/providers/test-search` which runs `search_urls(query, max_results)` end-to-end through the currently configured provider and returns the actual response (URLs found, or the provider's real error). Used to verify the `DASHSCOPE_API_KEY` actually works without going through Chat.
+- Settings page now has a "Test search now" button on the read-only status card. Accepts a custom test query (default "OpenAI"), shows the response inline: green box with the result list on success, red box with `error_code` + provider message on failure.
+- Clarified in the status card that the Bailian MCP endpoint URL is hardcoded as a default and only needs `SEARCH_API_BASE` if the user wants to override.
+
 ### Drop Editable Search Provider Form; Keep Read-only Status Only
 
 - Removed the editable Realtime Search Provider form from the Settings page. `web_search` / `web_research` is now strictly a built-in tool; the only knobs (`SEARCH_PROVIDER`, `SEARCH_API_KEY`, `DASHSCOPE_API_KEY`, …) live in `.env` and are picked up on server start via the autoloader added earlier.
