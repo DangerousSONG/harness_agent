@@ -92,15 +92,30 @@ Stage 1 skill memory support now lives in `runtime/skill_memory.py`.
 
 ## Web Chat Assistant
 
-`web/server.py` exposes the local asset-governance API and a skill-aware Chat entry point at `POST /api/chat`. The older `/api/chat/send` path remains as a compatible alias.
+`web/server.py` exposes the local asset-governance API and a skill-aware Chat entry point at `POST /api/chat`. The older `/api/chat/send` path remains as a compatible alias. The route itself is intentionally thin: it parses the request, calls `runtime.chat_orchestrator.ChatOrchestrator.handle(message, context)`, and returns the structured result.
 
-Chat is not only a command console. It now runs a small runtime pipeline:
+Chat orchestration is split across runtime modules:
 
-1. Intent Router classifies the user request into canonical intents such as `general_chat`, `skill_list_query`, `skill_read_request`, `skill_creation_request`, `skill_update_request`, `file_read_request`, `file_write_request`, `file_edit_request`, `command_run_request`, `workspace_status_query`, `review_query`, `review_action_request`, `rollback_request`, `memory_preference`, `promotion_query`, `evolution_action_request`, `tool_creation_request`, `writing_request`, and `external_realtime_query`.
-2. Context Loader reads only the workspace state needed for that intent, such as skills for skill-list and skill-routing requests, or dashboard/review/promotion/version state for evolution status.
-3. Skill Selector maps writing to `markdown_writer`, file changes to file-editing skills, tool/API work to `tool_usage`, and self-evolution/review/version work to `self_improvement`.
-4. Planner and Safety Gate choose whether to answer directly, ask for missing information, capture memory, call an existing workspace API, execute a safe read-only command, create a first-time asset through preflight and confirmation, create a review, or return a proposed/confirmation-required action.
-5. Response Composer returns natural language plus an auditable `trace[]`; it does not expose hidden chain-of-thought.
+- `runtime/chat_orchestrator.py`: pipeline composition and trace prefixing.
+- `runtime/chat_safety.py`: input safety gate.
+- `runtime/chat_intent.py`: task mode and intent routing, with configured-model fallback for low-confidence cases.
+- `runtime/chat_capability.py`: executable tool/provider/crawl4ai/model capability checks and asset routing.
+- `runtime/chat_planner.py`: clarification, risk, and action planning.
+- `runtime/chat_executor.py`: one-shot execution/direct answers plus compatibility delegation for legacy workspace flows.
+- `runtime/chat_response.py`: response schema, trace, and action helpers.
+
+Chat is not only a command console. It now runs a workspace orchestrator pipeline:
+
+1. InputSafetyGate blocks unsafe input before planning.
+2. TaskModeClassifier separates one-shot tasks, capability setup, asset creation/update, knowledge questions, preference memory, and unsafe requests before asset actions.
+3. IntentRouter classifies canonical intents such as `general_chat`, `knowledge_question`, `skill_use_request`, `tool_creation_request`, `financial_research_query`, `news_query`, `web_research_query`, file/command/review requests, memory preferences, and clarification.
+4. ClarificationPlanner asks only when the mode/intent cannot be safely resolved.
+5. ContextLoader reads only the workspace state needed for that route.
+6. CapabilityChecker checks executable tools, configured providers, crawl4ai availability, and model connection before proposing actions.
+7. AssetRouter and RiskClassifier choose the asset family and safety posture.
+8. ActionPlanner and Executor either run a one-shot provider/tool, compose a direct answer, delegate to the compatibility executor, or return prioritized actions.
+9. MemoryCaptureJudge records only explicit durable preferences.
+10. ResponseComposer returns natural language plus an auditable `trace[]`; it does not expose hidden chain-of-thought.
 
 Deterministic routing covers writing/markdown requests, file editing advice, tool creation/design, existing tool updates, skill creation proposals, tool/error questions, realtime external-data limits, and self-improvement workflows. Weather-like requests are routed by intent: asking for today's weather is an `external_realtime_query` and will not fabricate data without a weather tool, while asking to build a weather tool is a `tool_creation_request` with `asset_type=tool` and `target=weather_query`. Tool creation also performs semantic name/template inference for common capabilities such as `web_search`, `file_reader`, `git_status`, `command_runner`, and `doc_writer`; if the user only asks to create "a tool" without a clear purpose, Chat asks for clarification instead of defaulting to `custom_tool`.
 
@@ -136,7 +151,9 @@ Conversational evolution operations stay behind existing APIs:
 - Apply responses include diff-preview data before the UI calls the review apply API.
 - Rollback is routed through the version rollback API and creates a review only.
 
-The Chat response shape includes `run_id`, `intent`, `risk`, `type`, `message`, `used_skill`, `why`, `memory_record_id`, `trace`, `actions`, and `data`, allowing the UI to render normal answers, skill results, file results, command results, memory captures, review-created states, proposed actions, tool results, approval-required states, and errors differently. Ordinary `answer` messages keep `message` as natural-language content and do not force a skill attribution.
+The Chat response shape includes `run_id`, `safety`, `task_mode`, `intent`, `asset_route`, `capability`, `risk`, `type`, `message`, `used_skill`, `why`, `memory_record_id`, `trace`, `actions`, and `data`, allowing the UI to render normal answers, skill results, file results, command results, memory captures, review-created states, proposed actions, tool results, approval-required states, and errors differently. Ordinary `answer` messages keep `message` as natural-language content and do not force a skill attribution.
+
+Chat actions use a stable UI contract: `id`, `kind`, `label`, `method`, `path`, `payload`, `requires_confirmation`, and optional `priority`. The UI dispatches actions by `kind` or explicit API path rather than label text. Realtime missing-capability actions prioritize provider configuration, one-shot crawl4ai fallback, and offline answer modes before lower-priority persistent Tool Asset creation.
 
 ## Workspace UI Model
 

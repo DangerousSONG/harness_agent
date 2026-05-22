@@ -4,6 +4,27 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-21
 
+### Chat Action Dispatcher Wiring
+
+- Wired Chat action buttons by `action.kind` in the Console UI so `try_no_key_fallback`, `answer_without_realtime`, `configure_provider`, `test_tool`, `open_tool_details`, and persistent tool creation no longer fall through to the generic "not wired" message.
+- Standardized new orchestrator actions with `ACT-*` ids, kind, method, path, payload/body, confirmation flag, and priority; the crawl4ai fallback action now posts directly to `/api/tools/web_research/run` with the original query and `mode=no_key_fallback`.
+- Added a backend one-shot web research run fallback for `/api/tools/web_research/run` so URL and no-key fallback requests can execute through the runtime handler even when no persistent Tool Asset exists.
+- Added `context.force_mode=answer_without_realtime` handling in Chat to return an offline financial-analysis framework without inventing current market facts.
+- Added OpenAI-compatible Markdown summarization support for `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`, while preserving Markdown excerpt fallback when no model is configured.
+- Added API coverage for fallback action schema, fallback run failure structure, and offline realtime answers.
+- Validation: bundled Python plus `.venv` site-packages `python -m unittest`; `npm.cmd run build`; bundled Python `compileall`; `"q" | python .\harness\agent_harness.py`.
+
+### Chat Workspace Orchestrator Split
+
+- Split Chat orchestration into `runtime/chat_orchestrator.py`, `runtime/chat_intent.py`, `runtime/chat_safety.py`, `runtime/chat_capability.py`, `runtime/chat_planner.py`, `runtime/chat_executor.py`, and `runtime/chat_response.py`; `/api/chat` and `/api/chat/send` now delegate to `ChatOrchestrator.handle(message, context)`.
+- Added task-mode-first routing so `今天英伟达财报如何` becomes `task_mode=one_shot_task`, `intent=financial_research_query`, while explicit tool creation and future capability setup route separately.
+- Added structured capability checks for realtime financial/web research, including executable tool status, search provider configuration, crawl4ai availability, and model configuration, with provider/fallback actions prioritized before persistent Tool creation.
+- Added natural direct answers for greetings and knowledge questions, `markdown_writer` one-shot routing for book-note templates, and preference memory capture for long-term book-note format requests.
+- Extended Chat safety labels for prompt injection, secret requests, fabrication, dangerous commands, workspace escape, path traversal, unsafe writes, data exfiltration, and policy bypass before planning.
+- Updated Chat trace rendering support for `task_mode`, `capability_check`, `decision`, `search`, `crawl`, `summarize`, and `model_call`.
+- Added API regression coverage for task mode, financial one-shot routing, direct knowledge answers, URL web research, tool creation mode, capability setup, and preference memory capture.
+- Validation: bundled Python plus `.venv` site-packages `python -m unittest`.
+
 ### Chat Financial Query 500 Fix
 
 - Fixed `/api/chat` financial/news/company realtime intent routing so Chinese NVIDIA earnings questions such as `今天英伟达财报怎么样` return a structured missing-tool response instead of HTTP 500.

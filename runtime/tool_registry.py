@@ -558,6 +558,10 @@ def summarize_markdown_with_bailian(query: str, pages: list[dict[str, Any]]) -> 
             "note": "No Markdown was available; raw HTML was not sent to the model.",
         }
     key = os.environ.get("BAILIAN_API_KEY", "").strip() or os.environ.get("DASHSCOPE_API_KEY", "").strip()
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    openai_model = os.environ.get("OPENAI_MODEL", "").strip()
+    if openai_key and openai_model:
+        return call_openai_summary(query, markdown_bundle, openai_key, openai_model, fallback_markdown_summary(pages))
     if not key:
         return {
             "provider": "markdown_fallback",
@@ -565,6 +569,38 @@ def summarize_markdown_with_bailian(query: str, pages: list[dict[str, Any]]) -> 
             "note": "Bailian/Qwen key is not configured; returned the first Markdown paragraphs instead.",
         }
     return call_bailian_summary(query, markdown_bundle, key, fallback_markdown_summary(pages))
+
+
+def call_openai_summary(query: str, markdown: str, api_key: str, model: str, fallback_summary: str) -> dict[str, str]:
+    endpoint = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
+    payload = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "Summarize only from the provided Markdown. Cite source URLs. Do not use raw HTML or invent facts."},
+            {"role": "user", "content": f"Question: {query}\n\nMarkdown sources:\n{markdown[:18000]}"},
+        ],
+        "temperature": 0.2,
+    }).encode("utf-8")
+    try:
+        from urllib.request import Request
+        request = Request(
+            endpoint,
+            data=payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=20) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        if content:
+            return {"provider": "openai_compatible", "summary": content, "note": ""}
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, KeyError) as exc:
+        return {
+            "provider": "markdown_fallback",
+            "summary": fallback_summary or "OpenAI-compatible summary failed; no model summary was generated.",
+            "note": f"OpenAI-compatible summary failed: {exc}.",
+        }
+    return {"provider": "markdown_fallback", "summary": fallback_summary, "note": "OpenAI-compatible model returned an empty summary."}
 
 
 def call_bailian_summary(query: str, markdown: str, api_key: str, fallback_summary: str) -> dict[str, str]:

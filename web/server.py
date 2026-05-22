@@ -25,6 +25,7 @@ from runtime.skill_evolution_flow import evolve_skill_from_promotion
 from runtime.skill_evolution_registry import SkillEvolutionRegistry, normalize_skill_name
 from runtime.skill_loader import SkillLoader
 from runtime.skill_memory import MEMORY_FILES, SkillMemoryManager, normalize_name
+from runtime.chat_orchestrator import ChatOrchestrator
 from runtime.tool_registry import ToolRegistry
 from safety.audit import SECRET_PATTERNS as SECRET_SCAN_PATTERNS
 from safety.policy_config import load_policy
@@ -160,7 +161,9 @@ def chat_ok(
     message: str,
     intent: Any = "unknown",
     safety: dict[str, Any] | None = None,
+    task_mode: dict[str, Any] | None = None,
     asset_route: dict[str, Any] | None = None,
+    capability: dict[str, Any] | None = None,
     risk: Any = "safe_read",
     used_skill: str | None = None,
     why: str = "",
@@ -177,8 +180,10 @@ def chat_ok(
             "ok": True,
             "run_id": run_id,
             "safety": safety or {"safe": True, "risk_labels": [], "severity": "low"},
+            "task_mode": task_mode or {"mode": "knowledge_question", "confidence": 0.0, "reason": ""},
             "intent": intent,
             "asset_route": asset_route or {"asset_type": "plain_answer", "asset_name": "", "reason": ""},
+            "capability": capability or {"can_execute": False, "missing": [], "reason": ""},
             "risk": risk,
             "type": response_type,
             "message": message,
@@ -409,6 +414,29 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
         inputs = body.get("inputs", {}) if isinstance(body, dict) else {}
         if not isinstance(inputs, dict):
             inputs = {}
+        if tool_name in {"web_research", "web_search", "news_search", "company_research"} and (
+            inputs.get("mode") == "no_key_fallback" or inputs.get("urls")
+        ):
+            handler = ctx.tool_registry.handlers.get(tool_name) or ctx.tool_registry.handlers.get("web_research")
+            if not handler:
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "ok": False,
+                        "tool_name": tool_name,
+                        "error_code": "handler_missing",
+                        "message": "web_research handler is not available in this runtime.",
+                        "missing": ["handler"],
+                        "suggested_actions": ["Configure provider", "Create persistent web_research tool"],
+                    },
+                )
+            handler_result = handler(inputs)
+            if not handler_result.get("ok", True):
+                return JSONResponse(status_code=200, content={"ok": False, "tool_name": tool_name, **handler_result})
+            return JSONResponse(
+                status_code=200,
+                content={"ok": True, "tool_name": tool_name, "result": handler_result.get("result", handler_result)},
+            )
         result = ctx.tool_registry.run(tool_name, inputs)
         return JSONResponse(status_code=200, content=result)
 
@@ -797,13 +825,15 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
         context = body.get("context", {})
         if not isinstance(context, dict):
             context = {}
-        data = _handle_chat(ctx, message, context)
+        data = ChatOrchestrator(ctx, legacy_handler=_handle_chat).handle(message, context)
         return chat_ok(
             response_type=data.get("type", "answer"),
             message=data.get("message", ""),
             intent=data.get("intent", "unknown"),
             safety=data.get("safety"),
+            task_mode=data.get("task_mode"),
             asset_route=data.get("asset_route"),
+            capability=data.get("capability"),
             risk=data.get("risk", "safe_read"),
             used_skill=data.get("used_skill", ""),
             why=data.get("why", ""),
@@ -824,13 +854,15 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
         context = body.get("context", {})
         if not isinstance(context, dict):
             context = {}
-        data = _handle_chat(ctx, message, context)
+        data = ChatOrchestrator(ctx, legacy_handler=_handle_chat).handle(message, context)
         return chat_ok(
             response_type=data.get("type", "answer"),
             message=data.get("message", ""),
             intent=data.get("intent", "unknown"),
             safety=data.get("safety"),
+            task_mode=data.get("task_mode"),
             asset_route=data.get("asset_route"),
+            capability=data.get("capability"),
             risk=data.get("risk", "safe_read"),
             used_skill=data.get("used_skill", ""),
             why=data.get("why", ""),

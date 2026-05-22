@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import URLError
 import os
 
 try:
@@ -406,7 +407,7 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertTrue(payload["ok"])
-            self.assertIntentPrimary(payload, "writing_request")
+            self.assertIntentPrimary(payload, "skill_use_request")
             self.assertEqual(payload["type"], "skill_result")
             self.assertEqual(payload["used_skill"], "markdown_writer")
             self.assertIn("writing", payload["why"])
@@ -431,6 +432,20 @@ class WebApiTests(unittest.TestCase):
             self.assertNotIn("self_improvement", payload["message"])
             self.assertTrue(any(item["type"] == "analyze" for item in payload["trace"]))
             self.assertTrue(any(item["type"] == "final_result" for item in payload["trace"]))
+
+    def test_chat_knowledge_question_answers_directly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            client = self.make_client(root)
+            response = client.post("/api/chat", json={"message": "什么是渐进式 API"})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["task_mode"]["mode"], "knowledge_question")
+            self.assertIntentPrimary(payload, "knowledge_question")
+            self.assertEqual(payload["type"], "answer")
+            self.assertIn("渐进式 API", payload["message"])
+            self.assertNotIn("I can help with writing", payload["message"])
 
     def test_chat_weather_requests_city_and_realtime_tool(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -646,13 +661,59 @@ class WebApiTests(unittest.TestCase):
             root = Path(tmp)
             write_skill(root, "tool_usage")
             client = self.make_client(root)
-            response = client.post("/api/chat", json={"message": "今天英伟达财报怎么样"})
+            response = client.post("/api/chat", json={"message": "今天英伟达财报如何"})
             self.assertEqual(response.status_code, 200)
             payload = response.json()
+            self.assertEqual(payload["task_mode"]["mode"], "one_shot_task")
             self.assertIntentPrimary(payload, "financial_research_query")
             self.assertEqual(payload["type"], "tool_result")
             self.assertIn("no-key fallback search", payload["message"])
+            self.assertNotIn("I can help with writing", payload["message"])
+            self.assertNotEqual(payload["actions"][0]["kind"], "create_tool")
+            fallback = payload["actions"][1]
+            self.assertRegex(fallback["id"], r"ACT-[A-Z0-9]{8}")
+            self.assertEqual(fallback["kind"], "try_no_key_fallback")
+            self.assertEqual(fallback["method"], "POST")
+            self.assertEqual(fallback["path"], "/api/tools/web_research/run")
+            self.assertEqual(fallback["payload"]["inputs"]["query"], "今天英伟达财报如何")
+            self.assertEqual(fallback["payload"]["inputs"]["mode"], "no_key_fallback")
+            self.assertEqual(fallback["priority"], "secondary")
+            offline = payload["actions"][2]
+            self.assertEqual(offline["kind"], "answer_without_realtime")
+            self.assertEqual(offline["path"], "/api/chat")
+            self.assertEqual(offline["payload"]["context"]["force_mode"], "answer_without_realtime")
             self.assertTrue(any(item["type"] == "tool_registry_check" for item in payload["trace"]))
+
+    def test_chat_try_crawl4ai_fallback_action_runs_web_research_without_asset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            chat = client.post("/api/chat", json={"message": "今天英伟达财报如何"}).json()
+            fallback = next(action for action in chat["actions"] if action["kind"] == "try_no_key_fallback")
+            with patch("runtime.tool_registry.urlopen", side_effect=URLError("offline")):
+                response = client.post(fallback["path"], json=fallback["payload"])
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["tool_name"], "web_research")
+            self.assertEqual(payload["error_code"], "provider_unavailable")
+            self.assertIn("fallback search", payload["message"])
+
+    def test_chat_answer_without_realtime_action_returns_offline_framework(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            chat = client.post("/api/chat", json={"message": "今天英伟达财报如何"}).json()
+            offline = next(action for action in chat["actions"] if action["kind"] == "answer_without_realtime")
+            response = client.post(offline["path"], json=offline["payload"])
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["type"], "answer")
+            self.assertEqual(payload["intent"]["mode"], "answer_without_realtime")
+            self.assertIn("离线财报分析框架", payload["message"])
+            self.assertIn("不会声称已经查询到今天", payload["message"])
 
     def test_chat_nvidia_earnings_uses_configured_one_shot_search_provider(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -692,13 +753,16 @@ class WebApiTests(unittest.TestCase):
                 response = client.post("/api/chat", json={"message": "总结 https://example.com/earnings"})
             self.assertEqual(response.status_code, 200)
             payload = response.json()
-            self.assertIntentPrimary(payload, "web_search_query")
+            self.assertEqual(payload["task_mode"]["mode"], "one_shot_task")
+            self.assertIntentPrimary(payload, "web_research_query")
             self.assertEqual(payload["data"]["provider_mode"], "one_shot_provider")
             result = payload["data"]["tool_results"][0]["result"]
             self.assertEqual(result["crawled_pages"][0]["markdown"], page["markdown"])
             self.assertIn("Revenue grew", result["summary"])
             self.assertTrue(any(item["type"] == "crawl4ai" for item in payload["trace"]))
             self.assertTrue(any(item["type"] == "markdown_extracted" for item in payload["trace"]))
+            self.assertTrue(any(item["type"] == "crawl" for item in payload["trace"]))
+            self.assertTrue(any(item["type"] == "summarize" for item in payload["trace"]))
 
     def test_tool_web_research_blocks_private_and_file_urls(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -830,6 +894,7 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertIntentPrimary(payload, "tool_creation_request")
+            self.assertEqual(payload["task_mode"]["mode"], "asset_creation")
             self.assertEqual(payload["intent"]["mode"], "create_persistent_tool")
             self.assertEqual(payload["data"]["target"], "finance_quote")
             self.assertEqual(payload["actions"][0]["label"], "Create finance_quote tool")
@@ -843,6 +908,7 @@ class WebApiTests(unittest.TestCase):
             response = client.post("/api/chat", json={"message": "我希望以后都能查美股财报"})
             self.assertEqual(response.status_code, 200)
             payload = response.json()
+            self.assertEqual(payload["task_mode"]["mode"], "capability_setup")
             self.assertIntentPrimary(payload, "financial_research_query")
             self.assertEqual(payload["intent"]["mode"], "configure_realtime_capability")
             labels = [action["label"] for action in payload["actions"]]
@@ -1034,6 +1100,7 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertIntentPrimary(payload, "memory_preference")
+            self.assertEqual(payload["task_mode"]["mode"], "preference_memory")
             self.assertEqual(payload["type"], "memory_captured")
             self.assertRegex(payload["memory_record_id"], r"LRN-[A-Z0-9]{8}")
             self.assertTrue(any(item["type"] == "file_trace" and item.get("operation") == "write" for item in payload["trace"]))

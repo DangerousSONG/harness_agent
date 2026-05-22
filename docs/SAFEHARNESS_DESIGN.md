@@ -119,6 +119,8 @@ Reads:
 
 Suspicious instruction override text can warn. Explicit system-prompt disclosure, safety bypass, or safety disabling attempts block according to policy.
 
+The web Chat path also runs `runtime/chat_safety.py::InputSafetyGate` before task mode, intent routing, capability checks, or asset actions. It blocks prompt injection, jailbreaks, memory poisoning combined with bypass attempts, secret requests such as `.env` or API keys, illegal/harmful requests, dangerous commands, workspace escape, path traversal, data exfiltration, policy bypass, and fabricated real-world evidence. The gate returns structured `safety` data and `unsafe_request` routing; it does not rely on later planner branches to refuse unsafe input.
+
 ### ToolCallGuard
 
 Reads per-tool configuration from `tools.<tool>`:

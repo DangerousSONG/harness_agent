@@ -74,6 +74,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ inputs: inputs || {} }),
     }),
+  runToolPayload: (name, body) =>
+    request(`/api/tools/${encodeURIComponent(name)}/run`, {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }),
   proposeToolCreate: (body) =>
     request("/api/tools/propose-create", {
       method: "POST",

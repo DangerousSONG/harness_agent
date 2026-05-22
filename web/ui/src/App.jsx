@@ -722,13 +722,63 @@ export default function App() {
   async function handleChatAction(action, sourceMessage) {
     const path = action?.path || "";
     const method = action?.method || "GET";
+    const kind = action?.kind || "";
+    if (kind === "configure_provider") {
+      navigate("settings");
+      appendAgentResult("Please configure Search Provider in Settings, then retry the realtime query.", {
+        type: "tool_result",
+      });
+      return;
+    }
+    if (kind === "try_no_key_fallback" || kind === "crawl4ai_fallback") {
+      await runChatToolAction(action, sourceMessage, {
+        defaultToolName: "web_research",
+        defaultInputs: {
+          query: latestUserMessageText(),
+          max_results: 5,
+          max_pages: 3,
+          language: "zh-CN",
+          mode: "no_key_fallback",
+        },
+      });
+      return;
+    }
+    if (kind === "answer_without_realtime" || kind === "ask_without_realtime_data") {
+      await runAnswerWithoutRealtime(action, sourceMessage);
+      return;
+    }
+    if (kind === "open_tool_details") {
+      navigate("assets-library", { assetTab: "tools" });
+      return;
+    }
+    if (kind === "test_tool") {
+      await runChatToolAction(action, sourceMessage, { defaultToolName: toolNameFromAction(action) || "web_research", defaultInputs: {} });
+      return;
+    }
+    if (kind === "tool_create" || kind === "create_persistent_tool") {
+      const normalizedAction = { ...action, kind: "create_persistent_tool" };
+      setConfirmAction({
+        kind: "chat_action",
+        action: normalizedAction,
+        sourceMessage,
+        title: `Create ${(action?.payload || action?.body || {}).tool_name || "tool"} tool?`,
+        message: [
+          `Tool: ${(action?.payload || action?.body || {}).tool_name || "new_tool"}`,
+          "Operation: create persistent Tool Asset",
+          `Risk: ${riskLabel(action?.risk || sourceMessage?.risk || "safe_write_preview")}`,
+          "This is a low-priority persistent asset action and does not replace the one-shot query path.",
+        ].join("\n"),
+        patch: JSON.stringify(action?.payload || action?.body || {}, null, 2),
+      });
+      return;
+    }
     if (method === "LOCAL") {
       if (path === "cancel") {
         appendAgentResult("Canceled. No workspace change was made.", { type: "answer" });
         return;
       }
       if (path === "configure_provider") {
-        setPage("settings");
+        navigate("settings");
         appendAgentResult("Open Settings to configure the realtime provider. Creating a Tool Asset alone will not enable realtime access.", {
           type: "tool_result",
         });
@@ -868,6 +918,11 @@ export default function App() {
       });
       return;
     }
+    const toolRunMatch = path.match(/^\/api\/tools\/([^/]+)\/run$/);
+    if (method === "POST" && toolRunMatch) {
+      await runChatToolAction(action, sourceMessage, { defaultToolName: decodeURIComponent(toolRunMatch[1]), defaultInputs: {} });
+      return;
+    }
     const toolUpdateMatch = path.match(/^\/api\/tools\/([^/]+)\/update-review$/);
     if (method === "POST" && toolUpdateMatch) {
       const payload = action?.payload || action?.body || {};
@@ -926,6 +981,145 @@ export default function App() {
       return;
     }
     appendAgentResult(`Action is not wired in the UI yet: ${method} ${path}`);
+  }
+
+  function latestUserMessageText() {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const item = messages[index];
+      if (item.role === "user") return item.text || "";
+    }
+    return "";
+  }
+
+  function toolNameFromAction(action) {
+    const match = String(action?.path || "").match(/^\/api\/tools\/([^/]+)\/run$/);
+    if (match) return decodeURIComponent(match[1]);
+    return action?.payload?.tool_name || action?.body?.tool_name || "";
+  }
+
+  function toolPayloadFromAction(action, defaults = {}) {
+    const payload = action?.payload || action?.body || {};
+    if (payload.inputs) {
+      return {
+        ...payload,
+        inputs: {
+          ...defaults,
+          ...(payload.inputs || {}),
+          query: payload.inputs?.query || defaults.query || latestUserMessageText(),
+        },
+      };
+    }
+    return {
+      inputs: {
+        ...defaults,
+        ...payload,
+        query: payload.query || defaults.query || latestUserMessageText(),
+      },
+    };
+  }
+
+  async function runChatToolAction(action, sourceMessage, options = {}) {
+    const toolName = toolNameFromAction(action) || options.defaultToolName || "web_research";
+    const body = toolPayloadFromAction(action, options.defaultInputs || {});
+    const toolId = appendToolCall(`POST /api/tools/${toolName}/run`);
+    try {
+      const payload = await api.runToolPayload(toolName, body);
+      finishToolCall(toolId, payload.ok === false ? "failed" : "completed");
+      appendAgentResult(toolRunMessage(payload), {
+        type: payload.ok === false ? "error" : "tool_result",
+        data: payload,
+        trace: toolRunTrace(payload, body.inputs || {}),
+        actions: payload.ok === false
+          ? [
+              { id: makeId(), kind: "configure_provider", label: "Configure search provider", method: "LOCAL", path: "configure_provider", requires_confirmation: false },
+              { id: makeId(), kind: "answer_without_realtime", label: "Ask without realtime data", method: "POST", path: "/api/chat", payload: { message: latestUserMessageText(), context: { force_mode: "answer_without_realtime" } }, requires_confirmation: false },
+            ]
+          : [],
+      });
+    } catch (error) {
+      const message = getErrorMessage(error);
+      finishToolCall(toolId, "failed");
+      appendAgentResult(message, {
+        type: "error",
+        trace: [
+          {
+            type: "search",
+            title: "Fallback search",
+            status: "failed",
+            summary: message,
+          },
+        ],
+      });
+      setToast(message);
+    }
+  }
+
+  async function runAnswerWithoutRealtime(action, sourceMessage) {
+    const payload = action?.payload || action?.body || {};
+    const message = payload.message || latestUserMessageText();
+    const context = {
+      ...(payload.context || {}),
+      force_mode: "answer_without_realtime",
+    };
+    const toolId = appendToolCall("POST /api/chat");
+    try {
+      const result = await api.chatSend(message, context);
+      finishToolCall(toolId, "completed");
+      appendAgentResult(result.message, {
+        type: result.type || "answer",
+        intent: result.intent,
+        task_mode: result.task_mode,
+        risk: result.risk,
+        data: result.data || {},
+        trace: result.trace || [],
+        actions: result.actions || [],
+      });
+    } catch (error) {
+      const text = getErrorMessage(error);
+      finishToolCall(toolId, "failed");
+      appendAgentResult(text, { type: "error" });
+      setToast(text);
+    }
+  }
+
+  function toolRunMessage(payload) {
+    if (payload.ok === false) {
+      return payload.message || `Tool ${payload.tool_name || "run"} failed.`;
+    }
+    const result = payload.result || payload.data || {};
+    const summary = result.summary || result.message || "";
+    const sources = result.citations || result.urls_selected || [];
+    const sourceText = sources.length ? `\n\nSources:\n${sources.map((url) => `- ${url}`).join("\n")}` : "";
+    return summary ? `${summary}${sourceText}` : `Tool ${payload.tool_name || "run"} completed.`;
+  }
+
+  function toolRunTrace(payload, inputs) {
+    const result = payload.result || {};
+    const pages = result.crawled_pages || result.markdown_pages || [];
+    const sources = result.citations || result.urls_selected || [];
+    return [
+      {
+        type: "search",
+        title: inputs?.mode === "no_key_fallback" ? "Fallback search" : "Search",
+        status: payload.ok === false ? "failed" : "completed",
+        provider_mode: result.search_mode || inputs?.mode || "",
+        summary: payload.ok === false ? payload.message || payload.error_code || "Search failed." : `Selected ${sources.length} URL(s).`,
+      },
+      {
+        type: "crawl",
+        title: "crawl4ai",
+        status: payload.ok === false ? "failed" : "completed",
+        source_count: pages.length,
+        summary: payload.ok === false ? "Crawl did not complete." : `Crawled ${pages.length} page(s).`,
+      },
+      {
+        type: "summarize",
+        title: "Summarize",
+        status: payload.ok === false ? "failed" : "completed",
+        provider: result.summary_provider || "markdown_fallback",
+        summary: payload.ok === false ? "No summary generated." : result.summary_note || "Summary generated from Markdown.",
+      },
+    ];
   }
 
   function appendExistingFileResult(error, action, sourceMessage) {

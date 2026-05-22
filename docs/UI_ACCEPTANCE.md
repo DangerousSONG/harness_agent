@@ -1,5 +1,34 @@
 # SafeHarness Console UI Acceptance
 
+## Chat Orchestrator Trace Acceptance
+
+Chat responses now include task-mode-first orchestration fields and trace cards. The UI should render the existing `trace/actions` structure without a larger layout change, and additionally recognize:
+
+- `task_mode`
+- `capability_check`
+- `decision`
+- `search`
+- `crawl`
+- `summarize`
+- `model_call`
+
+Acceptance examples:
+
+- `今天英伟达财报如何` renders `task_mode=one_shot_task`, `intent=financial_research_query`, a capability check, a blocked decision when realtime search is unavailable, and actions headed by provider/fallback choices rather than Tool creation.
+- `总结 https://example.com/earnings` renders search/crawl/summarize/model-call trace cards and keeps Markdown extraction before summary.
+- `你好` and `什么是渐进式 API` render direct answers without the old fixed capability template.
+
+## Chat Action Dispatcher Acceptance
+
+Chat action buttons are dispatched by `action.kind` or explicit API path, not by label text.
+
+- `configure_provider`: navigates to Settings and shows a provider-configuration hint.
+- `try_no_key_fallback` / `crawl4ai_fallback`: calls `POST /api/tools/web_research/run` with `inputs.query`, `mode=no_key_fallback`, `max_results=5`, `max_pages=3`, and `language=zh-CN`; appends a Chat result with search/crawl/summarize trace cards, or a clear structured error.
+- `answer_without_realtime`: calls `POST /api/chat` with `context.force_mode=answer_without_realtime`; appends an offline analysis framework and does not invent current facts.
+- `create_persistent_tool`: uses the existing confirmed Tool Asset creation flow and remains lower priority than one-shot query actions.
+- `open_tool_details`: navigates to Assets > Library > Tools.
+- `test_tool`: calls `/api/tools/{tool}/run` and appends the result to Chat.
+
 ## Current Issue
 
 The UI could read dashboard, PROMO, evolution, review, and version state, but the operation layer was incomplete:

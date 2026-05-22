@@ -151,6 +151,13 @@ const TRACE_ICONS = {
   preflight: ShieldCheck,
   safety_check: ShieldCheck,
   risk_decision: ShieldCheck,
+  task_mode: Route,
+  capability_check: ShieldCheck,
+  decision: ShieldCheck,
+  search: Activity,
+  crawl: Database,
+  summarize: FileText,
+  model_call: Brain,
 };
 
 const TRACE_LABELS = {
@@ -172,6 +179,13 @@ const TRACE_LABELS = {
   preflight: "Preflight",
   safety_check: "Safety check",
   risk_decision: "Risk decision",
+  task_mode: "Task mode",
+  capability_check: "Capability check",
+  decision: "Decision",
+  search: "Search",
+  crawl: "Crawl",
+  summarize: "Summarize",
+  model_call: "Model call",
 };
 
 function TraceList({ trace }) {
