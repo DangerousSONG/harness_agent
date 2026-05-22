@@ -6,6 +6,7 @@ This file records meaningful project iterations. When judging current state, rea
 
 ### v0.2.7: stabilize Chat one-shot web research with crawl4ai-first fallback
 
+- Broadened realtime financial/stock intent keywords so Chinese market index questions like `今天沪指如何`, `今天上证指数怎么样`, `今天港股怎么样`, and `茅台今天股价多少` no longer fall to `general_chat`; the same keyword set is mirrored in both `runtime/chat_intent.py` and the legacy `web/server.py` supervisor route.
 - Chat now auto-runs `web_research` (crawl4ai + no-key fallback search) for one-shot realtime queries such as `今天英伟达财报如何？`, `最近 AI 芯片新闻有哪些？`, and `总结这个网页：<url>`, instead of stopping at "create a Tool" or "Try crawl4ai fallback" prompts.
 - Removed the `Try crawl4ai fallback` action button: the same pipeline is now executed automatically, and only when crawl4ai + DuckDuckGo fallback both fail does Chat ask the user to configure a search provider or supply a URL.
 - Added a `search_mode` trace event so Chat shows `safety_check → task_mode → intent_analysis → search_mode → crawl4ai → markdown_extracted → summarize → final_result` for one-shot web research.

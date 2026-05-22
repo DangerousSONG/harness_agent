@@ -4313,22 +4313,29 @@ def _weather_city_mentioned(message: str) -> bool:
 
 def _looks_like_financial_research_query(message: str) -> bool:
     text = message.lower()
-    company_or_market = _has_any(message, ["英伟达", "nvidia", "nvda", "股票", "stock", "美股", "公司"])
-    investment = _has_any(message, ["投资", "适合", "买入", "卖出", "持有", "估值", "财报", "股价", "earnings", "valuation", "invest", "buy", "sell"])
-    realtime = _has_any(message, ["最近", "现在", "当前", "最新", "today", "recent", "now", "current"])
+    realtime = _has_any(message, ["今天", "最近", "现在", "当前", "最新", "today", "recent", "now", "current"])
+    market_or_index = _has_any(message, [
+        "沪指", "上证", "深证", "深指", "创业板", "恒生", "恒指", "大盘",
+        "纳斯达克", "道琼斯", "标普", "nasdaq",
+        "a股", "美股", "港股",
+    ])
+    if market_or_index and realtime:
+        return True
+    company_or_market = _has_any(message, ["英伟达", "nvidia", "nvda", "股票", "stock", "公司", "苹果", "tesla", "特斯拉", "茅台", "比亚迪"])
+    investment = _has_any(message, ["投资", "适合", "买入", "卖出", "持有", "估值", "财报", "股价", "earnings", "valuation", "invest", "buy", "sell", "走势", "行情"])
     return company_or_market and investment and (realtime or "股价" in message or "财报" in message)
 
 
 def _looks_like_finance_quote_query(message: str) -> bool:
     text = message.lower()
     return (
-        _has_any(message, ["股价", "价格", "quote", "stock price", "多少钱"])
-        and _has_any(message, ["现在", "当前", "today", "now", "英伟达", "nvidia", "nvda"])
+        _has_any(message, ["股价", "价格", "quote", "stock price", "多少钱", "多少点", "点位"])
+        and _has_any(message, ["今天", "现在", "当前", "today", "now", "英伟达", "nvidia", "nvda", "茅台", "苹果"])
     )
 
 
 def _looks_like_news_query(message: str) -> bool:
-    return _has_any(message, ["新闻", "news", "最新消息", "最近有什么", "近期消息"]) and _has_any(message, ["最近", "最新", "现在", "ai", "芯片", "英伟达", "nvidia"])
+    return _has_any(message, ["新闻", "news", "最新消息", "最近有什么", "近期消息"]) and _has_any(message, ["最近", "最新", "现在", "今天", "ai", "芯片", "英伟达", "nvidia"])
 
 
 def _looks_like_company_research_query(message: str) -> bool:

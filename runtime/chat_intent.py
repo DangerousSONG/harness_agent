@@ -261,14 +261,25 @@ def looks_like_one_shot_task(message: str) -> bool:
 
 
 def looks_like_financial_research(message: str) -> bool:
-    company = has_any(message, ["英伟达", "nvidia", "nvda", "美股", "股票", "公司"])
-    finance = has_any(message, ["财报", "业绩", "股价", "投资", "估值", "买入", "卖出", "earnings", "stock", "revenue", "guidance"])
     realtime = has_any(message, ["今天", "现在", "当前", "最近", "最新", "today", "now", "current", "latest", "recent"])
-    return company and finance and (realtime or has_any(message, ["财报", "股价", "earnings"]))
+    market_or_index = has_any(message, [
+        "沪指", "上证", "深证", "深指", "创业板", "恒生", "恒指", "大盘",
+        "纳斯达克", "道琼斯", "标普", "nasdaq",
+        "a股", "美股", "港股",
+    ])
+    if market_or_index and realtime:
+        return True
+    company = has_any(message, ["英伟达", "nvidia", "nvda", "股票", "公司", "苹果", "tesla", "特斯拉", "茅台", "比亚迪"])
+    finance = has_any(message, ["财报", "业绩", "股价", "投资", "估值", "买入", "卖出", "earnings", "stock", "revenue", "guidance", "走势", "行情", "涨跌"])
+    if company and finance and (realtime or has_any(message, ["财报", "股价", "earnings"])):
+        return True
+    return False
 
 
 def looks_like_finance_quote(message: str) -> bool:
-    return has_any(message, ["股价", "价格", "多少钱", "quote", "stock price"]) and has_any(message, ["现在", "当前", "今天", "now", "current", "today"])
+    quote_terms = has_any(message, ["股价", "价格", "多少钱", "多少点", "几点", "点位", "quote", "stock price"])
+    realtime = has_any(message, ["现在", "当前", "今天", "now", "current", "today"])
+    return quote_terms and realtime
 
 
 def looks_like_news(message: str) -> bool:
