@@ -3,24 +3,6 @@ import { Cpu, KeyRound, ShieldCheck, SlidersHorizontal, Save } from "lucide-reac
 import { api, getErrorMessage } from "../lib/api";
 import { compact } from "../lib/format";
 
-const SEARCH_PROVIDER_OPTIONS = [
-  { value: "", label: "Not configured (no-key DuckDuckGo fallback)" },
-  { value: "bailian", label: "Bailian / DashScope WebSearch (MCP)" },
-  { value: "bing", label: "Bing Web Search (no adapter yet)" },
-  { value: "serper", label: "Serper / Google (no adapter yet)" },
-  { value: "brave", label: "Brave Search (no adapter yet)" },
-  { value: "tavily", label: "Tavily (no adapter yet)" },
-];
-
-const SEARCH_PROVIDER_HINTS = {
-  bailian:
-    "百炼 / DashScope: get the API key at bailian.console.aliyun.com (Manage → API-KEY). Endpoint is the MCP WebSearch URL; tool name defaults to 'WebSearch' (override with SEARCH_TOOL_NAME if needed).",
-  bing: "Bing adapter is not wired up yet; the key will be saved but search will fall back to DuckDuckGo.",
-  serper: "Serper adapter is not wired up yet; the key will be saved but search will fall back to DuckDuckGo.",
-  brave: "Brave adapter is not wired up yet; the key will be saved but search will fall back to DuckDuckGo.",
-  tavily: "Tavily adapter is not wired up yet; the key will be saved but search will fall back to DuckDuckGo.",
-};
-
 const MODEL_PRESETS = [
   { id: "openai", label: "OpenAI", base_url: "https://api.openai.com/v1", model: "gpt-4o-mini" },
   { id: "dashscope", label: "DashScope / Qwen", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
@@ -31,35 +13,26 @@ const MODEL_PRESETS = [
 
 export default function SettingsPage({ dashboard }) {
   const [providers, setProviders] = useState(null);
-  const [searchForm, setSearchForm] = useState({ provider: "", api_key: "", api_key_env: "", mock_results: "" });
   const [modelForm, setModelForm] = useState({ model: "", base_url: "", api_key: "" });
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [savingModel, setSavingModel] = useState(false);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [reloadError, setReloadError] = useState("");
   const [modelError, setModelError] = useState("");
   const [modelNotice, setModelNotice] = useState("");
 
   async function reload() {
     setLoading(true);
-    setError("");
+    setReloadError("");
     try {
       const payload = await api.providerSettings();
       setProviders(payload.data);
-      setSearchForm({
-        provider: payload.data?.search?.provider || "",
-        api_key: "",
-        api_key_env: payload.data?.search?.api_key_env || "",
-        mock_results: "",
-      });
       setModelForm({
         model: payload.data?.model?.model || "",
         base_url: payload.data?.model?.base_url || "",
         api_key: "",
       });
     } catch (exc) {
-      setError(getErrorMessage(exc));
+      setReloadError(getErrorMessage(exc));
     } finally {
       setLoading(false);
     }
@@ -68,56 +41,6 @@ export default function SettingsPage({ dashboard }) {
   useEffect(() => {
     reload();
   }, []);
-
-  async function handleSave(event) {
-    event.preventDefault();
-    setSaving(true);
-    setError("");
-    setNotice("");
-    const update = { provider: searchForm.provider };
-    if (searchForm.api_key.trim()) {
-      update.api_key = searchForm.api_key.trim();
-    }
-    if (searchForm.api_key_env.trim()) {
-      update.api_key_env = searchForm.api_key_env.trim();
-    }
-    if (searchForm.mock_results.trim()) {
-      update.mock_results = searchForm.mock_results.trim();
-    }
-    try {
-      const payload = await api.saveProviderSettings({ search: update });
-      setProviders(payload.data?.providers || providers);
-      setSearchForm((prev) => ({ ...prev, api_key: "" }));
-      const written = payload.data?.written_keys || [];
-      setNotice(
-        written.length
-          ? `Saved to ${payload.data?.env_path || ".env"}: ${written.join(", ")}.`
-          : "No changes were written.",
-      );
-    } catch (exc) {
-      setError(getErrorMessage(exc));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleClear() {
-    setSaving(true);
-    setError("");
-    setNotice("");
-    try {
-      const payload = await api.saveProviderSettings({
-        search: { provider: "", api_key: "", api_key_env: "", mock_results: "" },
-      });
-      setProviders(payload.data?.providers || providers);
-      setSearchForm({ provider: "", api_key: "", api_key_env: "", mock_results: "" });
-      setNotice("Search provider configuration removed from .env.");
-    } catch (exc) {
-      setError(getErrorMessage(exc));
-    } finally {
-      setSaving(false);
-    }
-  }
 
   function applyModelPreset(preset) {
     if (!preset) return;
@@ -219,103 +142,33 @@ export default function SettingsPage({ dashboard }) {
                 <KeyRound className="h-4 w-4" />
               </span>
               <div>
-                <h2 className="text-base font-semibold text-zinc-950">Realtime Search Provider</h2>
+                <h2 className="text-base font-semibold text-zinc-950">Built-in web_search Status</h2>
                 <p className="text-xs text-zinc-500">
-                  Used by Chat for realtime queries. Without a configured provider the runtime falls back to a no-key
-                  DuckDuckGo search before crawl4ai.
+                  <code>web_search</code> / <code>web_research</code> is a built-in tool. Configure it by editing the project{" "}
+                  <code>.env</code>: set <code>SEARCH_PROVIDER=bailian</code> (recommended) plus your{" "}
+                  <code>DASHSCOPE_API_KEY</code> or <code>SEARCH_API_KEY</code>. Settings reload automatically on next
+                  server start. {reloadError ? <span className="text-rose-600">Status load failed: {reloadError}</span> : null}
                 </p>
               </div>
             </div>
-            <ProviderBadge configured={searchStatus?.configured} label={searchStatus?.provider || "no-key fallback"} />
+            <ProviderBadge
+              configured={providers?.search?.configured}
+              label={providers?.search?.provider || "not configured"}
+            />
           </div>
 
           {loading ? (
             <div className="mt-4 text-sm text-zinc-500">Loading…</div>
           ) : (
-            <form className="mt-5 grid gap-4 lg:grid-cols-2" onSubmit={handleSave}>
-              <Field label="Provider" hint={SEARCH_PROVIDER_HINTS[searchForm.provider] || ""}>
-                <select
-                  className="w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-zinc-900 shadow-hairline focus:border-appleBlue focus:outline-none focus:ring-1 focus:ring-appleBlue disabled:opacity-50"
-                  value={searchForm.provider}
-                  onChange={(event) => setSearchForm((prev) => ({ ...prev, provider: event.target.value }))}
-                  disabled={saving}
-                >
-                  {SEARCH_PROVIDER_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field
-                label="API Key"
-                hint={
-                  searchStatus?.has_api_key
-                    ? `Stored. Current masked value: ${searchStatus.api_key_masked}. Leave empty to keep, type to replace.`
-                    : "Stored in .env only. Leave empty to skip if you only need provider switching."
-                }
-              >
-                <input
-                  className="w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-zinc-900 shadow-hairline focus:border-appleBlue focus:outline-none focus:ring-1 focus:ring-appleBlue disabled:opacity-50"
-                  type="password"
-                  value={searchForm.api_key}
-                  onChange={(event) => setSearchForm((prev) => ({ ...prev, api_key: event.target.value }))}
-                  placeholder={searchStatus?.has_api_key ? "•••••• (keep existing)" : "sk-..."}
-                  disabled={saving}
-                  autoComplete="off"
-                />
-              </Field>
-              <Field
-                label="API Key Env name (optional)"
-                hint="ENV VAR NAME (e.g. DASHSCOPE_API_KEY), not the key value. Use this only if you keep your key in another env var already; otherwise leave empty and use the API Key field above."
-              >
-                <input
-                  className="w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-zinc-900 shadow-hairline focus:border-appleBlue focus:outline-none focus:ring-1 focus:ring-appleBlue disabled:opacity-50"
-                  type="text"
-                  value={searchForm.api_key_env}
-                  onChange={(event) => setSearchForm((prev) => ({ ...prev, api_key_env: event.target.value }))}
-                  placeholder="DASHSCOPE_API_KEY"
-                  disabled={saving}
-                />
-                {searchForm.api_key_env.trim().startsWith("sk-") ? (
-                  <span className="block text-xs text-rose-600">
-                    This looks like a key value, not an env var name. Put the key in the API Key field above instead.
-                  </span>
-                ) : null}
-              </Field>
-              <Field
-                label="Mock results (optional)"
-                hint="JSON array of search results. Useful for tests; takes precedence over provider/key."
-              >
-                <input
-                  className="w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-zinc-900 shadow-hairline focus:border-appleBlue focus:outline-none focus:ring-1 focus:ring-appleBlue disabled:opacity-50"
-                  type="text"
-                  value={searchForm.mock_results}
-                  onChange={(event) => setSearchForm((prev) => ({ ...prev, mock_results: event.target.value }))}
-                  placeholder='[{"title":"...","url":"https://..."}]'
-                  disabled={saving}
-                />
-              </Field>
-
-              <div className="lg:col-span-2 flex flex-wrap items-center gap-3">
-                <button type="submit" className="primary-button inline-flex items-center gap-2" disabled={saving}>
-                  <Save className="h-4 w-4" />
-                  {saving ? "Saving…" : "Save to .env"}
-                </button>
-                <button type="button" className="secondary-button" onClick={handleClear} disabled={saving}>
-                  Clear search provider
-                </button>
-                {notice ? <span className="text-xs text-emerald-700">{notice}</span> : null}
-                {error ? <span className="text-xs text-rose-700">{error}</span> : null}
-              </div>
-            </form>
+            <div className="mt-5 grid gap-3 text-xs text-zinc-500 lg:grid-cols-3">
+              <StatusRow label="Configured" value={providers?.search?.configured ? "yes" : "no"} />
+              <StatusRow label="Provider" value={providers?.search?.provider || "(none)"} />
+              <StatusRow
+                label="API key"
+                value={providers?.search?.has_api_key ? providers.search.api_key_masked : "not set"}
+              />
+            </div>
           )}
-
-          <div className="mt-5 grid gap-3 text-xs text-zinc-500 lg:grid-cols-3">
-            <StatusRow label="Configured" value={searchStatus?.configured ? "yes" : "no"} />
-            <StatusRow label="Provider" value={searchStatus?.provider || "(no-key fallback)"} />
-            <StatusRow label="API key" value={searchStatus?.has_api_key ? searchStatus.api_key_masked : "not set"} />
-          </div>
         </section>
 
         <section className="section-panel p-5">

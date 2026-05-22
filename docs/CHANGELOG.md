@@ -4,6 +4,23 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-22
 
+### Drop Editable Search Provider Form; Keep Read-only Status Only
+
+- Removed the editable Realtime Search Provider form from the Settings page. `web_search` / `web_research` is now strictly a built-in tool; the only knobs (`SEARCH_PROVIDER`, `SEARCH_API_KEY`, `DASHSCOPE_API_KEY`, …) live in `.env` and are picked up on server start via the autoloader added earlier.
+- The Settings page now shows a small read-only "Built-in web_search Status" card with the configured provider, masked API key, and a hint pointing to the right `.env` keys. The Model Connection form stays editable since it is genuinely per-user.
+- The backend `POST /api/settings/providers` endpoint still accepts `search` writes for power users hitting it via curl, but the UI no longer exposes that surface.
+- Validation: `python -m unittest` → 114 passed; `web/ui npm run build` → ok.
+
+### web_search as a Built-in Tool; No Implicit DuckDuckGo Fallback
+
+- Treat `web_search` / `web_research` as a built-in tool: handler stays in the default registry, configuration is read from `.env` at startup, and the Settings page writes the same `.env`. No user-side tool creation is required.
+- Stopped trying the no-key DuckDuckGo HTML scrape as an automatic fallback. If `SEARCH_PROVIDER` is set, only that provider runs; if it fails the response carries the provider's actual error, not a misleading "no-key fallback" message. To use DuckDuckGo, set `SEARCH_PROVIDER=duckduckgo` explicitly — it is now an opt-in option in the dropdown labeled "no key, opt-in, often blocked".
+- When `SEARCH_PROVIDER` is empty, Chat realtime queries fail fast with a clear message pointing to Settings / `.env` and the supported keys, instead of running an offline DuckDuckGo attempt that already failed in cloud/sandboxed setups.
+- New `error_code` `search_not_configured` lets the UI distinguish "not set up" from "set up but failing".
+- Updated Chat failure copy to drop "crawl4ai + no-key fallback search" wording; new copy reads "实时查询失败: <provider detail>. 请到 Settings 检查 Realtime Search Provider…".
+- UI: dropdown now flags Bailian/DashScope as recommended, lists DuckDuckGo as opt-in, and the section subtitle states explicitly that web_search is built-in and config-only.
+- Tests updated to assert the new fail-fast behavior, the explicit DuckDuckGo opt-in path, and the cleaner failure message.
+
 ### Realtime Search Reliability and Visibility
 
 - Auto-load `.env` on `WebContext` startup so persisted provider settings survive a server restart. Allow-listed keys (`SEARCH_*`, `FINANCE_*`, `OPENAI_*`) are applied to `os.environ` only if the slot is empty, so shell-provided vars still win.

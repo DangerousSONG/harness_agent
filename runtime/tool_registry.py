@@ -374,27 +374,37 @@ def search_urls(query: str, max_results: int) -> dict[str, Any]:
         except (json.JSONDecodeError, AttributeError):
             results = []
         return {"ok": True, "search_mode": "configured_provider", "results": normalize_search_results(results, max_results)}
-    provider_error = ""
-    provider_name = os.environ.get("SEARCH_PROVIDER", "").strip() or "(none)"
-    if search_provider_configured():
-        provider_result = configured_provider_search(query, max_results)
-        if provider_result.get("ok"):
-            return provider_result
-        provider_error = str(provider_result.get("message") or provider_result.get("error_code") or "configured provider returned no usable results")
-    fallback_result = duckduckgo_fallback_search(query, max_results)
-    if fallback_result.get("ok"):
-        return fallback_result
-    fallback_error = str(fallback_result.get("message") or "no-key fallback returned no usable results")
-    parts = []
-    if provider_error:
-        parts.append(f"configured provider '{provider_name}': {provider_error}")
-    parts.append(f"no-key fallback: {fallback_error}")
+    provider = os.environ.get("SEARCH_PROVIDER", "").strip().lower()
+    if provider in {"duckduckgo", "ddg"}:
+        return duckduckgo_fallback_search(query, max_results)
+    if not search_provider_configured():
+        return {
+            "ok": False,
+            "error_code": "search_not_configured",
+            "message": (
+                "web_search is a built-in tool but it is not configured. "
+                "Open Settings → Realtime Search Provider and pick a provider "
+                "(e.g. Bailian / DashScope WebSearch) plus an API key, or set "
+                "SEARCH_PROVIDER and SEARCH_API_KEY in .env. To explicitly use "
+                "the no-key fallback, set SEARCH_PROVIDER=duckduckgo."
+            ),
+            "missing": ["SEARCH_PROVIDER"],
+            "suggested_actions": ["Configure provider", "Provide URL"],
+        }
+    provider_result = configured_provider_search(query, max_results)
+    if provider_result.get("ok"):
+        return provider_result
     return {
         "ok": False,
-        "error_code": "provider_unavailable",
-        "message": "Search failed. " + " | ".join(parts),
-        "missing": ["SEARCH_PROVIDER"] if not provider_error else [],
-        "suggested_actions": ["Configure provider", "Provide URL"],
+        "error_code": provider_result.get("error_code", "provider_unavailable"),
+        "message": (
+            f"Configured search provider '{provider or 'unknown'}' failed: "
+            f"{provider_result.get('message') or 'no usable URLs returned'}. "
+            "Check the API key and provider settings in Settings, or change "
+            "SEARCH_PROVIDER (e.g. duckduckgo for the no-key fallback)."
+        ),
+        "missing": provider_result.get("missing", []),
+        "suggested_actions": provider_result.get("suggested_actions", ["Configure provider", "Provide URL"]),
     }
 
 

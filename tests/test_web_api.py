@@ -644,8 +644,8 @@ class WebApiTests(unittest.TestCase):
             self.assertTrue(payload["intent"]["requires_realtime_data"])
             self.assertTrue(payload["intent"]["requires_disclaimer"])
             self.assertEqual(payload["intent"]["mode"], "one_shot_query")
-            self.assertIn("no-key fallback search", payload["message"])
-            self.assertIn("请配置搜索/金融 provider", payload["message"])
+            self.assertIn("not configured", payload["message"])
+            self.assertIn("Realtime Search Provider", payload["message"])
             self.assertIn("不是财务建议", payload["message"])
             labels = [action["label"] for action in payload["actions"]]
             self.assertEqual(labels[0], "Configure search provider")
@@ -673,27 +673,55 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(payload["actions"][0]["kind"], "configure_provider")
             self.assertEqual(payload["actions"][1]["kind"], "answer_without_realtime")
             self.assertEqual(payload["actions"][1]["payload"]["context"]["force_mode"], "answer_without_realtime")
-            self.assertIn("no-key fallback search", payload["message"])
+            self.assertIn("not configured", payload["message"])
+            self.assertIn("Realtime Search Provider", payload["message"])
             self.assertNotIn("I can help with writing", payload["message"])
             trace_types = {item["type"] for item in payload["trace"]}
             self.assertIn("search_mode", trace_types)
             self.assertIn("tool_call", trace_types)
 
-    def test_tool_web_research_run_endpoint_uses_no_key_fallback_when_no_provider(self):
+    def test_tool_web_research_run_fails_fast_when_no_provider_configured(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_runtime_tool(root, "web_research", "web_research")
             client = self.make_client(root)
-            with patch.dict(os.environ, {"WEB_SEARCH_MOCK_RESULTS": "", "SEARCH_PROVIDER": ""}, clear=False):
-                with patch("runtime.tool_registry.urlopen", side_effect=URLError("offline")):
-                    response = client.post(
-                        "/api/tools/web_research/run",
-                        json={"inputs": {"query": "今天英伟达财报如何"}},
-                    )
+            with patch.dict(
+                os.environ,
+                {
+                    "WEB_SEARCH_MOCK_RESULTS": "",
+                    "SEARCH_PROVIDER": "",
+                    "SEARCH_API_KEY": "",
+                    "DASHSCOPE_API_KEY": "",
+                    "BAILIAN_API_KEY": "",
+                },
+                clear=False,
+            ):
+                response = client.post(
+                    "/api/tools/web_research/run",
+                    json={"inputs": {"query": "今天英伟达财报如何"}},
+                )
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertFalse(payload["ok"])
             self.assertEqual(payload["tool_name"], "web_research")
+            self.assertEqual(payload["error_code"], "search_not_configured")
+            self.assertIn("not configured", payload["message"])
+            self.assertIn("SEARCH_PROVIDER", payload["message"])
+
+    def test_tool_web_research_run_uses_duckduckgo_when_explicitly_opted_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_runtime_tool(root, "web_research", "web_research")
+            client = self.make_client(root)
+            with patch.dict(os.environ, {"SEARCH_PROVIDER": "duckduckgo"}, clear=False):
+                with patch("runtime.tool_registry.urlopen", side_effect=URLError("offline")):
+                    response = client.post(
+                        "/api/tools/web_research/run",
+                        json={"inputs": {"query": "test"}},
+                    )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertFalse(payload["ok"])
             self.assertEqual(payload["error_code"], "provider_unavailable")
             self.assertIn("fallback search", payload["message"])
 
@@ -773,7 +801,7 @@ class WebApiTests(unittest.TestCase):
                 self.assertFalse(payload["ok"])
                 self.assertEqual(payload["error_code"], "unsafe_url")
 
-    def test_web_research_no_key_fallback_search_still_crawls_selected_url(self):
+    def test_web_research_duckduckgo_provider_crawls_selected_url(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_runtime_tool(root, "web_research", "web_research")
@@ -787,7 +815,7 @@ class WebApiTests(unittest.TestCase):
                 "extracted_at": "2026-05-21T00:00:00+00:00",
                 "content_length": 48,
             }
-            with patch.dict(os.environ, {"WEB_SEARCH_MOCK_RESULTS": "", "SEARCH_PROVIDER": ""}, clear=False):
+            with patch.dict(os.environ, {"SEARCH_PROVIDER": "duckduckgo"}, clear=False):
                 with patch("runtime.tool_registry.urlopen", return_value=FakeHtmlResponse(html)):
                     with patch("runtime.tool_registry.crawl_url_to_markdown", return_value=page):
                         response = client.post("/api/tools/web_research/run", json={"inputs": {"query": "latest AI news"}})
@@ -849,7 +877,8 @@ class WebApiTests(unittest.TestCase):
             payload = response.json()
             self.assertIntentPrimary(payload, "news_query")
             self.assertEqual(payload["type"], "tool_result")
-            self.assertIn("no-key fallback search", payload["message"])
+            self.assertIn("not configured", payload["message"])
+            self.assertIn("SEARCH_PROVIDER", payload["message"])
 
     def test_settings_providers_writes_dotenv_and_applies_in_process(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -992,9 +1021,9 @@ class WebApiTests(unittest.TestCase):
                         )
             payload = response.json()
             self.assertFalse(payload["ok"])
-            self.assertIn("configured provider", payload["message"])
-            self.assertIn("bailian", payload["message"])
+            self.assertIn("Configured search provider 'bailian' failed", payload["message"])
             self.assertIn("Available tools", payload["message"])
+            self.assertNotIn("no-key fallback returned", payload["message"])
 
     def test_bailian_adapter_discovers_tool_via_tools_list_when_tool_name_is_auto(self):
         from runtime import web_search_provider
@@ -1120,15 +1149,15 @@ class WebApiTests(unittest.TestCase):
                 "WEB_SEARCH_MOCK_RESULTS": "",
             }
             with patch.dict(os.environ, env_overrides, clear=False):
-                with patch("runtime.tool_registry.urlopen", side_effect=URLError("offline")):
-                    response = client.post(
-                        "/api/tools/web_research/run",
-                        json={"inputs": {"query": "test query"}},
-                    )
+                response = client.post(
+                    "/api/tools/web_research/run",
+                    json={"inputs": {"query": "test query"}},
+                )
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertFalse(payload["ok"])
-            self.assertIn("fallback search", payload["message"].lower())
+            self.assertIn("needs an API key", payload["message"])
+            self.assertIn("'bailian'", payload["message"])
 
     def test_chat_general_realtime_queries_route_to_web_research(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1230,7 +1259,7 @@ class WebApiTests(unittest.TestCase):
             labels = [action["label"] for action in payload["actions"]]
             self.assertEqual(labels[0], "Configure search provider")
             self.assertIn("Create persistent finance_quote tool", labels)
-            self.assertIn("请配置搜索/金融 provider", payload["message"])
+            self.assertIn("Realtime Search Provider", payload["message"])
 
     def test_chat_existing_web_search_asset_not_executable_exposes_status_and_actions(self):
         with tempfile.TemporaryDirectory() as tmp:
