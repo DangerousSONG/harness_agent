@@ -4,6 +4,14 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-22
 
+### Bailian / DashScope MCP WebSearch Provider
+
+- Added a built-in adapter `runtime/web_search_provider.py` that calls the Bailian / DashScope MCP WebSearch endpoint (`https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp`) via JSON-RPC over Streamable HTTP. The adapter does `initialize → notifications/initialized → tools/call`, handles either JSON or SSE responses, and normalizes results into `{title, url, snippet, source}`.
+- Wired `configured_provider_search` in `runtime/tool_registry.py` to dispatch by `SEARCH_PROVIDER`. Selecting `bailian` / `dashscope` / `qwen` / `aliyun` activates the new adapter; everything else still falls back to the no-key DuckDuckGo path.
+- API key resolution order: `SEARCH_API_KEY_ENV → SEARCH_API_KEY → DASHSCOPE_API_KEY → BAILIAN_API_KEY`. Override the endpoint via `SEARCH_API_BASE` and the tool name via `SEARCH_TOOL_NAME` (default `WebSearch`) if Bailian renames either.
+- Updated the Settings page Realtime Search Provider dropdown to surface `Bailian / DashScope WebSearch (MCP)` as the first real adapter, with a contextual hint pointing to bailian.console.aliyun.com for the key.
+- Added two regression tests: one mocks the provider call end-to-end through `/api/tools/web_research/run`; one verifies the missing-key branch returns a structured error instead of crashing.
+
 ### Settings UI for Realtime Search Provider and Model Connection
 
 - Added editable Realtime Search Provider section on the Settings page so users can pick a provider (Bing/Serper/Brave/Tavily/Google/DuckDuckGo), enter an API key (kept in `.env` only), set an alternative env var name, or paste mock results for tests. The masked current value is shown when a key is already stored.

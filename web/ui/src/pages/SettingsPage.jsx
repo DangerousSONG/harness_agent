@@ -4,14 +4,22 @@ import { api, getErrorMessage } from "../lib/api";
 import { compact } from "../lib/format";
 
 const SEARCH_PROVIDER_OPTIONS = [
-  { value: "", label: "Not configured" },
-  { value: "bing", label: "Bing Web Search" },
-  { value: "serper", label: "Serper (Google)" },
-  { value: "brave", label: "Brave Search" },
-  { value: "tavily", label: "Tavily" },
-  { value: "google", label: "Google Custom Search" },
-  { value: "duckduckgo", label: "DuckDuckGo (no-key fallback)" },
+  { value: "", label: "Not configured (no-key DuckDuckGo fallback)" },
+  { value: "bailian", label: "Bailian / DashScope WebSearch (MCP)" },
+  { value: "bing", label: "Bing Web Search (no adapter yet)" },
+  { value: "serper", label: "Serper / Google (no adapter yet)" },
+  { value: "brave", label: "Brave Search (no adapter yet)" },
+  { value: "tavily", label: "Tavily (no adapter yet)" },
 ];
+
+const SEARCH_PROVIDER_HINTS = {
+  bailian:
+    "百炼 / DashScope: get the API key at bailian.console.aliyun.com (Manage → API-KEY). Endpoint is the MCP WebSearch URL; tool name defaults to 'WebSearch' (override with SEARCH_TOOL_NAME if needed).",
+  bing: "Bing adapter is not wired up yet; the key will be saved but search will fall back to DuckDuckGo.",
+  serper: "Serper adapter is not wired up yet; the key will be saved but search will fall back to DuckDuckGo.",
+  brave: "Brave adapter is not wired up yet; the key will be saved but search will fall back to DuckDuckGo.",
+  tavily: "Tavily adapter is not wired up yet; the key will be saved but search will fall back to DuckDuckGo.",
+};
 
 const MODEL_PRESETS = [
   { id: "openai", label: "OpenAI", base_url: "https://api.openai.com/v1", model: "gpt-4o-mini" },
@@ -225,7 +233,7 @@ export default function SettingsPage({ dashboard }) {
             <div className="mt-4 text-sm text-zinc-500">Loading…</div>
           ) : (
             <form className="mt-5 grid gap-4 lg:grid-cols-2" onSubmit={handleSave}>
-              <Field label="Provider">
+              <Field label="Provider" hint={SEARCH_PROVIDER_HINTS[searchForm.provider] || ""}>
                 <select
                   className="w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-zinc-900 shadow-hairline focus:border-appleBlue focus:outline-none focus:ring-1 focus:ring-appleBlue disabled:opacity-50"
                   value={searchForm.provider}
