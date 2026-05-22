@@ -851,6 +851,19 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(payload["type"], "tool_result")
             self.assertIn("no-key fallback search", payload["message"])
 
+    def test_chat_shanghai_index_routes_to_financial_research(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            for message in ["今天沪指如何", "今天上证指数怎么样", "今天港股怎么样"]:
+                response = client.post("/api/chat", json={"message": message})
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertIntentPrimary(payload, "financial_research_query")
+                self.assertEqual(payload["type"], "tool_result")
+                self.assertNotIn("I can help with writing", payload["message"])
+
     def test_chat_refuses_fabricated_nvidia_good_news(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
