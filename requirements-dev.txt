@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Needed by fastapi.testclient and any direct HTTP test helpers.
+httpx>=0.27,<0.28
