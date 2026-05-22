@@ -228,6 +228,21 @@ export default function SettingsPage({ dashboard }) {
                       <StatusRow label="Search mode" value={testResult.search_mode || "(unknown)"} />
                       <StatusRow label="Endpoint" value={testResult.endpoint || "(default)"} />
                     </div>
+                    {testResult.loaded_env ? (
+                      <div className="rounded-lg border border-line bg-zinc-50 p-3 text-xs">
+                        <div className="font-medium text-zinc-700">os.environ keys (from .env autoload)</div>
+                        <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-zinc-600">
+                          {Object.entries(testResult.loaded_env).map(([key, present]) => (
+                            <div key={key} className="flex items-center justify-between">
+                              <span className="font-mono">{key}</span>
+                              <span className={present ? "text-emerald-700" : "text-zinc-400"}>
+                                {present ? "set" : "—"}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                     {testResult.ok ? (
                       <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
                         <div className="text-xs font-medium text-emerald-700">
