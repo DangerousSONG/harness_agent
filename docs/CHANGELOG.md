@@ -4,12 +4,13 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-22
 
-### Settings UI for Realtime Search Provider
+### Settings UI for Realtime Search Provider and Model Connection
 
 - Added editable Realtime Search Provider section on the Settings page so users can pick a provider (Bing/Serper/Brave/Tavily/Google/DuckDuckGo), enter an API key (kept in `.env` only), set an alternative env var name, or paste mock results for tests. The masked current value is shown when a key is already stored.
+- Added editable Model Connection section with OpenAI-compatible model name, base URL, and API key, plus quick presets for OpenAI / DashScope (Qwen) / DeepSeek / Moonshot / Custom that autofill base URL and a default model. Removed the Finance Provider configuration from the UI because the `finance_quote` handler uses the public Yahoo chart API directly and financial research routes through the Search Provider; `FINANCE_*` keys are still accepted by the backend allow-list for power users who need them.
 - Backend `GET /api/settings/providers` returns sanitized provider config (API keys are masked, never returned in plaintext). `POST /api/settings/providers` writes only allow-listed keys (`SEARCH_*`, `FINANCE_*`, `OPENAI_*`) to the project `.env`, preserving unrelated lines and comments, then applies them to `os.environ` so the change takes effect without restart.
 - Added `runtime/env_settings.py` with `read_env_file`, `update_env_file`, `apply_to_environ`, and `mask_secret`; the allow-list prevents writes to arbitrary keys.
-- Added API regression tests for write, clear-to-remove, and unknown-key rejection.
+- Added API regression tests for search write, model connection write, clear-to-remove, and unknown-key rejection.
 
 ### v0.2.7: stabilize Chat one-shot web research with crawl4ai-first fallback
 

@@ -884,6 +884,43 @@ class WebApiTests(unittest.TestCase):
                 self.assertTrue(after["has_api_key"])
                 self.assertNotIn("sk-test-abc123-xyz", after["api_key_masked"])
 
+    def test_settings_providers_writes_model_connection_to_dotenv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = self.make_client(root)
+            with patch.dict(
+                os.environ,
+                {"OPENAI_API_KEY": "", "OPENAI_MODEL": "", "OPENAI_BASE_URL": ""},
+                clear=False,
+            ):
+                response = client.post(
+                    "/api/settings/providers",
+                    json={
+                        "model": {
+                            "model": "qwen-plus",
+                            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                            "api_key": "sk-model-abc123",
+                        }
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertTrue(payload["ok"])
+                self.assertIn("OPENAI_MODEL", payload["data"]["written_keys"])
+                self.assertIn("OPENAI_API_KEY", payload["data"]["written_keys"])
+                self.assertIn("OPENAI_BASE_URL", payload["data"]["written_keys"])
+                env_text = (root / ".env").read_text(encoding="utf-8")
+                self.assertIn("OPENAI_MODEL=qwen-plus", env_text)
+                self.assertIn("OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1", env_text)
+                self.assertIn("OPENAI_API_KEY=sk-model-abc123", env_text)
+                self.assertEqual(os.environ.get("OPENAI_MODEL"), "qwen-plus")
+                self.assertEqual(os.environ.get("OPENAI_API_KEY"), "sk-model-abc123")
+                model_status = payload["data"]["providers"]["model"]
+                self.assertTrue(model_status["configured"])
+                self.assertEqual(model_status["model"], "qwen-plus")
+                self.assertTrue(model_status["has_api_key"])
+                self.assertNotIn("sk-model-abc123", model_status["api_key_masked"])
+
     def test_settings_providers_rejects_unknown_keys(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
