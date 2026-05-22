@@ -401,15 +401,23 @@ def search_provider_configured() -> bool:
 
 def configured_provider_search(query: str, max_results: int) -> dict[str, Any]:
     provider = os.environ.get("SEARCH_PROVIDER", "").strip().lower()
-    # The current local runtime does not ship a vendor-specific search adapter yet.
-    # Provider-specific adapters can plug in here without changing the crawl/summarize pipeline.
-    return {
-        "ok": False,
-        "error_code": "provider_unavailable",
-        "message": f"Search provider '{provider or 'configured'}' is configured but no search adapter is available in this local runtime.",
-        "missing": [],
-        "suggested_actions": ["Configure provider", "Provide URL"],
-    }
+    from runtime.web_search_provider import call_configured_provider
+
+    result = call_configured_provider(provider, query, max_results)
+    if result.get("ok"):
+        normalized = normalize_search_results(result.get("results", []), max_results)
+        return {
+            "ok": bool(normalized),
+            "search_mode": result.get("search_mode", "configured_provider"),
+            "results": normalized,
+        } if normalized else {
+            "ok": False,
+            "error_code": "provider_unavailable",
+            "message": "Configured provider returned no public, crawlable URLs.",
+            "missing": [],
+            "suggested_actions": ["Configure provider", "Provide URL"],
+        }
+    return result
 
 
 def duckduckgo_fallback_search(query: str, max_results: int) -> dict[str, Any]:

@@ -851,6 +851,177 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(payload["type"], "tool_result")
             self.assertIn("no-key fallback search", payload["message"])
 
+    def test_settings_providers_writes_dotenv_and_applies_in_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = self.make_client(root)
+            with patch.dict(
+                os.environ,
+                {"SEARCH_PROVIDER": "", "SEARCH_API_KEY": "", "SEARCH_API_KEY_ENV": "", "WEB_SEARCH_MOCK_RESULTS": ""},
+                clear=False,
+            ):
+                initial = client.get("/api/settings/providers").json()
+                self.assertTrue(initial["ok"])
+                self.assertFalse(initial["data"]["search"]["configured"])
+                response = client.post(
+                    "/api/settings/providers",
+                    json={"search": {"provider": "bing", "api_key": "sk-test-abc123-xyz"}},
+                )
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertTrue(payload["ok"])
+                self.assertIn("SEARCH_PROVIDER", payload["data"]["written_keys"])
+                self.assertIn("SEARCH_API_KEY", payload["data"]["written_keys"])
+                self.assertEqual(payload["data"]["env_path"], ".env")
+                env_text = (root / ".env").read_text(encoding="utf-8")
+                self.assertIn("SEARCH_PROVIDER=bing", env_text)
+                self.assertIn("SEARCH_API_KEY=sk-test-abc123-xyz", env_text)
+                self.assertEqual(os.environ.get("SEARCH_PROVIDER"), "bing")
+                self.assertEqual(os.environ.get("SEARCH_API_KEY"), "sk-test-abc123-xyz")
+                after = client.get("/api/settings/providers").json()["data"]["search"]
+                self.assertTrue(after["configured"])
+                self.assertEqual(after["provider"], "bing")
+                self.assertTrue(after["has_api_key"])
+                self.assertNotIn("sk-test-abc123-xyz", after["api_key_masked"])
+
+    def test_settings_providers_writes_model_connection_to_dotenv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = self.make_client(root)
+            with patch.dict(
+                os.environ,
+                {"OPENAI_API_KEY": "", "OPENAI_MODEL": "", "OPENAI_BASE_URL": ""},
+                clear=False,
+            ):
+                response = client.post(
+                    "/api/settings/providers",
+                    json={
+                        "model": {
+                            "model": "qwen-plus",
+                            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                            "api_key": "sk-model-abc123",
+                        }
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertTrue(payload["ok"])
+                self.assertIn("OPENAI_MODEL", payload["data"]["written_keys"])
+                self.assertIn("OPENAI_API_KEY", payload["data"]["written_keys"])
+                self.assertIn("OPENAI_BASE_URL", payload["data"]["written_keys"])
+                env_text = (root / ".env").read_text(encoding="utf-8")
+                self.assertIn("OPENAI_MODEL=qwen-plus", env_text)
+                self.assertIn("OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1", env_text)
+                self.assertIn("OPENAI_API_KEY=sk-model-abc123", env_text)
+                self.assertEqual(os.environ.get("OPENAI_MODEL"), "qwen-plus")
+                self.assertEqual(os.environ.get("OPENAI_API_KEY"), "sk-model-abc123")
+                model_status = payload["data"]["providers"]["model"]
+                self.assertTrue(model_status["configured"])
+                self.assertEqual(model_status["model"], "qwen-plus")
+                self.assertTrue(model_status["has_api_key"])
+                self.assertNotIn("sk-model-abc123", model_status["api_key_masked"])
+
+    def test_settings_providers_rejects_unknown_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = self.make_client(root)
+            response = client.post("/api/settings/providers", json={"other": {"foo": "bar"}})
+            self.assertEqual(response.status_code, 400)
+            self.assertFalse(response.json()["ok"])
+
+    def test_settings_providers_clearing_key_removes_from_dotenv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("SEARCH_PROVIDER=bing\nSEARCH_API_KEY=keep-this\nOTHER=stay\n", encoding="utf-8")
+            client = self.make_client(root)
+            with patch.dict(os.environ, {"SEARCH_PROVIDER": "bing", "SEARCH_API_KEY": "keep-this"}, clear=False):
+                response = client.post(
+                    "/api/settings/providers",
+                    json={"search": {"provider": "", "api_key": ""}},
+                )
+                self.assertEqual(response.status_code, 200)
+                env_text = (root / ".env").read_text(encoding="utf-8")
+                self.assertNotIn("SEARCH_PROVIDER", env_text)
+                self.assertNotIn("SEARCH_API_KEY", env_text)
+                self.assertIn("OTHER=stay", env_text)
+                self.assertNotIn("SEARCH_PROVIDER", os.environ)
+
+    def test_bailian_mcp_provider_is_invoked_when_search_provider_is_bailian(self):
+        from runtime import web_search_provider
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_runtime_tool(root, "web_research", "web_research")
+            client = self.make_client(root)
+            page = {
+                "title": "Article",
+                "url": "https://example.com/article",
+                "markdown": "# Article\n\nBailian MCP returned this URL.",
+                "crawl_status": "completed",
+                "extracted_at": "2026-05-22T00:00:00+00:00",
+                "content_length": 38,
+            }
+
+            def fake_call(provider, query, max_results):
+                self.assertEqual(provider, "bailian")
+                self.assertEqual(query, "今天英伟达财报如何")
+                return {
+                    "ok": True,
+                    "search_mode": "configured_provider",
+                    "results": [
+                        {
+                            "title": "NVDA earnings",
+                            "url": "https://example.com/article",
+                            "snippet": "data center growth",
+                            "source": "Bailian MCP WebSearch",
+                        }
+                    ],
+                }
+
+            env_overrides = {
+                "SEARCH_PROVIDER": "bailian",
+                "DASHSCOPE_API_KEY": "sk-bailian-test",
+                "SEARCH_API_KEY": "",
+                "WEB_SEARCH_MOCK_RESULTS": "",
+            }
+            with patch.dict(os.environ, env_overrides, clear=False):
+                with patch.object(web_search_provider, "call_configured_provider", side_effect=fake_call):
+                    with patch("runtime.tool_registry.crawl_url_to_markdown", return_value=page):
+                        response = client.post(
+                            "/api/tools/web_research/run",
+                            json={"inputs": {"query": "今天英伟达财报如何"}},
+                        )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            result = payload["result"]
+            self.assertEqual(result["search_mode"], "configured_provider")
+            self.assertEqual(result["urls_selected"], ["https://example.com/article"])
+
+    def test_bailian_mcp_provider_missing_key_returns_clear_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_runtime_tool(root, "web_research", "web_research")
+            client = self.make_client(root)
+            env_overrides = {
+                "SEARCH_PROVIDER": "bailian",
+                "DASHSCOPE_API_KEY": "",
+                "BAILIAN_API_KEY": "",
+                "SEARCH_API_KEY": "",
+                "SEARCH_API_KEY_ENV": "",
+                "WEB_SEARCH_MOCK_RESULTS": "",
+            }
+            with patch.dict(os.environ, env_overrides, clear=False):
+                with patch("runtime.tool_registry.urlopen", side_effect=URLError("offline")):
+                    response = client.post(
+                        "/api/tools/web_research/run",
+                        json={"inputs": {"query": "test query"}},
+                    )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertFalse(payload["ok"])
+            self.assertIn("fallback search", payload["message"].lower())
+
     def test_chat_general_realtime_queries_route_to_web_research(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

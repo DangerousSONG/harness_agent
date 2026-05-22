@@ -119,6 +119,12 @@ export const api = {
       body: JSON.stringify({ message, context }),
     }),
   chatEvents: () => request("/api/chat/events"),
+  providerSettings: () => request("/api/settings/providers"),
+  saveProviderSettings: (body) =>
+    request("/api/settings/providers", {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }),
 };
 
 export function getErrorMessage(error) {

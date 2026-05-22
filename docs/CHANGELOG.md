@@ -4,6 +4,22 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-22
 
+### Bailian / DashScope MCP WebSearch Provider
+
+- Added a built-in adapter `runtime/web_search_provider.py` that calls the Bailian / DashScope MCP WebSearch endpoint (`https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp`) via JSON-RPC over Streamable HTTP. The adapter does `initialize → notifications/initialized → tools/call`, handles either JSON or SSE responses, and normalizes results into `{title, url, snippet, source}`.
+- Wired `configured_provider_search` in `runtime/tool_registry.py` to dispatch by `SEARCH_PROVIDER`. Selecting `bailian` / `dashscope` / `qwen` / `aliyun` activates the new adapter; everything else still falls back to the no-key DuckDuckGo path.
+- API key resolution order: `SEARCH_API_KEY_ENV → SEARCH_API_KEY → DASHSCOPE_API_KEY → BAILIAN_API_KEY`. Override the endpoint via `SEARCH_API_BASE` and the tool name via `SEARCH_TOOL_NAME` (default `WebSearch`) if Bailian renames either.
+- Updated the Settings page Realtime Search Provider dropdown to surface `Bailian / DashScope WebSearch (MCP)` as the first real adapter, with a contextual hint pointing to bailian.console.aliyun.com for the key.
+- Added two regression tests: one mocks the provider call end-to-end through `/api/tools/web_research/run`; one verifies the missing-key branch returns a structured error instead of crashing.
+
+### Settings UI for Realtime Search Provider and Model Connection
+
+- Added editable Realtime Search Provider section on the Settings page so users can pick a provider (Bing/Serper/Brave/Tavily/Google/DuckDuckGo), enter an API key (kept in `.env` only), set an alternative env var name, or paste mock results for tests. The masked current value is shown when a key is already stored.
+- Added editable Model Connection section with OpenAI-compatible model name, base URL, and API key, plus quick presets for OpenAI / DashScope (Qwen) / DeepSeek / Moonshot / Custom that autofill base URL and a default model. Removed the Finance Provider configuration from the UI because the `finance_quote` handler uses the public Yahoo chart API directly and financial research routes through the Search Provider; `FINANCE_*` keys are still accepted by the backend allow-list for power users who need them.
+- Backend `GET /api/settings/providers` returns sanitized provider config (API keys are masked, never returned in plaintext). `POST /api/settings/providers` writes only allow-listed keys (`SEARCH_*`, `FINANCE_*`, `OPENAI_*`) to the project `.env`, preserving unrelated lines and comments, then applies them to `os.environ` so the change takes effect without restart.
+- Added `runtime/env_settings.py` with `read_env_file`, `update_env_file`, `apply_to_environ`, and `mask_secret`; the allow-list prevents writes to arbitrary keys.
+- Added API regression tests for search write, model connection write, clear-to-remove, and unknown-key rejection.
+
 ### v0.2.7: stabilize Chat one-shot web research with crawl4ai-first fallback
 
 - Added a general `looks_like_realtime_query` detector in `runtime/chat_intent.py` so any realtime question outside finance/news (e.g. `今天有什么活动`, `最近油价多少`, `搜索一下今晚北京有什么演唱会`) is routed to `web_research_query` and auto-runs the crawl4ai + no-key fallback pipeline. The detector explicitly excludes weather (kept on its Open-Meteo tool path) and workspace/skill/review/promotion phrases (kept on self-evolution paths).
