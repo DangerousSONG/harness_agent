@@ -851,6 +851,33 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(payload["type"], "tool_result")
             self.assertIn("no-key fallback search", payload["message"])
 
+    def test_chat_general_realtime_queries_route_to_web_research(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "tool_usage")
+            client = self.make_client(root)
+            for message in ["今天有什么活动", "最近油价多少", "搜索一下今晚北京有什么演唱会"]:
+                response = client.post("/api/chat", json={"message": message})
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertIntentPrimary(payload, "web_research_query")
+                self.assertEqual(payload["type"], "tool_result")
+                self.assertTrue(payload["intent"]["requires_realtime_data"])
+                self.assertNotIn("I can help with writing", payload["message"])
+
+    def test_chat_workspace_phrases_not_misclassified_as_realtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            client = self.make_client(root)
+            for message, expected in [
+                ("当前有哪些 skills？", "skill_list_query"),
+                ("现在系统卡在哪一步？", "workspace_status_query"),
+            ]:
+                response = client.post("/api/chat", json={"message": message})
+                self.assertEqual(response.status_code, 200)
+                self.assertIntentPrimary(response.json(), expected)
+
     def test_chat_shanghai_index_routes_to_financial_research(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

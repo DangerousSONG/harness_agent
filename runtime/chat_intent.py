@@ -133,6 +133,15 @@ class IntentRouter:
             return intent_payload("news_query", 0.86, task_mode, "Current news query.", requires_realtime_data=True, entities=extract_entities(message))
         if looks_like_web_research(message):
             return intent_payload("web_research_query", 0.86, task_mode, "Web research query.", requires_realtime_data=True, entities=extract_entities(message))
+        if looks_like_realtime_query(message):
+            return intent_payload(
+                "web_research_query",
+                0.82,
+                task_mode,
+                "Realtime query routed to crawl4ai-first web research.",
+                requires_realtime_data=True,
+                entities=extract_entities(message),
+            )
         if looks_like_skill_use(message):
             return intent_payload("skill_use_request", 0.84, task_mode, "Existing skill can satisfy the writing/template request.", entities={"skill": "markdown_writer"})
         if looks_like_knowledge_question(message):
@@ -288,6 +297,57 @@ def looks_like_news(message: str) -> bool:
 
 def looks_like_web_research(message: str) -> bool:
     return bool(re.search(r"https?://", message)) or has_any(message, ["联网查", "网页总结", "总结这个 url", "web research", "search web", "搜索网页"])
+
+
+def looks_like_realtime_query(message: str) -> bool:
+    # Weather has its own Open-Meteo tool path; don't reroute to web_research.
+    if has_any(message, ["天气", "weather", "气温", "下雨"]):
+        return False
+    # Workspace, skill, review, promotion, and evolution introspection are
+    # internal queries — they look "realtime" but should not hit the web.
+    if has_any(
+        message,
+        [
+            "skill", "skills", "技能", "workspace", "工作区", "系统状态", "系统卡", "卡在哪",
+            "当前进度", "进度", "review", "reviews", "审核", "promotion", "promotions",
+            "promo-", "rev-", "演进", "self-evolution", "self evolution", "自进化",
+            "tool 列表", "tools 列表", "工具列表", "skill 列表", "技能列表",
+        ],
+    ):
+        return False
+    explicit_search = has_any(
+        message,
+        ["搜索一下", "查一下", "搜一下", "查查", "查找", "找一下", "百度一下", "google", "网上搜", "网上查", "search the web", "look up online"],
+    )
+    if explicit_search:
+        return True
+    realtime_marker = has_any(
+        message,
+        [
+            "今天", "现在", "当前", "最近", "最新", "正在", "本周", "本月", "刚刚", "刚才",
+            "这两天", "前两天", "近期",
+            "today", "now", "current", "latest", "recent", "just now", "this week", "this month",
+        ],
+    )
+    if not realtime_marker:
+        return False
+    realtime_topic = has_any(
+        message,
+        [
+            "比赛", "比分", "赛事", "赛果", "演出", "演唱会", "活动", "政策", "汇率", "油价",
+            "物价", "选举", "突发", "排行", "排行榜", "榜单", "票价", "航班", "疫情", "事件",
+            "热点", "热搜", "热门",
+        ],
+    )
+    question = has_any(
+        message,
+        [
+            "怎么样", "如何", "什么情况", "有什么", "发生了什么", "什么新闻", "是什么", "多少",
+            "怎么了", "在哪", "在哪儿", "在哪里", "什么时候", "?", "？",
+            "what", "how", "where", "when", "any news",
+        ],
+    )
+    return realtime_topic or question
 
 
 def looks_like_skill_use(message: str) -> bool:

@@ -6,6 +6,8 @@ This file records meaningful project iterations. When judging current state, rea
 
 ### v0.2.7: stabilize Chat one-shot web research with crawl4ai-first fallback
 
+- Added a general `looks_like_realtime_query` detector in `runtime/chat_intent.py` so any realtime question outside finance/news (e.g. `今天有什么活动`, `最近油价多少`, `搜索一下今晚北京有什么演唱会`) is routed to `web_research_query` and auto-runs the crawl4ai + no-key fallback pipeline. The detector explicitly excludes weather (kept on its Open-Meteo tool path) and workspace/skill/review/promotion phrases (kept on self-evolution paths).
+- Added an LLM free-form fallback for `general_chat` and the non-canned branch of `knowledge_question`: when `OPENAI_API_KEY` and `OPENAI_MODEL` are configured, Chat calls the model for a conversational answer instead of the legacy template; without keys, the existing canned response is preserved so tests and offline behavior stay stable.
 - Broadened realtime financial/stock intent keywords so Chinese market index questions like `今天沪指如何`, `今天上证指数怎么样`, `今天港股怎么样`, and `茅台今天股价多少` no longer fall to `general_chat`; the same keyword set is mirrored in both `runtime/chat_intent.py` and the legacy `web/server.py` supervisor route.
 - Chat now auto-runs `web_research` (crawl4ai + no-key fallback search) for one-shot realtime queries such as `今天英伟达财报如何？`, `最近 AI 芯片新闻有哪些？`, and `总结这个网页：<url>`, instead of stopping at "create a Tool" or "Try crawl4ai fallback" prompts.
 - Removed the `Try crawl4ai fallback` action button: the same pipeline is now executed automatically, and only when crawl4ai + DuckDuckGo fallback both fail does Chat ask the user to configure a search provider or supply a URL.
