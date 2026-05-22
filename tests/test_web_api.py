@@ -946,6 +946,114 @@ class WebApiTests(unittest.TestCase):
                 self.assertIn("OTHER=stay", env_text)
                 self.assertNotIn("SEARCH_PROVIDER", os.environ)
 
+    def test_dotenv_autoload_makes_persisted_settings_survive_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text(
+                "SEARCH_PROVIDER=bailian\nSEARCH_API_KEY=sk-persisted-key\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"SEARCH_PROVIDER": "", "SEARCH_API_KEY": "", "DASHSCOPE_API_KEY": ""},
+                clear=False,
+            ):
+                client = self.make_client(root)
+                payload = client.get("/api/settings/providers").json()
+                self.assertTrue(payload["data"]["search"]["configured"])
+                self.assertEqual(payload["data"]["search"]["provider"], "bailian")
+                self.assertEqual(os.environ.get("SEARCH_PROVIDER"), "bailian")
+                self.assertEqual(os.environ.get("SEARCH_API_KEY"), "sk-persisted-key")
+
+    def test_configured_provider_error_is_surfaced_in_search_failure_message(self):
+        from runtime import web_search_provider
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_runtime_tool(root, "web_research", "web_research")
+            client = self.make_client(root)
+
+            def fake_call(provider, query, max_results):
+                return {
+                    "ok": False,
+                    "error_code": "provider_unavailable",
+                    "message": "Bailian MCP: tools/call returned no usable URLs (tool='WebSearch'). Available tools: search, fetch.",
+                    "missing": [],
+                    "suggested_actions": [],
+                }
+
+            env_overrides = {"SEARCH_PROVIDER": "bailian", "DASHSCOPE_API_KEY": "sk-test", "SEARCH_API_KEY": ""}
+            with patch.dict(os.environ, env_overrides, clear=False):
+                with patch.object(web_search_provider, "call_configured_provider", side_effect=fake_call):
+                    with patch("runtime.tool_registry.urlopen", side_effect=URLError("offline")):
+                        response = client.post(
+                            "/api/tools/web_research/run",
+                            json={"inputs": {"query": "test"}},
+                        )
+            payload = response.json()
+            self.assertFalse(payload["ok"])
+            self.assertIn("configured provider", payload["message"])
+            self.assertIn("bailian", payload["message"])
+            self.assertIn("Available tools", payload["message"])
+
+    def test_bailian_adapter_discovers_tool_via_tools_list_when_tool_name_is_auto(self):
+        from runtime import web_search_provider
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            calls: list[dict[str, object]] = []
+
+            def fake_post(endpoint, body, headers, *, ignore_response=False):
+                method = body.get("method")
+                calls.append({"method": method, "body": body})
+                if method == "initialize":
+                    return {"ok": True, "session_id": "sess-1", "rpc": {"result": {}}}
+                if method == "notifications/initialized":
+                    return {"ok": True, "session_id": "sess-1", "rpc": {}}
+                if method == "tools/list":
+                    return {
+                        "ok": True,
+                        "session_id": "sess-1",
+                        "rpc": {
+                            "result": {
+                                "tools": [
+                                    {"name": "fetch_url", "inputSchema": {"properties": {"url": {}}}},
+                                    {
+                                        "name": "alibaba_web_search",
+                                        "inputSchema": {"properties": {"query": {}, "count": {}}},
+                                    },
+                                ]
+                            }
+                        },
+                    }
+                if method == "tools/call":
+                    return {
+                        "ok": True,
+                        "session_id": "sess-1",
+                        "rpc": {
+                            "result": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": '[{"title":"NVIDIA result","url":"https://example.com/nvda","snippet":"data center"}]',
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                return {"ok": True, "session_id": "sess-1", "rpc": {}}
+
+            with patch.object(web_search_provider, "_mcp_post", side_effect=fake_post):
+                result = web_search_provider.bailian_mcp_websearch(
+                    "今天英伟达财报如何", 5, "sk-test", web_search_provider.BAILIAN_MCP_ENDPOINT, "auto"
+                )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["search_mode"], "configured_provider")
+            self.assertEqual(result["results"][0]["url"], "https://example.com/nvda")
+            tool_call = next(call for call in calls if call["method"] == "tools/call")
+            self.assertEqual(tool_call["body"]["params"]["name"], "alibaba_web_search")
+            self.assertEqual(tool_call["body"]["params"]["arguments"], {"query": "今天英伟达财报如何", "count": 5})
+
     def test_bailian_mcp_provider_is_invoked_when_search_provider_is_bailian(self):
         from runtime import web_search_provider
 

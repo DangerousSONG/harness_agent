@@ -4,6 +4,15 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-22
 
+### Realtime Search Reliability and Visibility
+
+- Auto-load `.env` on `WebContext` startup so persisted provider settings survive a server restart. Allow-listed keys (`SEARCH_*`, `FINANCE_*`, `OPENAI_*`) are applied to `os.environ` only if the slot is empty, so shell-provided vars still win.
+- Surfaced the configured provider's actual error message in `search_urls`: when the provider fails, the response message now reads `Search failed. configured provider 'bailian': <detail> | no-key fallback: <detail>` instead of "No search provider is configured". This makes Chat reply text actionable when something is wrong with Bailian/DashScope.
+- The Bailian MCP adapter now defaults `SEARCH_TOOL_NAME` to `auto` and calls `tools/list` to discover the real tool name (picks the first search/web/lookup/browse-like tool). It also tries multiple argument shapes (`{query, max_results}`, `{query, count}`, `{q, max_results}`, `{query}`) and reads the tool's `inputSchema` when available, so it adapts to small contract differences without code changes.
+- Bailian failures now include the available MCP tool names in the diagnostic so the user can pick the correct one via `SEARCH_TOOL_NAME` if discovery doesn't match.
+- UI: clarified that "API Key Env" is for an ENV VAR NAME, not the key value, and added an inline warning when the field starts with `sk-`.
+- Added regression tests: dotenv autoload, provider-error surfacing in the failure message, and tools/list-driven tool discovery with schema-aware arg shape.
+
 ### Bailian / DashScope MCP WebSearch Provider
 
 - Added a built-in adapter `runtime/web_search_provider.py` that calls the Bailian / DashScope MCP WebSearch endpoint (`https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp`) via JSON-RPC over Streamable HTTP. The adapter does `initialize → notifications/initialized → tools/call`, handles either JSON or SSE responses, and normalizes results into `{title, url, snippet, source}`.

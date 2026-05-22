@@ -98,6 +98,24 @@ def apply_to_environ(updates: dict[str, str | None]) -> None:
             os.environ[key] = str(value)
 
 
+def autoload_env_file(project_root: Path) -> list[str]:
+    """Read project_root/.env on startup and apply allow-listed keys to os.environ.
+
+    Shell-provided env vars win: we only set a key if it is empty/absent in
+    os.environ. Returns the list of keys actually applied (for logging).
+    """
+    path = project_root / ".env"
+    values = read_env_file(path)
+    applied: list[str] = []
+    for key, value in values.items():
+        if key not in ALLOWED_KEYS:
+            continue
+        if not str(os.environ.get(key, "")).strip() and str(value).strip():
+            os.environ[key] = str(value)
+            applied.append(key)
+    return applied
+
+
 def mask_secret(value: str) -> str:
     if not value:
         return ""
