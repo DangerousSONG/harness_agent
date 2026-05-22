@@ -4,6 +4,13 @@ This file records meaningful project iterations. When judging current state, rea
 
 ## 2026-05-22
 
+### Drop Editable Search Provider Form; Keep Read-only Status Only
+
+- Removed the editable Realtime Search Provider form from the Settings page. `web_search` / `web_research` is now strictly a built-in tool; the only knobs (`SEARCH_PROVIDER`, `SEARCH_API_KEY`, `DASHSCOPE_API_KEY`, …) live in `.env` and are picked up on server start via the autoloader added earlier.
+- The Settings page now shows a small read-only "Built-in web_search Status" card with the configured provider, masked API key, and a hint pointing to the right `.env` keys. The Model Connection form stays editable since it is genuinely per-user.
+- The backend `POST /api/settings/providers` endpoint still accepts `search` writes for power users hitting it via curl, but the UI no longer exposes that surface.
+- Validation: `python -m unittest` → 114 passed; `web/ui npm run build` → ok.
+
 ### web_search as a Built-in Tool; No Implicit DuckDuckGo Fallback
 
 - Treat `web_search` / `web_research` as a built-in tool: handler stays in the default registry, configuration is read from `.env` at startup, and the Settings page writes the same `.env`. No user-side tool creation is required.
