@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Cpu, KeyRound, ShieldCheck, SlidersHorizontal, Save } from "lucide-react";
 import { api, getErrorMessage } from "../lib/api";
 import { compact } from "../lib/format";
+import { useTranslate } from "../lib/i18n.jsx";
 
 const MODEL_PRESETS = [
   { id: "openai", label: "OpenAI", base_url: "https://api.openai.com/v1", model: "gpt-4o-mini" },
@@ -12,6 +13,7 @@ const MODEL_PRESETS = [
 ];
 
 export default function SettingsPage({ dashboard }) {
+  const t = useTranslate();
   const [providers, setProviders] = useState(null);
   const [modelForm, setModelForm] = useState({ model: "", base_url: "", api_key: "" });
   const [loading, setLoading] = useState(true);
@@ -125,30 +127,27 @@ export default function SettingsPage({ dashboard }) {
     <section className="workbench-section">
       <div className="workbench-container space-y-5">
         <div>
-          <h1 className="page-title">Settings</h1>
-          <p className="page-subtitle">
-            Configure realtime providers. Saved values are written to the project <code>.env</code> file and applied to the
-            running server immediately. API keys are masked in responses and never returned in plaintext after saving.
-          </p>
+          <h1 className="page-title">{t("settings.title")}</h1>
+          <p className="page-subtitle">{t("settings.subtitle")}</p>
         </div>
 
         <div className="grid gap-5 xl:grid-cols-2">
           <SettingsCard
             icon={SlidersHorizontal}
-            title="Workspace"
+            title={t("settings.workspace")}
             rows={[
-              ["Root", dashboard?.workspace_root || "-"],
-              ["Asset counts", formatAssetCounts(dashboard?.asset_counts)],
-              ["Pending changes", dashboard?.pending_changes ?? 0],
+              [t("settings.workspace.root"), dashboard?.workspace_root || "-"],
+              [t("settings.workspace.asset_counts"), formatAssetCounts(dashboard?.asset_counts)],
+              [t("settings.workspace.pending_changes"), dashboard?.pending_changes ?? 0],
             ]}
           />
           <SettingsCard
             icon={ShieldCheck}
-            title="Safety Policy"
+            title={t("settings.safety_policy")}
             rows={[
-              ["Policy", "default"],
-              ["Create route", "preflight + confirmation"],
-              ["Rollback", "review required"],
+              [t("settings.safety_policy.policy"), t("settings.safety_policy.policy_value")],
+              [t("settings.safety_policy.create_route"), t("settings.safety_policy.create_route_value")],
+              [t("settings.safety_policy.rollback"), t("settings.safety_policy.rollback_value")],
             ]}
           />
         </div>
@@ -160,38 +159,36 @@ export default function SettingsPage({ dashboard }) {
                 <KeyRound className="h-4 w-4" />
               </span>
               <div>
-                <h2 className="text-base font-semibold text-zinc-950">Built-in web_search Status</h2>
+                <h2 className="text-base font-semibold text-zinc-950">{t("settings.search.title")}</h2>
                 <p className="text-xs text-zinc-500">
-                  <code>web_search</code> / <code>web_research</code> is a built-in tool. Configure it by editing the project{" "}
-                  <code>.env</code>: set <code>SEARCH_PROVIDER=bailian</code> (recommended) plus your{" "}
-                  <code>DASHSCOPE_API_KEY</code> or <code>SEARCH_API_KEY</code>. Settings reload automatically on next
-                  server start. {reloadError ? <span className="text-rose-600">Status load failed: {reloadError}</span> : null}
+                  {t("settings.search.description")}{" "}
+                  {reloadError ? <span className="text-rose-600">{t("settings.search.load_failed")}: {reloadError}</span> : null}
                 </p>
               </div>
             </div>
             <ProviderBadge
               configured={providers?.search?.configured}
-              label={providers?.search?.provider || "not configured"}
+              label={providers?.search?.provider || t("settings.model.not_configured")}
             />
           </div>
 
           {loading ? (
-            <div className="mt-4 text-sm text-zinc-500">Loading…</div>
+            <div className="mt-4 text-sm text-zinc-500">{t("settings.search.loading")}</div>
           ) : (
             <>
               <div className="mt-5 grid gap-3 text-xs text-zinc-500 lg:grid-cols-3">
-                <StatusRow label="Configured" value={providers?.search?.configured ? "yes" : "no"} />
-                <StatusRow label="Provider" value={providers?.search?.provider || "(none)"} />
+                <StatusRow label={t("settings.search.configured")} value={providers?.search?.configured ? t("settings.search.status_ok") : t("settings.search.status_failed")} />
+                <StatusRow label={t("settings.search.provider")} value={providers?.search?.provider || "(none)"} />
                 <StatusRow
-                  label="API key"
-                  value={providers?.search?.has_api_key ? providers.search.api_key_masked : "not set"}
+                  label={t("settings.search.api_key")}
+                  value={providers?.search?.has_api_key ? providers.search.api_key_masked : t("settings.search.not_set")}
                 />
               </div>
 
               <div className="mt-5 border-t border-line pt-4">
                 <div className="flex flex-wrap items-end gap-3">
                   <label className="flex-1 min-w-[14rem] space-y-1 text-sm">
-                    <span className="block text-xs font-medium text-zinc-600">Test query</span>
+                    <span className="block text-xs font-medium text-zinc-600">{t("settings.search.test_query")}</span>
                     <input
                       className={inputClass}
                       type="text"
@@ -207,13 +204,10 @@ export default function SettingsPage({ dashboard }) {
                     onClick={runSearchTest}
                     disabled={testRunning}
                   >
-                    {testRunning ? "Testing…" : "Test search now"}
+                    {testRunning ? t("settings.search.testing") : t("settings.search.test_button")}
                   </button>
                 </div>
-                <p className="mt-2 text-xs text-zinc-500">
-                  Runs a real search through the configured provider and shows the actual response. Use this to verify your
-                  key works end-to-end.
-                </p>
+                <p className="mt-2 text-xs text-zinc-500">{t("settings.search.test_description")}</p>
 
                 {testError ? (
                   <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
@@ -224,13 +218,13 @@ export default function SettingsPage({ dashboard }) {
                 {testResult ? (
                   <div className="mt-3 space-y-2">
                     <div className="grid gap-2 text-xs text-zinc-500 lg:grid-cols-3">
-                      <StatusRow label="Status" value={testResult.ok ? "ok" : "failed"} />
-                      <StatusRow label="Search mode" value={testResult.search_mode || "(unknown)"} />
-                      <StatusRow label="Endpoint" value={testResult.endpoint || "(default)"} />
+                      <StatusRow label={t("settings.search.status_label")} value={testResult.ok ? t("settings.search.status_ok") : t("settings.search.status_failed")} />
+                      <StatusRow label={t("settings.search.search_mode")} value={testResult.search_mode || "(unknown)"} />
+                      <StatusRow label={t("settings.search.endpoint")} value={testResult.endpoint || "(default)"} />
                     </div>
                     {testResult.loaded_env ? (
                       <div className="rounded-lg border border-line bg-zinc-50 p-3 text-xs">
-                        <div className="font-medium text-zinc-700">os.environ keys (from .env autoload)</div>
+                        <div className="font-medium text-zinc-700">{t("settings.search.loaded_env")}</div>
                         <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-zinc-600">
                           {Object.entries(testResult.loaded_env).map(([key, present]) => (
                             <div key={key} className="flex items-center justify-between">
@@ -246,7 +240,7 @@ export default function SettingsPage({ dashboard }) {
                     {testResult.ok ? (
                       <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
                         <div className="text-xs font-medium text-emerald-700">
-                          {(testResult.result?.results || []).length} result(s) for "{testResult.query}"
+                          {(testResult.result?.results || []).length} {t("settings.search.results_for")} "{testResult.query}"
                         </div>
                         <ul className="mt-2 space-y-1 text-xs text-zinc-800">
                           {(testResult.result?.results || []).map((item, idx) => (
@@ -283,21 +277,18 @@ export default function SettingsPage({ dashboard }) {
                 <Cpu className="h-4 w-4" />
               </span>
               <div>
-                <h2 className="text-base font-semibold text-zinc-950">Model Connection</h2>
-                <p className="text-xs text-zinc-500">
-                  OpenAI-compatible endpoint used for Chat fallback answers and Markdown summarization. Picking a preset
-                  fills in the base URL and a default model name; you still need to provide your own API key.
-                </p>
+                <h2 className="text-base font-semibold text-zinc-950">{t("settings.model.title")}</h2>
+                <p className="text-xs text-zinc-500">{t("settings.model.description")}</p>
               </div>
             </div>
-            <ProviderBadge configured={modelStatus?.configured} label={modelStatus?.model || "no model"} />
+            <ProviderBadge configured={modelStatus?.configured} label={modelStatus?.model || t("settings.model.no_model")} />
           </div>
 
           {loading ? (
-            <div className="mt-4 text-sm text-zinc-500">Loading…</div>
+            <div className="mt-4 text-sm text-zinc-500">{t("settings.search.loading")}</div>
           ) : (
             <form className="mt-5 grid gap-4 lg:grid-cols-2" onSubmit={handleModelSave}>
-              <Field label="Preset" hint="Optional: select to autofill base URL and model name.">
+              <Field label={t("settings.model.preset")} hint={t("settings.model.preset_hint")}>
                 <div className="flex flex-wrap gap-2">
                   {MODEL_PRESETS.map((preset) => (
                     <button
@@ -312,7 +303,7 @@ export default function SettingsPage({ dashboard }) {
                   ))}
                 </div>
               </Field>
-              <Field label="Model" hint="e.g. gpt-4o-mini, qwen-plus, deepseek-chat.">
+              <Field label={t("settings.model.model")} hint={t("settings.model.model_hint")}>
                 <input
                   className={inputClass}
                   type="text"
@@ -322,7 +313,7 @@ export default function SettingsPage({ dashboard }) {
                   disabled={savingModel}
                 />
               </Field>
-              <Field label="Base URL" hint="OpenAI-compatible chat completions root. Leave empty to default to https://api.openai.com/v1.">
+              <Field label={t("settings.model.base_url")} hint={t("settings.model.base_url_hint")}>
                 <input
                   className={inputClass}
                   type="text"
@@ -333,11 +324,11 @@ export default function SettingsPage({ dashboard }) {
                 />
               </Field>
               <Field
-                label="API Key"
+                label={t("settings.model.api_key")}
                 hint={
                   modelStatus?.has_api_key
-                    ? `Stored. Current masked value: ${modelStatus.api_key_masked}. Leave empty to keep, type to replace.`
-                    : "Stored in .env only. Never returned in plaintext."
+                    ? t("settings.model.api_key_hint_stored", { masked: modelStatus.api_key_masked })
+                    : t("settings.model.api_key_hint_empty")
                 }
               >
                 <input
@@ -345,7 +336,7 @@ export default function SettingsPage({ dashboard }) {
                   type="password"
                   value={modelForm.api_key}
                   onChange={(event) => setModelForm((prev) => ({ ...prev, api_key: event.target.value }))}
-                  placeholder={modelStatus?.has_api_key ? "•••••• (keep existing)" : "sk-..."}
+                  placeholder={modelStatus?.has_api_key ? t("settings.model.placeholder_keep") : "sk-..."}
                   disabled={savingModel}
                   autoComplete="off"
                 />
@@ -354,10 +345,10 @@ export default function SettingsPage({ dashboard }) {
               <div className="lg:col-span-2 flex flex-wrap items-center gap-3">
                 <button type="submit" className="primary-button inline-flex items-center gap-2" disabled={savingModel}>
                   <Save className="h-4 w-4" />
-                  {savingModel ? "Saving…" : "Save to .env"}
+                  {savingModel ? t("settings.model.saving") : t("settings.model.save")}
                 </button>
                 <button type="button" className="secondary-button" onClick={handleModelClear} disabled={savingModel}>
-                  Clear model connection
+                  {t("settings.model.clear")}
                 </button>
                 {modelNotice ? <span className="text-xs text-emerald-700">{modelNotice}</span> : null}
                 {modelError ? <span className="text-xs text-rose-700">{modelError}</span> : null}
@@ -366,9 +357,9 @@ export default function SettingsPage({ dashboard }) {
           )}
 
           <div className="mt-5 grid gap-3 text-xs text-zinc-500 lg:grid-cols-3">
-            <StatusRow label="Configured" value={modelStatus?.configured ? "yes" : "no"} />
-            <StatusRow label="Model" value={modelStatus?.model || "not set"} />
-            <StatusRow label="API key" value={modelStatus?.has_api_key ? modelStatus.api_key_masked : "not set"} />
+            <StatusRow label={t("settings.model.configured")} value={modelStatus?.configured ? t("settings.search.status_ok") : t("settings.search.status_failed")} />
+            <StatusRow label={t("settings.model.model_label")} value={modelStatus?.model || t("settings.search.not_set")} />
+            <StatusRow label={t("settings.model.api_key_label")} value={modelStatus?.has_api_key ? modelStatus.api_key_masked : t("settings.search.not_set")} />
           </div>
         </section>
       </div>

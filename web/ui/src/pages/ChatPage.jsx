@@ -20,6 +20,7 @@ import { useMemo, useState } from "react";
 import ReviewCard from "../components/ReviewCard";
 import EmptyState from "../components/EmptyState";
 import { formatDate } from "../lib/format";
+import { useTranslate } from "../lib/i18n.jsx";
 import StatusPill from "../components/StatusPill";
 
 const TYPE_STYLES = {
@@ -38,6 +39,7 @@ const TYPE_STYLES = {
 };
 
 function Bubble({ role, message, children, time, onAction }) {
+  const t = useTranslate();
   const user = role === "user";
   const typeStyle = TYPE_STYLES[message?.type] || TYPE_STYLES.answer;
   const TypeIcon = typeStyle.icon;
@@ -93,7 +95,7 @@ function Bubble({ role, message, children, time, onAction }) {
           {!user && trace.length ? <TraceList trace={trace} /> : null}
           <div className={trace.length && !user ? "mt-3 border-t border-line pt-3" : ""}>
             {trace.length && !user ? (
-              <p className="muted-label mb-2">Final Result</p>
+              <p className="muted-label mb-2">{t("chat.final_result")}</p>
             ) : null}
             <MarkdownText text={children} />
           </div>
@@ -189,6 +191,7 @@ const TRACE_LABELS = {
 };
 
 function TraceList({ trace }) {
+  const t = useTranslate();
   const [showAll, setShowAll] = useState(false);
   const items = (trace || []).filter((item) => item.type !== "final_result");
   if (!items.length) return null;
@@ -206,7 +209,7 @@ function TraceList({ trace }) {
           className="text-xs text-zinc-500 hover:text-zinc-800 underline-offset-2 hover:underline"
           onClick={() => setShowAll(true)}
         >
-          Show all {items.length} steps ({hiddenCount} hidden)
+          {t("chat.show_all_steps", { total: items.length, hidden: hiddenCount })}
         </button>
       ) : showAll && essential.length && essential.length < items.length ? (
         <button
@@ -214,7 +217,7 @@ function TraceList({ trace }) {
           className="text-xs text-zinc-500 hover:text-zinc-800 underline-offset-2 hover:underline"
           onClick={() => setShowAll(false)}
         >
-          Hide internal steps
+          {t("chat.hide_internal_steps")}
         </button>
       ) : null}
     </div>
@@ -497,6 +500,7 @@ export default function ChatPage({
   actionProps,
   onChatAction,
 }) {
+  const t = useTranslate();
   const activeReviews = useMemo(
     () => (reviews || []).filter((review) => ["pending", "approved"].includes(review.status)),
     [reviews],
@@ -526,8 +530,7 @@ export default function ChatPage({
   return (
     <section className="flex min-h-0 flex-1 flex-col">
       <div className="border-b border-line bg-white/65 px-6 py-4">
-        <h1 className="page-title">Chat</h1>
-        <p className="page-subtitle">Conversation, workspace actions, and approval cards in one flow.</p>
+        <h1 className="page-title">{t("chat.title")}</h1>
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
         <div className="mx-auto max-w-5xl space-y-5">
@@ -580,7 +583,7 @@ export default function ChatPage({
           </button>
           <textarea
             className="max-h-36 min-h-12 flex-1 resize-none bg-transparent px-1 py-2 text-sm outline-none placeholder:text-zinc-400"
-            placeholder="Ask, write, improve, or run a workspace command…"
+            placeholder={t("chat.placeholder")}
             value={value}
             onChange={(event) => setValue(event.target.value)}
             onKeyDown={(event) => {

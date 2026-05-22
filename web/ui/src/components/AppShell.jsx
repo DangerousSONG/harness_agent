@@ -12,19 +12,21 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { nextActionLabel, titleize } from "../lib/format";
+import { useLanguage } from "../lib/i18n.jsx";
 import StatusPill from "./StatusPill";
 
-const nav = [
-  { id: "chat", label: "Chat", icon: BotMessageSquare },
-  { id: "workspace", label: "Workspace", icon: Monitor },
-  { id: "settings", label: "Settings", icon: Settings },
+const NAV_TOP = [
+  { id: "chat", labelKey: "nav.chat", icon: BotMessageSquare },
+  { id: "workspace", labelKey: "nav.workspace", icon: Monitor },
 ];
 
-const assetNav = [
-  { id: "assets-library", label: "Library", icon: Library },
-  { id: "assets-changes", label: "Changes", icon: GitCommitHorizontal },
-  { id: "assets-governance", label: "Governance", icon: GitPullRequest },
+const NAV_ASSETS = [
+  { id: "assets-library", labelKey: "nav.assets.library", icon: Library },
+  { id: "assets-changes", labelKey: "nav.assets.changes", icon: GitCommitHorizontal },
+  { id: "assets-governance", labelKey: "nav.assets.governance", icon: GitPullRequest },
 ];
+
+const NAV_BOTTOM = [{ id: "settings", labelKey: "nav.settings", icon: Settings }];
 
 function StepDot({ status, active }) {
   const normalized = String(status || "waiting").toLowerCase();
@@ -54,48 +56,47 @@ function ContextPanel({
   onNextAction,
   nextActionBusy,
 }) {
+  const { t } = useLanguage();
   const currentSkill =
     skills?.find((skill) => skill.name === evolutionState?.target_skill) || skills?.[0] || null;
-  const steps = buildPanelSteps(evolutionState, reviews);
+  const steps = buildPanelSteps(evolutionState, reviews, t);
   const nextAction = evolutionState?.next_action || inferNextAction(reviews);
   const requiresRegeneration = Boolean(currentPromotion?.requires_regeneration);
   const actionLabel = requiresRegeneration
-    ? "Regenerate with Promotion Eligibility"
+    ? t("panel.next_action.regenerate")
     : nextActionLabel(nextAction);
 
   return (
     <aside className="hidden min-h-0 w-72 shrink-0 overflow-auto border-l border-line bg-white/70 px-3 py-4 xl:block 2xl:w-80">
       <div className="space-y-3">
         <section className="section-panel p-4">
-          <p className="muted-label">Current Asset</p>
+          <p className="muted-label">{t("panel.current_asset")}</p>
           <div className="mt-4 space-y-3 text-sm">
             <div>
-              <span className="text-xs font-medium text-zinc-500">Asset type</span>
-              <p className="mt-1 font-semibold text-zinc-950">Skill</p>
+              <span className="text-xs font-medium text-zinc-500">{t("panel.asset_type")}</span>
+              <p className="mt-1 font-semibold text-zinc-950">{t("panel.asset_type.skill")}</p>
             </div>
             <div>
-              <span className="text-xs font-medium text-zinc-500">Name</span>
+              <span className="text-xs font-medium text-zinc-500">{t("panel.name")}</span>
               <p className="mt-1 font-semibold text-zinc-950">{currentSkill?.name || "-"}</p>
             </div>
             <div>
-              <span className="text-xs font-medium text-zinc-500">Active source</span>
+              <span className="text-xs font-medium text-zinc-500">{t("panel.active_source")}</span>
               <p className="mt-1 break-words font-mono text-xs font-semibold leading-5 text-zinc-800">
                 {currentSkill?.name ? `skills/${currentSkill.name}/SKILL.md` : "-"}
               </p>
             </div>
             <div>
-              <span className="text-xs font-medium text-zinc-500">Latest snapshot</span>
+              <span className="text-xs font-medium text-zinc-500">{t("panel.latest_snapshot")}</span>
               <div className="mt-1">
-                <span className="mono-badge">
-                {currentSkill?.latest_version || "No snapshot"}
-                </span>
+                <span className="mono-badge">{currentSkill?.latest_version || t("panel.no_snapshot")}</span>
               </div>
             </div>
           </div>
         </section>
 
         <section className="section-panel p-4">
-          <p className="muted-label">Skill Evolution Progress</p>
+          <p className="muted-label">{t("panel.skill_evolution_progress")}</p>
           <div className="relative mt-5 space-y-5">
             <div className="absolute left-2.5 top-2 h-[calc(100%-1rem)] w-px bg-line" />
             {steps.map((step) => (
@@ -121,11 +122,11 @@ function ContextPanel({
         </section>
 
         <section className="section-panel p-4">
-          <p className="muted-label">Next Action</p>
+          <p className="muted-label">{t("panel.next_action")}</p>
           <p className="mt-3 text-sm font-semibold leading-6 text-zinc-900">{actionLabel}</p>
           {requiresRegeneration ? (
             <div className="mt-4 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
-              Missing promotion_decision, promotion_score, or eligible_target. Requires regeneration.
+              {t("panel.next_action.regenerate_hint")}
             </div>
           ) : null}
           <button
@@ -137,7 +138,7 @@ function ContextPanel({
             }
             onClick={() => onNextAction?.(currentPromotion?.promo_id)}
           >
-            {nextActionBusy ? "Working..." : actionLabel}
+            {nextActionBusy ? t("panel.next_action.working") : actionLabel}
           </button>
         </section>
       </div>
@@ -145,7 +146,7 @@ function ContextPanel({
   );
 }
 
-function buildPanelSteps(evolutionState, reviews) {
+function buildPanelSteps(evolutionState, reviews, t) {
   const review = reviews?.find((item) => ["pending", "approved"].includes(item.status));
   const raw = evolutionState?.steps || [];
   const statusFor = (name, fallback) => raw.find((step) => step.name === name)?.status || fallback;
@@ -153,11 +154,11 @@ function buildPanelSteps(evolutionState, reviews) {
   const regressionStatus = statusFor("regression_review", "waiting");
   const versionStatus = statusFor("version", "waiting");
   const steps = [
-    { name: "memory", label: "Memory captured", status: statusFor("memory", review ? "completed" : "waiting") },
-    { name: "promo", label: "PROMO generated", status: statusFor("promo", "waiting") },
-    { name: "regression", label: "Regression review", status: regressionStatus },
-    { name: "skill", label: "Skill patch review", status: skillStatus },
-    { name: "version", label: "Version recorded", status: versionStatus },
+    { name: "memory", label: t("step.memory"), status: statusFor("memory", review ? "completed" : "waiting") },
+    { name: "promo", label: t("step.promo"), status: statusFor("promo", "waiting") },
+    { name: "regression", label: t("step.regression"), status: regressionStatus },
+    { name: "skill", label: t("step.skill"), status: skillStatus },
+    { name: "version", label: t("step.version"), status: versionStatus },
   ];
   const firstWaiting = steps.findIndex((step) => !["completed", "applied"].includes(step.status));
   return steps.map((step, index) => ({
@@ -180,6 +181,34 @@ function inferNextAction(reviews) {
   return "waiting";
 }
 
+function LanguageToggle() {
+  const { language, setLanguage } = useLanguage();
+  return (
+    <div className="inline-flex overflow-hidden rounded-md border border-line text-xs font-semibold">
+      <button
+        type="button"
+        className={[
+          "px-2 py-1 transition",
+          language === "en" ? "bg-zinc-900 text-white" : "bg-white text-zinc-600 hover:bg-zinc-100",
+        ].join(" ")}
+        onClick={() => setLanguage("en")}
+      >
+        EN
+      </button>
+      <button
+        type="button"
+        className={[
+          "px-2 py-1 transition",
+          language === "zh" ? "bg-zinc-900 text-white" : "bg-white text-zinc-600 hover:bg-zinc-100",
+        ].join(" ")}
+        onClick={() => setLanguage("zh")}
+      >
+        中
+      </button>
+    </div>
+  );
+}
+
 export default function AppShell({
   page,
   onPageChange,
@@ -191,13 +220,10 @@ export default function AppShell({
   onNextAction,
   nextActionBusy,
 }) {
+  const { t } = useLanguage();
   const assetsActive = page.startsWith("assets-");
   const [assetsOpen, setAssetsOpen] = useState(true);
-  const mobileNav = [
-    ...nav.slice(0, 2),
-    ...assetNav,
-    nav[2],
-  ];
+  const mobileNav = [...NAV_TOP, ...NAV_ASSETS, ...NAV_BOTTOM];
   return (
     <div className="flex h-screen overflow-hidden bg-mist text-ink">
       <aside className="hidden w-56 shrink-0 border-r border-line bg-white/70 px-4 py-5 backdrop-blur md:flex md:flex-col">
@@ -206,12 +232,12 @@ export default function AppShell({
             <ShieldCheck className="h-5 w-5" />
           </span>
           <div>
-            <p className="text-sm font-semibold leading-4">SafeHarness</p>
-            <p className="text-sm font-semibold leading-4">Console</p>
+            <p className="text-sm font-semibold leading-4">{t("app.brand_line_1")}</p>
+            <p className="text-sm font-semibold leading-4">{t("app.brand_line_2")}</p>
           </div>
         </div>
         <nav className="mt-12 space-y-2">
-          {nav.slice(0, 2).map((item) => {
+          {NAV_TOP.map((item) => {
             const Icon = item.icon;
             const active = page === item.id;
             return (
@@ -224,7 +250,7 @@ export default function AppShell({
                 onClick={() => onPageChange(item.id)}
               >
                 <Icon className="h-4 w-4" />
-                {item.label}
+                {t(item.labelKey)}
               </button>
             );
           })}
@@ -240,12 +266,12 @@ export default function AppShell({
               }}
             >
               <Boxes className="h-4 w-4" />
-              <span className="flex-1">Assets</span>
+              <span className="flex-1">{t("nav.assets")}</span>
               <ChevronDown className={["h-4 w-4 transition", assetsOpen ? "rotate-180" : ""].join(" ")} />
             </button>
             {assetsOpen ? (
               <div className="mt-1 space-y-1 pl-5">
-                {assetNav.map((item) => {
+                {NAV_ASSETS.map((item) => {
                   const Icon = item.icon;
                   const active = page === item.id;
                   return (
@@ -258,14 +284,14 @@ export default function AppShell({
                       onClick={() => onPageChange(item.id)}
                     >
                       <Icon className="h-4 w-4" />
-                      {item.label}
+                      {t(item.labelKey)}
                     </button>
                   );
                 })}
               </div>
             ) : null}
           </div>
-          {nav.slice(2).map((item) => {
+          {NAV_BOTTOM.map((item) => {
             const Icon = item.icon;
             const active = page === item.id;
             return (
@@ -278,14 +304,20 @@ export default function AppShell({
                 onClick={() => onPageChange(item.id)}
               >
                 <Icon className="h-4 w-4" />
-                {item.label}
+                {t(item.labelKey)}
               </button>
             );
           })}
         </nav>
-        <div className="mt-auto flex items-center gap-3 px-3 py-3 text-sm font-semibold text-zinc-800">
-          <Monitor className="h-4 w-4" />
-          Local Workspace
+        <div className="mt-auto space-y-3 px-3 py-3 text-sm font-semibold text-zinc-800">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-xs font-medium text-zinc-500">{t("app.language")}</span>
+            <LanguageToggle />
+          </div>
+          <div className="flex items-center gap-3">
+            <Monitor className="h-4 w-4" />
+            {t("app.local_workspace")}
+          </div>
         </div>
       </aside>
 
@@ -293,19 +325,22 @@ export default function AppShell({
         <div className="flex items-center justify-between border-b border-line bg-white/70 px-4 py-3 md:hidden">
           <div className="flex items-center gap-2 font-semibold">
             <ShieldCheck className="h-5 w-5" />
-            SafeHarness Console
+            {t("app.brand_line_1")} {t("app.brand_line_2")}
           </div>
-          <select
-            className="rounded-lg border border-line bg-white px-3 py-2 text-sm"
-            value={page}
-            onChange={(event) => onPageChange(event.target.value)}
-          >
-            {mobileNav.map((item) => (
-              <option value={item.id} key={item.id}>
-                {titleize(item.label)}
-              </option>
-            ))}
-          </select>
+          <div className="flex items-center gap-2">
+            <LanguageToggle />
+            <select
+              className="rounded-lg border border-line bg-white px-3 py-2 text-sm"
+              value={page}
+              onChange={(event) => onPageChange(event.target.value)}
+            >
+              {mobileNav.map((item) => (
+                <option value={item.id} key={item.id}>
+                  {titleize(t(item.labelKey))}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
         {children}
       </main>
