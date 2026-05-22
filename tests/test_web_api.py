@@ -656,7 +656,7 @@ class WebApiTests(unittest.TestCase):
             self.assertTrue(any(item["type"] == "tool_registry_check" and item["status"] == "failed" for item in payload["trace"]))
             self.assertTrue(any(item["type"] == "decision" and item["status"] == "blocked" for item in payload["trace"]))
 
-    def test_chat_nvidia_earnings_question_missing_tools_is_structured(self):
+    def test_chat_nvidia_earnings_question_auto_runs_web_research(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_skill(root, "tool_usage")
@@ -667,32 +667,29 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(payload["task_mode"]["mode"], "one_shot_task")
             self.assertIntentPrimary(payload, "financial_research_query")
             self.assertEqual(payload["type"], "tool_result")
+            # Chat auto-runs crawl4ai-first web_research; no "Try crawl4ai fallback" button.
+            kinds = [action["kind"] for action in payload["actions"]]
+            self.assertNotIn("try_no_key_fallback", kinds)
+            self.assertEqual(payload["actions"][0]["kind"], "configure_provider")
+            self.assertEqual(payload["actions"][1]["kind"], "answer_without_realtime")
+            self.assertEqual(payload["actions"][1]["payload"]["context"]["force_mode"], "answer_without_realtime")
             self.assertIn("no-key fallback search", payload["message"])
             self.assertNotIn("I can help with writing", payload["message"])
-            self.assertNotEqual(payload["actions"][0]["kind"], "create_tool")
-            fallback = payload["actions"][1]
-            self.assertRegex(fallback["id"], r"ACT-[A-Z0-9]{8}")
-            self.assertEqual(fallback["kind"], "try_no_key_fallback")
-            self.assertEqual(fallback["method"], "POST")
-            self.assertEqual(fallback["path"], "/api/tools/web_research/run")
-            self.assertEqual(fallback["payload"]["inputs"]["query"], "今天英伟达财报如何")
-            self.assertEqual(fallback["payload"]["inputs"]["mode"], "no_key_fallback")
-            self.assertEqual(fallback["priority"], "secondary")
-            offline = payload["actions"][2]
-            self.assertEqual(offline["kind"], "answer_without_realtime")
-            self.assertEqual(offline["path"], "/api/chat")
-            self.assertEqual(offline["payload"]["context"]["force_mode"], "answer_without_realtime")
-            self.assertTrue(any(item["type"] == "tool_registry_check" for item in payload["trace"]))
+            trace_types = {item["type"] for item in payload["trace"]}
+            self.assertIn("search_mode", trace_types)
+            self.assertIn("tool_call", trace_types)
 
-    def test_chat_try_crawl4ai_fallback_action_runs_web_research_without_asset(self):
+    def test_tool_web_research_run_endpoint_uses_no_key_fallback_when_no_provider(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write_skill(root, "tool_usage")
+            write_runtime_tool(root, "web_research", "web_research")
             client = self.make_client(root)
-            chat = client.post("/api/chat", json={"message": "今天英伟达财报如何"}).json()
-            fallback = next(action for action in chat["actions"] if action["kind"] == "try_no_key_fallback")
-            with patch("runtime.tool_registry.urlopen", side_effect=URLError("offline")):
-                response = client.post(fallback["path"], json=fallback["payload"])
+            with patch.dict(os.environ, {"WEB_SEARCH_MOCK_RESULTS": "", "SEARCH_PROVIDER": ""}, clear=False):
+                with patch("runtime.tool_registry.urlopen", side_effect=URLError("offline")):
+                    response = client.post(
+                        "/api/tools/web_research/run",
+                        json={"inputs": {"query": "今天英伟达财报如何"}},
+                    )
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertFalse(payload["ok"])

@@ -218,8 +218,10 @@ class Executor:
         urls = intent.get("entities", {}).get("urls") or _extract_urls(message)
         if urls:
             return self._run_web_research(ctx, message, urls, safety, task_mode, intent, asset_route, capability, risk, prefix_trace, mode="direct_url")
-        if capability.get("web_search_provider_configured") or capability.get("executable_tools"):
-            return self._run_web_research(ctx, message, [], safety, task_mode, intent, asset_route, capability, risk, prefix_trace, mode="provider_search")
+        handlers = getattr(ctx.tool_registry, "handlers", {}) or {}
+        if "web_research" in handlers or "web_search" in handlers:
+            search_mode = "provider_search" if capability.get("web_search_provider_configured") else "no_key_fallback"
+            return self._run_web_research(ctx, message, [], safety, task_mode, intent, asset_route, capability, risk, prefix_trace, mode=search_mode)
         return self._missing_realtime(primary, message, safety, task_mode, intent, asset_route, capability, risk, prefix_trace)
 
     def _run_web_research(
@@ -241,10 +243,17 @@ class Executor:
         inputs = {"query": _query_for_research(message, intent), "urls": urls, "max_results": 5, "language": "zh-CN"}
         result = ctx.tool_registry.handlers[handler_name](inputs)
         run_result = {"ok": bool(result.get("ok", True)), "tool_name": handler_name, **({"result": result.get("result", result)} if result.get("ok", True) else result)}
+        effective_mode = (run_result.get("result", {}) or {}).get("search_mode") or mode
+        if mode == "direct_url":
+            search_summary = "Direct URL mode; crawl4ai used the URL(s) the user provided."
+        elif effective_mode == "no_key_fallback_search":
+            search_summary = "No SEARCH_PROVIDER configured; auto-used no-key fallback search before crawl4ai."
+        else:
+            search_summary = f"Search mode: {effective_mode}."
         research_trace = [
-            trace("tool_route", "Tool route", status="completed", tool_name=handler_name, mode=intent.get("mode", "one_shot_query"), summary=f"Routed one-shot realtime query to {handler_name}."),
-            trace("search", "Search", status="completed" if mode != "direct_url" else "completed", summary="Direct URL mode; search skipped." if mode == "direct_url" else "Search provider selected URLs."),
-            trace("tool_call", "One-shot provider run", status="completed" if run_result.get("ok") else "failed", tool_name=handler_name, method="internal", path=f"provider://{handler_name}", summary=_tool_result_summary(run_result)),
+            trace("tool_route", "Tool route", status="completed", tool_name=handler_name, mode=intent.get("mode", "one_shot_query"), summary=f"Auto-routed one-shot realtime query to {handler_name} (crawl4ai first)."),
+            trace("search_mode", "Search mode", status="completed", mode=effective_mode, summary=search_summary),
+            trace("tool_call", "One-shot provider run", status="completed" if run_result.get("ok") else "failed", tool_name=handler_name, method="POST", path=f"/api/tools/{handler_name}/run", summary=_tool_result_summary(run_result)),
         ]
         if run_result.get("ok"):
             pages = run_result.get("result", {}).get("crawled_pages", [])
@@ -279,18 +288,39 @@ class Executor:
                     "tool_statuses": capability.get("tool_statuses", []),
                 },
             )
+        detail = run_result.get("message") or run_result.get("error_code") or "unknown error"
+        primary = intent.get("primary", "")
+        status_note = _tool_status_note(capability.get("tool_statuses", []))
+        if primary in {"financial_research_query", "finance_quote_query"}:
+            failure_message = (
+                "我已自动尝试 crawl4ai + no-key fallback search，但没有返回可用结果。"
+                f"详情：{detail}。请配置搜索/金融 provider，或直接提供要总结的 URL。"
+                f"{status_note}\n\n"
+                "说明：这不是财务建议；没有实时来源时我不会编造股价、财报、新闻或分析师观点。"
+            )
+        else:
+            failure_message = (
+                "我已自动尝试 crawl4ai + no-key fallback search，但没有返回可用结果。"
+                f"详情：{detail}。请配置搜索 provider，或直接提供要总结的 URL。{status_note}"
+            )
         return self.composer.compose(
             response_type="tool_result",
-            message=f"这是实时查询，但当前 provider/fallback 没有返回可用结果：{run_result.get('message', run_result.get('error_code', 'unknown error'))}",
+            message=failure_message,
             safety=safety,
             task_mode=task_mode,
             intent=intent,
             asset_route=asset_route,
             capability=capability,
             risk=risk,
-            traces=prefix_trace + research_trace + [trace("decision", "Decision", status="blocked", summary="Realtime answer blocked because provider/fallback failed.")],
+            traces=prefix_trace + research_trace + [trace("decision", "Decision", status="blocked", summary="Realtime answer blocked because crawl4ai+fallback returned no usable result.")],
             actions=_missing_actions(intent.get("primary", ""), capability, message),
-            data={"tool_results": [run_result], "tool_statuses": capability.get("tool_statuses", [])},
+            data={
+                "intent": primary,
+                "mode": intent.get("mode", "one_shot_query"),
+                "provider_mode": "one_shot_provider_failed",
+                "tool_results": [run_result],
+                "tool_statuses": capability.get("tool_statuses", []),
+            },
         )
 
     def _missing_realtime(
@@ -308,15 +338,15 @@ class Executor:
         if primary == "financial_research_query":
             status_note = _tool_status_note(capability.get("tool_statuses", []))
             message = (
-                "这是实时财报/市场问题，我当前缺少可执行 web_research / search provider，不能可靠查询今天最新财报、股价或相关新闻。"
-                "请配置搜索/金融 provider；也可以尝试 no-key fallback search，或让我在不使用实时数据的情况下给出财报分析框架。"
+                "这是实时财报/市场问题，我已自动尝试 no-key fallback search 与 crawl4ai，但 web_research handler 不可用。"
+                "请配置搜索/金融 provider，或直接提供要总结的 URL；也可以让我在不使用实时数据的情况下给出财报分析框架。"
                 f"{status_note}\n\n"
                 "说明：这不是财务建议；没有实时来源时我不会编造股价、财报、新闻或分析师观点。"
             )
         else:
             message = (
-                "这是实时外部信息问题，我当前缺少可执行 web_research / search provider，不能可靠查询最新信息。"
-                "可以先配置搜索 provider，尝试 no-key fallback search，或改为不使用实时数据的通用分析。"
+                "这是实时外部信息问题，我已自动尝试 no-key fallback search 与 crawl4ai，但 web_research handler 不可用。"
+                "请配置搜索 provider，或直接提供要总结的 URL；也可以改为不使用实时数据的通用分析。"
             )
         return self.composer.compose(
             response_type="tool_result",
@@ -346,23 +376,6 @@ class Executor:
 def _missing_actions(primary: str, capability: dict[str, Any], query: str = "") -> list[dict[str, Any]]:
     items = [
         action("Configure search provider", "LOCAL", "configure_provider", False, {"provider_type": "finance" if primary == "financial_research_query" else "search"}, kind="configure_provider", primary=True, priority="primary"),
-        action(
-            "Try crawl4ai fallback",
-            "POST",
-            "/api/tools/web_research/run",
-            False,
-            {
-                "inputs": {
-                    "query": query,
-                    "mode": "no_key_fallback",
-                    "max_results": 5,
-                    "max_pages": 3,
-                    "language": "zh-CN",
-                }
-            },
-            kind="try_no_key_fallback",
-            priority="secondary",
-        ),
         action("Ask without realtime data", "POST", "/api/chat", False, {"message": query, "context": {"force_mode": "answer_without_realtime"}}, kind="answer_without_realtime", priority="secondary"),
     ]
     statuses = capability.get("tool_statuses", [])

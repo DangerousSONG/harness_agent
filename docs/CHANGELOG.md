@@ -2,6 +2,16 @@
 
 This file records meaningful project iterations. When judging current state, read this before older design notes.
 
+## 2026-05-22
+
+### v0.2.7: stabilize Chat one-shot web research with crawl4ai-first fallback
+
+- Chat now auto-runs `web_research` (crawl4ai + no-key fallback search) for one-shot realtime queries such as `今天英伟达财报如何？`, `最近 AI 芯片新闻有哪些？`, and `总结这个网页：<url>`, instead of stopping at "create a Tool" or "Try crawl4ai fallback" prompts.
+- Removed the `Try crawl4ai fallback` action button: the same pipeline is now executed automatically, and only when crawl4ai + DuckDuckGo fallback both fail does Chat ask the user to configure a search provider or supply a URL.
+- Added a `search_mode` trace event so Chat shows `safety_check → task_mode → intent_analysis → search_mode → crawl4ai → markdown_extracted → summarize → final_result` for one-shot web research.
+- Updated failure messages to surface the underlying crawl4ai/fallback error and tool status detail instead of a fixed template.
+- Validation: `python -m unittest`; `cd web/ui && npm run build`.
+
 ## 2026-05-21
 
 ### Chat Action Dispatcher Wiring
