@@ -31,7 +31,7 @@ def call_configured_provider(provider: str, query: str, max_results: int) -> dic
                 suggested_actions=["Configure provider", "Set DASHSCOPE_API_KEY"],
             )
         endpoint = os.environ.get("SEARCH_API_BASE", "").strip() or BAILIAN_MCP_ENDPOINT
-        tool_name = os.environ.get("SEARCH_TOOL_NAME", "").strip() or "WebSearch"
+        tool_name = os.environ.get("SEARCH_TOOL_NAME", "").strip() or "auto"
         return bailian_mcp_websearch(query, max_results, api_key, endpoint, tool_name)
     return _error(
         "provider_unavailable",
@@ -49,7 +49,11 @@ def bailian_mcp_websearch(
     endpoint: str,
     tool_name: str,
 ) -> dict[str, Any]:
-    """Call DashScope/Bailian MCP WebSearch over Streamable HTTP."""
+    """Call DashScope/Bailian MCP WebSearch over Streamable HTTP.
+
+    Flow: initialize → notifications/initialized → tools/list (to discover the
+    real tool name when SEARCH_TOOL_NAME is not pinned) → tools/call.
+    """
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -69,6 +73,9 @@ def bailian_mcp_websearch(
     init_response = _mcp_post(endpoint, init_body, headers)
     if not init_response.get("ok"):
         return init_response
+    init_rpc = init_response.get("rpc") or {}
+    if "error" in init_rpc:
+        return _error("provider_unavailable", f"Bailian MCP initialize error: {init_rpc.get('error', {}).get('message', 'unknown')}")
     session_id = init_response.get("session_id", "")
     if session_id:
         headers["Mcp-Session-Id"] = session_id
@@ -80,38 +87,126 @@ def bailian_mcp_websearch(
     }
     _mcp_post(endpoint, initialized_notice, headers, ignore_response=True)
 
-    call_body = {
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/call",
-        "params": {
-            "name": tool_name,
-            "arguments": {"query": query, "max_results": max_results},
-        },
-    }
-    call_response = _mcp_post(endpoint, call_body, headers)
-    if not call_response.get("ok"):
-        return call_response
-
-    rpc = call_response.get("rpc") or {}
-    if "error" in rpc:
-        rpc_error = rpc.get("error") or {}
-        message = str(rpc_error.get("message") or "MCP tools/call returned an error.")
-        return _error("provider_unavailable", f"Bailian MCP error: {message}")
-
-    result = rpc.get("result") or {}
-    items = _normalize_search_content(result)
-    if not items:
-        return _error(
-            "provider_unavailable",
-            "Bailian MCP returned no usable search results. The tool name or argument shape may differ; "
-            "try SEARCH_TOOL_NAME to override (default: WebSearch).",
+    available_tools: list[dict[str, Any]] = []
+    pinned = bool((tool_name or "").strip() and tool_name.lower() != "auto")
+    if not pinned:
+        list_response = _mcp_post(
+            endpoint,
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            headers,
         )
-    return {
-        "ok": True,
-        "search_mode": "configured_provider",
-        "results": items[:max_results],
-    }
+        if list_response.get("ok"):
+            list_rpc = list_response.get("rpc") or {}
+            result = list_rpc.get("result") or {}
+            tools = result.get("tools") or []
+            if isinstance(tools, list):
+                available_tools = [item for item in tools if isinstance(item, dict)]
+            picked = _pick_search_tool(available_tools)
+            if picked:
+                tool_name = picked
+    if not tool_name:
+        tool_name = "WebSearch"
+
+    arg_shapes = _candidate_argument_shapes(query, max_results, available_tools, tool_name)
+    last_error_message = ""
+    for shape in arg_shapes:
+        call_response = _mcp_post(
+            endpoint,
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": shape},
+            },
+            headers,
+        )
+        if not call_response.get("ok"):
+            return call_response
+        rpc = call_response.get("rpc") or {}
+        if "error" in rpc:
+            last_error_message = str((rpc.get("error") or {}).get("message") or "tools/call error")
+            continue
+        result = rpc.get("result") or {}
+        items = _normalize_search_content(result)
+        if items:
+            return {
+                "ok": True,
+                "search_mode": "configured_provider",
+                "results": items[:max_results],
+            }
+        last_error_message = "tools/call returned no usable URLs (content shape unrecognized)"
+
+    diagnostic = last_error_message or "Bailian MCP returned no usable results."
+    tools_hint = ""
+    if available_tools:
+        names = [str(item.get("name", "")) for item in available_tools if item.get("name")]
+        if names:
+            tools_hint = f" Available tools: {', '.join(names[:8])}."
+    return _error(
+        "provider_unavailable",
+        f"Bailian MCP: {diagnostic} (tool='{tool_name}').{tools_hint} "
+        f"Override SEARCH_TOOL_NAME if the tool is named differently.",
+    )
+
+
+def _pick_search_tool(tools: list[dict[str, Any]]) -> str:
+    if not tools:
+        return ""
+    keywords = ("web_search", "websearch", "search", "web-search", "browse", "google", "bing", "lookup")
+    for tool in tools:
+        name = str(tool.get("name", "")).strip()
+        if not name:
+            continue
+        lowered = name.lower().replace("-", "_")
+        for keyword in keywords:
+            if keyword in lowered:
+                return name
+    first = tools[0]
+    return str(first.get("name", "")).strip()
+
+
+def _candidate_argument_shapes(
+    query: str,
+    max_results: int,
+    tools: list[dict[str, Any]],
+    tool_name: str,
+) -> list[dict[str, Any]]:
+    schema_args = _arguments_from_schema(tools, tool_name, query, max_results)
+    shapes: list[dict[str, Any]] = []
+    if schema_args:
+        shapes.append(schema_args)
+    shapes.append({"query": query, "max_results": max_results})
+    shapes.append({"query": query, "count": max_results})
+    shapes.append({"q": query, "max_results": max_results})
+    shapes.append({"query": query})
+    seen: list[dict[str, Any]] = []
+    for shape in shapes:
+        if shape and shape not in seen:
+            seen.append(shape)
+    return seen
+
+
+def _arguments_from_schema(
+    tools: list[dict[str, Any]],
+    tool_name: str,
+    query: str,
+    max_results: int,
+) -> dict[str, Any]:
+    target = next((item for item in tools if str(item.get("name", "")) == tool_name), None)
+    if not target:
+        return {}
+    schema = target.get("inputSchema") or target.get("input_schema") or {}
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    if not isinstance(properties, dict):
+        return {}
+    args: dict[str, Any] = {}
+    for prop in properties:
+        lowered = prop.lower()
+        if lowered in {"query", "q", "keyword", "keywords", "search_query"}:
+            args[prop] = query
+        elif lowered in {"max_results", "limit", "top_k", "topk", "count", "page_size"}:
+            args[prop] = max_results
+    return args
 
 
 def _mcp_post(

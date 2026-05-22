@@ -374,18 +374,26 @@ def search_urls(query: str, max_results: int) -> dict[str, Any]:
         except (json.JSONDecodeError, AttributeError):
             results = []
         return {"ok": True, "search_mode": "configured_provider", "results": normalize_search_results(results, max_results)}
+    provider_error = ""
+    provider_name = os.environ.get("SEARCH_PROVIDER", "").strip() or "(none)"
     if search_provider_configured():
         provider_result = configured_provider_search(query, max_results)
         if provider_result.get("ok"):
             return provider_result
+        provider_error = str(provider_result.get("message") or provider_result.get("error_code") or "configured provider returned no usable results")
     fallback_result = duckduckgo_fallback_search(query, max_results)
     if fallback_result.get("ok"):
         return fallback_result
+    fallback_error = str(fallback_result.get("message") or "no-key fallback returned no usable results")
+    parts = []
+    if provider_error:
+        parts.append(f"configured provider '{provider_name}': {provider_error}")
+    parts.append(f"no-key fallback: {fallback_error}")
     return {
         "ok": False,
         "error_code": "provider_unavailable",
-        "message": "No search provider is configured and no-key fallback search did not return usable URLs. Configure a provider or provide a URL.",
-        "missing": ["SEARCH_PROVIDER"],
+        "message": "Search failed. " + " | ".join(parts),
+        "missing": ["SEARCH_PROVIDER"] if not provider_error else [],
         "suggested_actions": ["Configure provider", "Provide URL"],
     }
 

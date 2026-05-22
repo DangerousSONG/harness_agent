@@ -266,17 +266,22 @@ export default function SettingsPage({ dashboard }) {
                 />
               </Field>
               <Field
-                label="API Key Env (optional)"
-                hint="If you prefer to keep the key in another env var, name it here and leave API Key empty."
+                label="API Key Env name (optional)"
+                hint="ENV VAR NAME (e.g. DASHSCOPE_API_KEY), not the key value. Use this only if you keep your key in another env var already; otherwise leave empty and use the API Key field above."
               >
                 <input
                   className="w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-zinc-900 shadow-hairline focus:border-appleBlue focus:outline-none focus:ring-1 focus:ring-appleBlue disabled:opacity-50"
                   type="text"
                   value={searchForm.api_key_env}
                   onChange={(event) => setSearchForm((prev) => ({ ...prev, api_key_env: event.target.value }))}
-                  placeholder="BING_SEARCH_API_KEY"
+                  placeholder="DASHSCOPE_API_KEY"
                   disabled={saving}
                 />
+                {searchForm.api_key_env.trim().startsWith("sk-") ? (
+                  <span className="block text-xs text-rose-600">
+                    This looks like a key value, not an env var name. Put the key in the API Key field above instead.
+                  </span>
+                ) : null}
               </Field>
               <Field
                 label="Mock results (optional)"

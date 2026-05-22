@@ -32,6 +32,7 @@ from runtime.env_settings import (
     MODEL_KEYS,
     SEARCH_KEYS,
     apply_to_environ,
+    autoload_env_file,
     mask_secret,
     update_env_file,
 )
@@ -211,6 +212,7 @@ def chat_ok(
 class WebContext:
     def __init__(self, project_root: Path | str = PROJECT_ROOT):
         self.project_root = Path(project_root)
+        self.autoloaded_env_keys = autoload_env_file(self.project_root)
         self.skills_dir = self.project_root / "skills"
         self.global_memory_dir = self.project_root / ".skills_memory"
         self.skill_loader = SkillLoader(self.skills_dir)
