@@ -3,14 +3,17 @@ import {
   Boxes,
   Check,
   ChevronDown,
+  ChevronRight,
   GitCommitHorizontal,
   GitPullRequest,
   Library,
   Monitor,
   Settings,
   ShieldCheck,
+  Sparkles,
+  X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { nextActionKey, nextActionLabel, titleize } from "../lib/format";
 import { useLanguage } from "../lib/i18n.jsx";
 import StatusPill from "./StatusPill";
@@ -55,6 +58,8 @@ function ContextPanel({
   currentPromotion,
   onNextAction,
   nextActionBusy,
+  flowActive,
+  onClose,
 }) {
   const { t } = useLanguage();
   const currentSkill =
@@ -72,6 +77,18 @@ function ContextPanel({
   return (
     <aside className="hidden min-h-0 w-72 shrink-0 overflow-auto border-l border-line bg-white/70 px-3 py-4 xl:block 2xl:w-80">
       <div className="space-y-3">
+        {onClose && !flowActive ? (
+          <div className="flex justify-end">
+            <button
+              type="button"
+              className="icon-button h-7 w-7"
+              onClick={onClose}
+              aria-label={t("common.cancel")}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : null}
         <section className="section-panel p-4">
           <p className="muted-label">{t("panel.current_asset")}</p>
           <div className="mt-4 space-y-3 text-sm">
@@ -348,7 +365,7 @@ export default function AppShell({
         {children}
       </main>
 
-      <ContextPanel
+      <EvolutionPanelSlot
         skills={skills}
         reviews={reviews}
         evolutionState={evolutionState}
@@ -357,5 +374,67 @@ export default function AppShell({
         nextActionBusy={nextActionBusy}
       />
     </div>
+  );
+}
+
+function evolutionFlowActive({ reviews, evolutionState, currentPromotion }) {
+  const hasActiveReview = (reviews || []).some((review) =>
+    ["pending", "approved"].includes(String(review?.status || "").toLowerCase()),
+  );
+  if (hasActiveReview) return true;
+  if (currentPromotion?.promo_id) return true;
+  const steps = evolutionState?.steps || [];
+  return steps.some((step) => {
+    const status = String(step?.status || "").toLowerCase();
+    return status && status !== "waiting";
+  });
+}
+
+function EvolutionPanelSlot({
+  skills,
+  reviews,
+  evolutionState,
+  currentPromotion,
+  onNextAction,
+  nextActionBusy,
+}) {
+  const { t } = useLanguage();
+  const flowActive = evolutionFlowActive({ reviews, evolutionState, currentPromotion });
+  const [manualOpen, setManualOpen] = useState(false);
+
+  useEffect(() => {
+    if (flowActive) setManualOpen(true);
+  }, [flowActive]);
+
+  const visible = flowActive || manualOpen;
+
+  if (!visible) {
+    return (
+      <div className="hidden xl:flex">
+        <button
+          type="button"
+          className="m-3 flex h-9 items-center gap-2 self-start rounded-full border border-line bg-white px-3 text-xs font-semibold text-zinc-600 shadow-hairline transition hover:border-zinc-300 hover:bg-zinc-50"
+          onClick={() => setManualOpen(true)}
+          aria-label={t("panel.skill_evolution_progress")}
+        >
+          <Sparkles className="h-3.5 w-3.5 text-appleBlue" />
+          <span className="hidden 2xl:inline">{t("panel.skill_evolution_progress")}</span>
+          <ChevronRight className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <ContextPanel
+      skills={skills}
+      reviews={reviews}
+      evolutionState={evolutionState}
+      currentPromotion={currentPromotion}
+      onNextAction={onNextAction}
+      nextActionBusy={nextActionBusy}
+      flowActive={flowActive}
+      onClose={() => setManualOpen(false)}
+    />
   );
 }

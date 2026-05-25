@@ -511,15 +511,6 @@ export default function ChatPage({
     () => (reviews || []).filter((review) => ["pending", "approved"].includes(review.status)),
     [reviews],
   );
-  const toolEvents = useMemo(() => {
-    const events = dashboard?.recent_events || [];
-    return events
-      .map((event) => ({
-        name: event.tool || event.target || event.event || "safeharness",
-        status: event.decision?.action || event.decision || "completed",
-      }))
-      .slice(-2);
-  }, [dashboard]);
 
   const [draft, setDraft] = useState("");
   const value = input ?? draft;
@@ -558,10 +549,6 @@ export default function ChatPage({
                 {message.text}
               </Bubble>
             )
-          ))}
-
-          {toolEvents.map((event, index) => (
-            <ToolStatus key={`${event.name}-${index}`} name={event.name} status={event.status} />
           ))}
 
           {activeReviews.map((review) => (
