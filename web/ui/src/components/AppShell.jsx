@@ -11,7 +11,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useState } from "react";
-import { nextActionLabel, titleize } from "../lib/format";
+import { nextActionKey, nextActionLabel, titleize } from "../lib/format";
 import { useLanguage } from "../lib/i18n.jsx";
 import StatusPill from "./StatusPill";
 
@@ -62,9 +62,12 @@ function ContextPanel({
   const steps = buildPanelSteps(evolutionState, reviews, t);
   const nextAction = evolutionState?.next_action || inferNextAction(reviews);
   const requiresRegeneration = Boolean(currentPromotion?.requires_regeneration);
+  const nextKey = nextActionKey(nextAction);
   const actionLabel = requiresRegeneration
     ? t("panel.next_action.regenerate")
-    : nextActionLabel(nextAction);
+    : nextKey
+      ? t(nextKey)
+      : nextActionLabel(nextAction);
 
   return (
     <aside className="hidden min-h-0 w-72 shrink-0 overflow-auto border-l border-line bg-white/70 px-3 py-4 xl:block 2xl:w-80">

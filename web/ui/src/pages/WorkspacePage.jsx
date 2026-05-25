@@ -2,6 +2,7 @@ import { Boxes, GitPullRequest, Layers3, ShieldCheck, Workflow } from "lucide-re
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import { compact, formatDate, titleize } from "../lib/format";
+import { useTranslate } from "../lib/i18n.jsx";
 
 export default function WorkspacePage({
   dashboard,
@@ -13,6 +14,7 @@ export default function WorkspacePage({
   promotions,
   onNavigate,
 }) {
+  const t = useTranslate();
   const assetCounts = dashboard?.asset_counts || {
     skills: skills?.length || 0,
     tools: tools?.length || 0,
@@ -27,34 +29,32 @@ export default function WorkspacePage({
     <section className="workbench-section">
       <div className="workbench-container space-y-5">
         <div>
-          <h1 className="page-title">Workspace Overview</h1>
-          <p className="page-subtitle">
-            Asset → Change → Review → Apply → Version → Rollback, scoped to this local SafeHarness workspace.
-          </p>
+          <h1 className="page-title">{t("workspace.title")}</h1>
+          <p className="page-subtitle">{t("workspace.subtitle")}</p>
         </div>
 
         <section className="section-panel p-5">
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(20rem,0.8fr)]">
             <div>
-              <p className="muted-label">Workspace root</p>
+              <p className="muted-label">{t("settings.workspace.root")}</p>
               <p className="mt-2 break-all font-mono text-sm font-semibold text-zinc-900">{dashboard?.workspace_root || "-"}</p>
               <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                <StatCard icon={Boxes} label="Skills" value={assetCounts.skills} />
-                <StatCard icon={ShieldCheck} label="Tools" value={assetCounts.tools} />
-                <StatCard icon={Workflow} label="Workflows" value={assetCounts.workflows} />
-                <StatCard icon={Layers3} label="Eval assets" value={assetCounts.eval_cases} />
+                <StatCard icon={Boxes} label={t("workspace.stat.skills")} value={assetCounts.skills} />
+                <StatCard icon={ShieldCheck} label={t("workspace.stat.tools")} value={assetCounts.tools} />
+                <StatCard icon={Workflow} label={t("workspace.stat.workflows")} value={assetCounts.workflows} />
+                <StatCard icon={Layers3} label={t("workspace.stat.eval_assets")} value={assetCounts.eval_cases} />
               </div>
             </div>
             <div className="rounded-lg border border-line bg-zinc-50 p-4">
-              <p className="muted-label">Open work</p>
+              <p className="muted-label">{t("workspace.metric.pending_changes")}</p>
               <div className="mt-4 grid grid-cols-3 gap-2">
-                <MiniMetric label="Pending changes" value={dashboard?.pending_changes ?? latestChanges.length} />
-                <MiniMetric label="Pending reviews" value={pendingReviews.length} />
-                <MiniMetric label="Versions" value={dashboard?.applied_skill_versions ?? versions?.length ?? 0} />
+                <MiniMetric label={t("workspace.metric.pending_changes")} value={dashboard?.pending_changes ?? latestChanges.length} />
+                <MiniMetric label={t("workspace.metric.pending_reviews")} value={pendingReviews.length} />
+                <MiniMetric label={t("workspace.metric.versions")} value={dashboard?.applied_skill_versions ?? versions?.length ?? 0} />
               </div>
               <button className="secondary-button mt-5 w-full" onClick={() => onNavigate?.("changes")}>
                 <GitPullRequest className="h-4 w-4" />
-                Review Change Queue
+                {t("workspace.action.open_changes")}
               </button>
             </div>
           </div>
@@ -62,9 +62,9 @@ export default function WorkspacePage({
 
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(24rem,0.9fr)]">
           <section className="section-panel overflow-hidden">
-            <PanelHeader title="Latest Changes" action="Open Changes" onAction={() => onNavigate?.("changes")} />
+            <PanelHeader title={t("workspace.panel.latest_changes")} action={t("workspace.action.open_changes")} onAction={() => onNavigate?.("changes")} />
             {!latestChanges.length ? (
-              <div className="p-5"><EmptyState title="No changes recorded yet." /></div>
+              <div className="p-5"><EmptyState title={t("changes.empty")} /></div>
             ) : (
               <div className="divide-y divide-line">
                 {latestChanges.map((change) => (
@@ -87,9 +87,9 @@ export default function WorkspacePage({
           </section>
 
           <section className="section-panel overflow-hidden">
-            <PanelHeader title="Latest Versions" action="Open Versions" onAction={() => onNavigate?.("versions")} />
+            <PanelHeader title={t("workspace.panel.latest_versions")} action={t("workspace.action.open_versions")} onAction={() => onNavigate?.("versions")} />
             {!latestVersions.length ? (
-              <div className="p-5"><EmptyState title="No versions recorded yet." /></div>
+              <div className="p-5"><EmptyState title={t("versions.empty")} /></div>
             ) : (
               <div className="divide-y divide-line">
                 {latestVersions.map((version) => (
@@ -102,8 +102,8 @@ export default function WorkspacePage({
                       <span className="mono-badge">{version.version}</span>
                     </div>
                     <div className="mt-3 grid grid-cols-2 gap-2">
-                      <MiniMetric label="Review" value={compact(version.skill_review_id)} />
-                      <MiniMetric label="PROMO" value={compact(version.promotion_id)} />
+                      <MiniMetric label={t("workspace.version.review")} value={compact(version.skill_review_id)} />
+                      <MiniMetric label={t("workspace.version.promo")} value={compact(version.promotion_id)} />
                     </div>
                   </div>
                 ))}

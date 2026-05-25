@@ -2,19 +2,18 @@ import { Eye, Rocket } from "lucide-react";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import { compact } from "../lib/format";
+import { useTranslate } from "../lib/i18n.jsx";
 
 export default function PromotionsPage({ promotions, busyPromoId, onView, onEvolve, onRegenerate }) {
+  const t = useTranslate();
   return (
     <section className="min-h-0 flex-1 overflow-auto px-6 py-6">
       <div className="mx-auto max-w-6xl">
         <div className="mb-6">
-          <h1 className="text-xl font-semibold text-zinc-950">Promotions</h1>
-          <p className="mt-1 text-sm text-zinc-500">
-            PROMO candidates can start the backend evolution flow, but never apply changes directly.
-          </p>
+          <h1 className="text-xl font-semibold text-zinc-950">{t("promotions.title")}</h1>
         </div>
         {!promotions?.length ? (
-          <EmptyState title="No promotion candidates yet." />
+          <EmptyState title={t("promotions.empty")} />
         ) : (
           <div className="card overflow-hidden">
             <div className="overflow-auto">
@@ -51,7 +50,7 @@ export default function PromotionsPage({ promotions, busyPromoId, onView, onEvol
                         <div className="flex justify-end gap-2">
                           <button className="secondary-button" onClick={() => onView(promo.promo_id)}>
                             <Eye className="h-4 w-4" />
-                            View
+                            {t("review.action.review_details")}
                           </button>
                           <button
                             className="primary-button"
@@ -63,7 +62,7 @@ export default function PromotionsPage({ promotions, busyPromoId, onView, onEvol
                             }
                           >
                             <Rocket className="h-4 w-4" />
-                            {promo.requires_regeneration ? "Regenerate" : "Evolve"}
+                            {promo.requires_regeneration ? t("common.regenerate") : t("common.evolve")}
                           </button>
                         </div>
                       </td>

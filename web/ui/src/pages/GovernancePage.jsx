@@ -2,14 +2,15 @@ import { ShieldCheck } from "lucide-react";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import { compact, formatDate, titleize } from "../lib/format";
+import { useTranslate } from "../lib/i18n.jsx";
 import ReviewsPage from "./ReviewsPage";
 import VersionsPage from "./VersionsPage";
 
-const tabs = [
-  { id: "reviews", label: "Reviews" },
-  { id: "versions", label: "Versions" },
-  { id: "rollbacks", label: "Rollbacks" },
-  { id: "safety-checks", label: "Safety Checks" },
+const TABS = [
+  { id: "reviews", labelKey: "governance.tab.reviews" },
+  { id: "versions", labelKey: "governance.tab.versions" },
+  { id: "rollbacks", labelKey: "governance.tab.rollbacks" },
+  { id: "safety-checks", labelKey: "governance.tab.safety_checks" },
 ];
 
 export default function GovernancePage({
@@ -25,18 +26,17 @@ export default function GovernancePage({
   busyVersionKey,
   changes,
 }) {
+  const t = useTranslate();
   return (
     <section className="workbench-section">
       <div className="workbench-container">
         <div className="mb-6">
-          <h1 className="page-title">Assets / Governance</h1>
-          <p className="page-subtitle">
-            Approval, version history, rollback review creation, and safety-oriented checks for governed assets.
-          </p>
+          <h1 className="page-title">{t("governance.title")}</h1>
+          <p className="page-subtitle">{t("governance.subtitle")}</p>
         </div>
 
         <div className="mb-5 flex flex-wrap gap-2 rounded-lg border border-line bg-white p-1 shadow-hairline">
-          {tabs.map((item) => (
+          {TABS.map((item) => (
             <button
               key={item.id}
               className={[
@@ -45,7 +45,7 @@ export default function GovernancePage({
               ].join(" ")}
               onClick={() => onTabChange?.(item.id)}
             >
-              {item.label}
+              {t(item.labelKey)}
             </button>
           ))}
         </div>
@@ -63,13 +63,13 @@ export default function GovernancePage({
           embedded
         />
       ) : null}
-      {activeTab === "rollbacks" ? <Rollbacks reviews={reviews} /> : null}
-      {activeTab === "safety-checks" ? <SafetyChecks reviews={reviews} changes={changes} /> : null}
+      {activeTab === "rollbacks" ? <Rollbacks reviews={reviews} t={t} /> : null}
+      {activeTab === "safety-checks" ? <SafetyChecks reviews={reviews} changes={changes} t={t} /> : null}
     </section>
   );
 }
 
-function Rollbacks({ reviews }) {
+function Rollbacks({ reviews, t }) {
   const rollbackReviews = (reviews || []).filter((review) => {
     const text = JSON.stringify(review).toLowerCase();
     return text.includes("rollback");
@@ -77,7 +77,7 @@ function Rollbacks({ reviews }) {
   if (!rollbackReviews.length) {
     return (
       <div className="workbench-container">
-        <EmptyState title="No rollback reviews yet." />
+        <EmptyState title={t("governance.empty.rollbacks")} />
       </div>
     );
   }
@@ -102,20 +102,20 @@ function Rollbacks({ reviews }) {
   );
 }
 
-function SafetyChecks({ reviews, changes }) {
+function SafetyChecks({ reviews, changes, t }) {
   const items = [
     {
-      label: "Open high-severity reviews",
+      label: t("governance.metric.open_high"),
       value: (reviews || []).filter((review) => ["high", "critical"].includes(String(review.severity || "").toLowerCase()) && ["pending", "approved"].includes(review.status)).length,
       status: "tracked",
     },
     {
-      label: "Failed changes",
+      label: t("governance.metric.failed_changes"),
       value: (changes || []).filter((change) => ["failed", "rejected", "error"].includes(String(change.status || "").toLowerCase())).length,
       status: "tracked",
     },
     {
-      label: "Review-gated changes",
+      label: t("governance.metric.review_gated"),
       value: (changes || []).filter((change) => Boolean(change.review_id)).length,
       status: "tracked",
     },

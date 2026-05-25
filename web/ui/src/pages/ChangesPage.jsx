@@ -3,16 +3,18 @@ import { useMemo } from "react";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import { compact, formatDate, titleize } from "../lib/format";
+import { useTranslate } from "../lib/i18n.jsx";
 
-const tabs = [
-  { id: "proposed", label: "Proposed" },
-  { id: "review-required", label: "Review Required" },
-  { id: "applied", label: "Applied" },
-  { id: "failed", label: "Failed" },
-  { id: "archived", label: "Archived" },
+const TABS = [
+  { id: "proposed", labelKey: "changes.filter.proposed" },
+  { id: "review-required", labelKey: "changes.filter.review-required" },
+  { id: "applied", labelKey: "changes.filter.applied" },
+  { id: "failed", labelKey: "changes.filter.failed" },
+  { id: "archived", labelKey: "changes.filter.archived" },
 ];
 
 export default function ChangesPage({ changes, activeTab = "proposed", onTabChange, onOpenReview, onOpenVersions }) {
+  const t = useTranslate();
   const visibleChanges = useMemo(
     () => (changes || []).filter((change) => changeMatchesTab(change, activeTab)),
     [changes, activeTab],
@@ -21,14 +23,12 @@ export default function ChangesPage({ changes, activeTab = "proposed", onTabChan
     <section className="workbench-section">
       <div className="workbench-container">
         <div className="mb-6">
-          <h1 className="page-title">Assets / Changes</h1>
-          <p className="page-subtitle">
-            Proposed and applied asset changes, including Create route outputs and Evolve route PROMO upgrades.
-          </p>
+          <h1 className="page-title">{t("changes.title")}</h1>
+          <p className="page-subtitle">{t("changes.subtitle")}</p>
         </div>
 
         <div className="mb-5 flex flex-wrap gap-2 rounded-lg border border-line bg-white p-1 shadow-hairline">
-          {tabs.map((item) => (
+          {TABS.map((item) => (
             <button
               key={item.id}
               className={[
@@ -37,13 +37,13 @@ export default function ChangesPage({ changes, activeTab = "proposed", onTabChan
               ].join(" ")}
               onClick={() => onTabChange?.(item.id)}
             >
-              {item.label}
+              {t(item.labelKey)}
             </button>
           ))}
         </div>
 
         {!visibleChanges?.length ? (
-          <EmptyState title="No changes found." />
+          <EmptyState title={t("changes.empty")} />
         ) : (
           <div className="section-panel overflow-hidden">
             <div className="overflow-x-auto">
@@ -95,13 +95,13 @@ export default function ChangesPage({ changes, activeTab = "proposed", onTabChan
                           {change.review_id ? (
                             <button className="secondary-button px-3 py-1.5" onClick={() => onOpenReview?.(change.review_id)}>
                               <Eye className="h-4 w-4" />
-                              Review
+                              {t("governance.tab.reviews")}
                             </button>
                           ) : null}
                           {change.version_id ? (
                             <button className="subprimary-button px-3 py-1.5" onClick={() => onOpenVersions?.()}>
                               <ArrowRight className="h-4 w-4" />
-                              Version
+                              {t("governance.tab.versions")}
                             </button>
                           ) : null}
                         </div>

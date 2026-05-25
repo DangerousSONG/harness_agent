@@ -25,6 +25,21 @@ export function titleize(value) {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+export function nextActionKey(value) {
+  const allowed = new Set([
+    "create_regression_review",
+    "approve_regression_review",
+    "apply_regression_review",
+    "create_skill_review",
+    "approve_skill_review",
+    "apply_skill_review",
+    "completed",
+    "waiting",
+  ]);
+  if (value && allowed.has(value)) return `next_action.${value}`;
+  return "";
+}
+
 export function nextActionLabel(value) {
   const labels = {
     create_regression_review: "Generate regression coverage review",

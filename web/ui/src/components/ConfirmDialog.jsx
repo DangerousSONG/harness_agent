@@ -1,5 +1,6 @@
 import { AlertTriangle } from "lucide-react";
 import DiffPreview from "./DiffPreview";
+import { useTranslate } from "../lib/i18n.jsx";
 
 export default function ConfirmDialog({
   open,
@@ -7,11 +8,12 @@ export default function ConfirmDialog({
   message,
   patch,
   busy,
-  confirmLabel = "Continue",
+  confirmLabel,
   confirmDisabled = false,
   onCancel,
   onConfirm,
 }) {
+  const t = useTranslate();
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/20 px-4 backdrop-blur-sm">
@@ -27,16 +29,16 @@ export default function ConfirmDialog({
         </div>
         {patch ? (
           <div className="mt-5">
-            <p className="muted-label mb-2">Diff Preview</p>
+            <p className="muted-label mb-2">{t("review.modal.diff_preview")}</p>
             <DiffPreview patch={patch} />
           </div>
         ) : null}
         <div className="mt-5 flex justify-end gap-2">
           <button className="secondary-button" onClick={onCancel} disabled={busy}>
-            Cancel
+            {t("common.cancel")}
           </button>
           <button className="primary-button" onClick={onConfirm} disabled={busy || confirmDisabled}>
-            {confirmLabel}
+            {confirmLabel || t("common.continue")}
           </button>
         </div>
       </div>

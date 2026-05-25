@@ -1,6 +1,7 @@
 import { Eye, FileText, Hammer, X } from "lucide-react";
 import { isValidElement } from "react";
 import { compact, severityTone, titleize } from "../lib/format";
+import { useTranslate } from "../lib/i18n.jsx";
 import StatusPill from "./StatusPill";
 
 function DetailRow({ label, value }) {
@@ -22,6 +23,7 @@ export default function ReviewCard({
   onApply,
   onReject,
 }) {
+  const t = useTranslate();
   const status = String(review?.status || "").toLowerCase();
   const severity = String(review?.severity || "low");
   const canPreview = status === "pending";
@@ -39,11 +41,11 @@ export default function ReviewCard({
                 <FileText className="h-4 w-4" />
               </span>
               <h3 className="text-base font-semibold text-zinc-950">
-                Human approval required
+                {t("review.human_required")}
               </h3>
             </div>
             <p className="mt-2 text-sm text-zinc-600">
-              This action may change a long-term Agent asset.
+              {t("review.human_required_sub")}
             </p>
           </div>
           <StatusPill status={review?.status || "pending"} />
@@ -51,10 +53,10 @@ export default function ReviewCard({
       </div>
 
       <div className="space-y-3 px-5 py-4">
-        <DetailRow label="Review ID" value={<span className="mono-badge">{review?.review_id}</span>} />
-        <DetailRow label="Type" value={titleize(review?.type)} />
+        <DetailRow label={t("review.field.review_id")} value={<span className="mono-badge">{review?.review_id}</span>} />
+        <DetailRow label={t("review.field.type")} value={titleize(review?.type)} />
         <DetailRow
-          label="Severity"
+          label={t("review.field.severity")}
           value={
             <span
               className={
@@ -69,29 +71,29 @@ export default function ReviewCard({
             </span>
           }
         />
-        <DetailRow label="Target Asset" value={review?.target_skill} />
-        <DetailRow label="Target File" value={review?.target_files} />
+        <DetailRow label={t("review.field.target_asset")} value={review?.target_skill} />
+        <DetailRow label={t("review.field.target_file")} value={review?.target_files} />
         <DetailRow
-          label="Candidate ID"
+          label={t("review.field.candidate_id")}
           value={<span className="mono-badge">{review?.candidate_id || review?.source || "-"}</span>}
         />
-        <DetailRow label="Reason" value={review?.reason} />
+        <DetailRow label={t("review.field.reason")} value={review?.reason} />
       </div>
 
       <div className="flex flex-wrap gap-2 border-t border-line px-5 py-4">
         <button className="secondary-button" onClick={onDetails}>
           <Eye className="h-4 w-4" />
-          {canApply ? "View Diff" : "Review Details"}
+          {canApply ? t("review.action.view_diff") : t("review.action.review_details")}
         </button>
         {canPreview ? (
           <button className="subprimary-button" onClick={onApprove} disabled={busy}>
             <Hammer className="h-4 w-4" />
-            Approve Preview
+            {t("review.action.approve_preview")}
           </button>
         ) : null}
         {canApply ? (
           <button className="primary-button" onClick={onApply} disabled={busy}>
-            Apply Change
+            {t("review.action.apply_change")}
           </button>
         ) : null}
         {closed ? (
@@ -101,7 +103,7 @@ export default function ReviewCard({
         ) : (
           <button className="danger-button" onClick={onReject} disabled={busy || status !== "pending"}>
             <X className="h-4 w-4" />
-            Reject
+            {t("review.action.reject")}
           </button>
         )}
       </div>
