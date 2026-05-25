@@ -31,7 +31,7 @@ def trace(trace_type: str, title: str, **fields: Any) -> dict[str, Any]:
     status = fields.pop("status", "completed")
     essential = fields.pop("essential", None)
     if essential is None:
-        essential = trace_type in ESSENTIAL_TRACE_TYPES or status in {"failed", "blocked", "waiting"}
+        essential = trace_type in ESSENTIAL_TRACE_TYPES or status in {"failed", "blocked"}
     item = {
         "type": trace_type,
         "title": title,
