@@ -20,6 +20,7 @@ import { useMemo, useState } from "react";
 import ReviewCard from "../components/ReviewCard";
 import EmptyState from "../components/EmptyState";
 import { formatDate } from "../lib/format";
+import { useTranslate } from "../lib/i18n.jsx";
 import StatusPill from "../components/StatusPill";
 
 const TYPE_STYLES = {
@@ -38,6 +39,7 @@ const TYPE_STYLES = {
 };
 
 function Bubble({ role, message, children, time, onAction }) {
+  const t = useTranslate();
   const user = role === "user";
   const typeStyle = TYPE_STYLES[message?.type] || TYPE_STYLES.answer;
   const TypeIcon = typeStyle.icon;
@@ -60,28 +62,28 @@ function Bubble({ role, message, children, time, onAction }) {
           ].join(" ")}
         >
           {showHeader ? (
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <span className={`inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium ${typeStyle.className}`}>
-                <TypeIcon className="h-3.5 w-3.5" />
+            <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] leading-4">
+              <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium ${typeStyle.className}`}>
+                <TypeIcon className="h-3 w-3" />
                 {typeStyle.label}
               </span>
               {showSkillMeta && message.used_skill ? (
-                <span className="rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-600">
+                <span className="rounded bg-zinc-100 px-1.5 py-0.5 font-medium text-zinc-600">
                   {message.used_skill}
                 </span>
               ) : null}
               {message.memory_record_id ? (
-                <span className="rounded bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+                <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-medium text-emerald-700">
                   {message.memory_record_id}
                 </span>
               ) : null}
               {message.intent ? (
-                <span className="rounded bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-500">
+                <span className="rounded px-1.5 py-0.5 font-medium text-zinc-400">
                   {displayIntent(message.intent)}
                 </span>
               ) : null}
               {message.risk ? (
-                <span className="rounded bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-500">
+                <span className="rounded px-1.5 py-0.5 font-medium text-zinc-400">
                   {displayRisk(message.risk)}
                 </span>
               ) : null}
@@ -93,7 +95,7 @@ function Bubble({ role, message, children, time, onAction }) {
           {!user && trace.length ? <TraceList trace={trace} /> : null}
           <div className={trace.length && !user ? "mt-3 border-t border-line pt-3" : ""}>
             {trace.length && !user ? (
-              <p className="muted-label mb-2">Final Result</p>
+              <p className="muted-label mb-2">{t("chat.final_result")}</p>
             ) : null}
             <MarkdownText text={children} />
           </div>
@@ -189,13 +191,35 @@ const TRACE_LABELS = {
 };
 
 function TraceList({ trace }) {
-  const visible = (trace || []).filter((item) => item.type !== "final_result");
-  if (!visible.length) return null;
+  const t = useTranslate();
+  const [showAll, setShowAll] = useState(false);
+  const items = (trace || []).filter((item) => item.type !== "final_result");
+  if (!items.length) return null;
+  const essential = items.filter((item) => item.essential || item.status === "failed" || item.status === "blocked" || item.status === "waiting");
+  const visible = showAll ? items : (essential.length ? essential : items);
+  const hiddenCount = items.length - visible.length;
   return (
     <div className="mt-3 space-y-2">
       {visible.map((item, index) => (
         <TraceCard key={`${item.type}-${item.title}-${index}`} item={item} />
       ))}
+      {hiddenCount > 0 ? (
+        <button
+          type="button"
+          className="text-xs text-zinc-500 hover:text-zinc-800 underline-offset-2 hover:underline"
+          onClick={() => setShowAll(true)}
+        >
+          {t("chat.show_all_steps", { total: items.length, hidden: hiddenCount })}
+        </button>
+      ) : showAll && essential.length && essential.length < items.length ? (
+        <button
+          type="button"
+          className="text-xs text-zinc-500 hover:text-zinc-800 underline-offset-2 hover:underline"
+          onClick={() => setShowAll(false)}
+        >
+          {t("chat.hide_internal_steps")}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -350,42 +374,110 @@ function titleLabel(value) {
 function MarkdownText({ text }) {
   const lines = String(text || "").split("\n");
   return (
-    <div className="space-y-1">
+    <div className="space-y-1 text-sm leading-6 text-zinc-900">
       {lines.map((line, index) => {
-        if (line.startsWith("# ")) {
-          return <h2 key={index} className="pt-1 text-base font-semibold text-zinc-950">{line.slice(2)}</h2>;
+        // Strip stand-alone image lines entirely (scraped news pages dump these).
+        const imageStripped = line.replace(/!\[[^\]]*\]\([^)]*\)/g, "").trimEnd();
+        if (line.startsWith("### ")) {
+          return <h4 key={index} className="pt-2 text-sm font-semibold text-zinc-900">{renderInline(line.slice(4))}</h4>;
         }
         if (line.startsWith("## ")) {
-          return <h3 key={index} className="pt-2 text-sm font-semibold text-zinc-900">{line.slice(3)}</h3>;
+          return <h3 key={index} className="pt-2 text-sm font-semibold text-zinc-900">{renderInline(line.slice(3))}</h3>;
         }
-        if (!line.trim()) return <div key={index} className="h-1" />;
-        return <p key={index} className="whitespace-pre-wrap break-words text-sm leading-6">{line}</p>;
+        if (line.startsWith("# ")) {
+          return <h2 key={index} className="pt-1 text-base font-semibold text-zinc-950">{renderInline(line.slice(2))}</h2>;
+        }
+        const bulletMatch = imageStripped.match(/^(\s*)([-*•])\s+(.*)$/);
+        if (bulletMatch) {
+          const indent = bulletMatch[1].length;
+          return (
+            <div
+              key={index}
+              className="flex gap-2 break-words"
+              style={{ paddingLeft: `${indent * 0.5}rem` }}
+            >
+              <span className="select-none text-zinc-400">•</span>
+              <span className="min-w-0 flex-1">{renderInline(bulletMatch[3])}</span>
+            </div>
+          );
+        }
+        if (!imageStripped.trim()) return <div key={index} className="h-1" />;
+        return (
+          <p key={index} className="whitespace-pre-wrap break-words">
+            {renderInline(imageStripped)}
+          </p>
+        );
       })}
     </div>
   );
 }
 
+function renderInline(text) {
+  if (!text) return null;
+  // Tokenize: links [text](url), bold **x**, italic *x*, code `x`.
+  const tokens = [];
+  let cursor = 0;
+  const pattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*]+)\*\*|`([^`]+)`/g;
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > cursor) {
+      tokens.push({ type: "text", value: text.slice(cursor, match.index) });
+    }
+    if (match[1] && match[2]) {
+      tokens.push({ type: "link", text: match[1], url: match[2] });
+    } else if (match[3]) {
+      tokens.push({ type: "bold", value: match[3] });
+    } else if (match[4]) {
+      tokens.push({ type: "code", value: match[4] });
+    }
+    cursor = pattern.lastIndex;
+  }
+  if (cursor < text.length) tokens.push({ type: "text", value: text.slice(cursor) });
+  return tokens.map((token, idx) => {
+    if (token.type === "link") {
+      return (
+        <a
+          key={idx}
+          href={token.url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="text-appleBlue underline-offset-2 hover:underline break-all"
+        >
+          {token.text}
+        </a>
+      );
+    }
+    if (token.type === "bold") {
+      return <strong key={idx} className="font-semibold text-zinc-950">{token.value}</strong>;
+    }
+    if (token.type === "code") {
+      return <code key={idx} className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-xs">{token.value}</code>;
+    }
+    return <span key={idx}>{token.value}</span>;
+  });
+}
+
 function ToolStatus({ name, status }) {
+  const t = useTranslate();
   const parsed = parseToolName(name);
+  const displayName = parsed.path || parsed.label || name;
   return (
-    <div className="ml-10 flex max-w-2xl items-center justify-between gap-4 rounded-lg border border-blue-100 bg-white px-4 py-3 shadow-hairline">
-      <div className="flex min-w-0 items-center gap-3">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-appleBlue">
-          <Wrench className="h-4 w-4" />
-        </span>
-        <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-normal text-zinc-500">Tool call</p>
-          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
-            {parsed.method ? (
-              <span className="rounded bg-blue-50 px-2 py-0.5 font-mono text-[11px] font-semibold text-appleBlue">
-                {parsed.method}
-              </span>
-            ) : null}
-            <code className="truncate text-xs font-semibold text-zinc-700">{parsed.path || parsed.label}</code>
-          </div>
-        </div>
+    <div className="ml-10 inline-flex max-w-2xl items-center gap-3 rounded-full border border-line bg-white py-1.5 pl-1.5 pr-3 shadow-hairline">
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-50 text-appleBlue">
+        <Wrench className="h-3.5 w-3.5" />
+      </span>
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="text-xs font-semibold text-zinc-600">{t("trace.tool_call")}:</span>
+        {parsed.method ? (
+          <span className="rounded bg-blue-50 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-appleBlue">
+            {parsed.method}
+          </span>
+        ) : null}
+        <code className="truncate text-xs font-medium text-zinc-900">{displayName}</code>
       </div>
-      <StatusPill status={status} />
+      <span className="ml-auto shrink-0">
+        <StatusPill status={status} />
+      </span>
     </div>
   );
 }
@@ -408,6 +500,7 @@ export default function ChatPage({
   actionProps,
   onChatAction,
 }) {
+  const t = useTranslate();
   const activeReviews = useMemo(
     () => (reviews || []).filter((review) => ["pending", "approved"].includes(review.status)),
     [reviews],
@@ -437,8 +530,7 @@ export default function ChatPage({
   return (
     <section className="flex min-h-0 flex-1 flex-col">
       <div className="border-b border-line bg-white/65 px-6 py-4">
-        <h1 className="page-title">Chat</h1>
-        <p className="page-subtitle">Conversation, workspace actions, and approval cards in one flow.</p>
+        <h1 className="page-title">{t("chat.title")}</h1>
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
         <div className="mx-auto max-w-5xl space-y-5">
@@ -485,13 +577,13 @@ export default function ChatPage({
         </div>
       </div>
       <form className="border-t border-line bg-white/80 px-6 py-4" onSubmit={submit}>
-        <div className="mx-auto flex max-w-5xl items-end gap-3 rounded-lg border border-line bg-white p-3 shadow-soft">
-          <button type="button" className="icon-button" aria-label="Attach context">
+        <div className="mx-auto flex max-w-5xl items-end gap-2 rounded-2xl border border-line bg-white p-2.5 shadow-hairline focus-within:border-zinc-300 focus-within:shadow-soft">
+          <button type="button" className="icon-button h-9 w-9" aria-label="Attach context">
             <Paperclip className="h-4 w-4" />
           </button>
           <textarea
-            className="max-h-36 min-h-12 flex-1 resize-none bg-transparent px-1 py-2 text-sm outline-none placeholder:text-zinc-400"
-            placeholder="Ask, write, improve, or run a workspace command…"
+            className="max-h-36 min-h-9 flex-1 resize-none bg-transparent px-1 py-1.5 text-sm leading-6 outline-none placeholder:text-zinc-400"
+            placeholder={t("chat.placeholder")}
             value={value}
             onChange={(event) => setValue(event.target.value)}
             onKeyDown={(event) => {
@@ -501,12 +593,12 @@ export default function ChatPage({
               }
             }}
           />
-          <button className="primary-button h-10 w-10 px-0" type="submit" disabled={sending}>
+          <button className="primary-button h-9 w-9 rounded-full px-0" type="submit" disabled={sending}>
             <Send className="h-4 w-4" />
           </button>
         </div>
-        <p className="mt-3 text-center text-xs text-zinc-400">
-          SafeHarness Console - Local First, Always in Control.
+        <p className="mt-2 text-center text-[11px] text-zinc-400">
+          SafeHarness Console — Local First, Always in Control.
         </p>
       </form>
     </section>

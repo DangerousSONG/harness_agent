@@ -3,6 +3,7 @@ import { useState } from "react";
 import DiffPreview from "../components/DiffPreview";
 import EmptyState from "../components/EmptyState";
 import { compact, formatDate } from "../lib/format";
+import { useTranslate } from "../lib/i18n.jsx";
 
 export default function VersionsPage({
   versions,
@@ -13,6 +14,7 @@ export default function VersionsPage({
   busyVersionKey,
   embedded = false,
 }) {
+  const t = useTranslate();
   const [tab, setTab] = useState("snapshot");
   const selected = versions?.find((item) => versionKey(item) === selectedVersionKey);
 
@@ -20,14 +22,12 @@ export default function VersionsPage({
     <section className="workbench-section">
       <div className="workbench-container">
         {!embedded ? <div className="mb-6">
-          <h1 className="page-title">Versions</h1>
-          <p className="page-subtitle">
-            Skill version history is read-only here. Rollback creates a review instead of changing files.
-          </p>
+          <h1 className="page-title">{t("versions.title")}</h1>
+          <p className="page-subtitle">{t("versions.subtitle")}</p>
         </div> : null}
 
         {!versions?.length ? (
-          <EmptyState title="No recorded skill versions yet." />
+          <EmptyState title={t("versions.empty")} />
         ) : (
           <div className="grid min-h-0 gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(28rem,0.9fr)]">
             <div className="section-panel overflow-hidden">
@@ -87,7 +87,7 @@ export default function VersionsPage({
             <aside className="section-panel flex max-h-[76vh] flex-col overflow-hidden">
               <div className="border-b border-line bg-white p-5">
                 <h2 className="text-base font-semibold text-zinc-950">
-                  {selected ? `${selected.skill} ${selected.version}` : "Version detail"}
+                  {selected ? `${selected.skill} ${selected.version}` : t("versions.detail.title")}
                 </h2>
                 <p className="mt-1 text-sm text-zinc-500">SKILL.md snapshot, patch.diff, eval_result.json</p>
               </div>
@@ -105,7 +105,7 @@ export default function VersionsPage({
               <div className="min-h-0 flex-1 overflow-auto p-5">
                 {tab === "snapshot" ? (
                   <pre className="overflow-auto rounded-lg border border-line bg-zinc-50 p-4 font-mono text-xs leading-6 text-zinc-700">
-                    {versionDetail?.snapshot_content || "No SKILL.md snapshot selected."}
+                    {versionDetail?.snapshot_content || t("versions.detail.no_snapshot")}
                   </pre>
                 ) : null}
                 {tab === "patch" ? <DiffPreview patch={versionDetail?.patch_content} /> : null}
@@ -122,7 +122,7 @@ export default function VersionsPage({
                   onClick={() => selected && onCreateRollback(selected)}
                 >
                   <RotateCcw className="h-4 w-4" />
-                  {busyVersionKey === selectedVersionKey ? "Creating..." : "Create Rollback Review"}
+                  {busyVersionKey === selectedVersionKey ? t("common.creating") : t("versions.create_rollback")}
                 </button>
               </div>
             </aside>

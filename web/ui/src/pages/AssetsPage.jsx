@@ -4,13 +4,14 @@ import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import { api, getErrorMessage } from "../lib/api";
 import { compact, formatDate, titleize } from "../lib/format";
+import { useTranslate } from "../lib/i18n.jsx";
 
-const tabs = [
-  { id: "skills", label: "Skills", icon: Boxes },
-  { id: "tools", label: "Tools", icon: Wrench },
-  { id: "workflows", label: "Workflows", icon: Workflow },
-  { id: "memories", label: "Memories", icon: GitPullRequest },
-  { id: "eval-cases", label: "Eval Cases", icon: Hammer },
+const TABS = [
+  { id: "skills", labelKey: "assets.tab.skills", icon: Boxes },
+  { id: "tools", labelKey: "assets.tab.tools", icon: Wrench },
+  { id: "workflows", labelKey: "assets.tab.workflows", icon: Workflow },
+  { id: "memories", labelKey: "assets.tab.memories", icon: GitPullRequest },
+  { id: "eval-cases", labelKey: "assets.tab.eval_cases", icon: Hammer },
 ];
 
 export default function AssetsPage({
@@ -27,6 +28,7 @@ export default function AssetsPage({
   onOpenReview,
   onOpenVersions,
 }) {
+  const t = useTranslate();
   const [localTab, setLocalTab] = useState("skills");
   const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -86,14 +88,12 @@ export default function AssetsPage({
     <section className="workbench-section">
       <div className="workbench-container">
         <div className="mb-6">
-          <h1 className="page-title">Assets</h1>
-          <p className="page-subtitle">
-            Versionable agent assets grouped by Skills, Tools, Workflows, and Eval Cases.
-          </p>
+          <h1 className="page-title">{t("assets.title")}</h1>
+          <p className="page-subtitle">{t("assets.subtitle")}</p>
         </div>
 
         <div className="mb-5 flex flex-wrap gap-2 rounded-lg border border-line bg-white p-1 shadow-hairline">
-          {tabs.map((item) => {
+          {TABS.map((item) => {
             const Icon = item.icon;
             const active = tab === item.id;
             return (
@@ -106,7 +106,7 @@ export default function AssetsPage({
                 onClick={() => setTab(item.id)}
               >
                 <Icon className="h-4 w-4" />
-                {item.label}
+                {t(item.labelKey)}
               </button>
             );
           })}
@@ -115,12 +115,12 @@ export default function AssetsPage({
         {tab === "skills" ? (
           <AssetGrid
             items={skills}
-            empty="No skills found."
+            empty={t("assets.skills.empty")}
             render={(skill) => (
               <AssetCard
                 key={skill.name}
                 title={skill.name}
-                description={skill.description || "Workspace skill with active source and governance metadata."}
+                description={skill.description || t("assets.skills.default_desc")}
                 status={assetStatus("skill", skill.name, reviews)}
                 rows={assetRows({
                   assetType: "skill",
@@ -131,9 +131,9 @@ export default function AssetsPage({
                   pendingReview: pendingReview("skill", skill.name, reviews),
                 })}
                 metrics={[
-                  ["Memory", skill.memory_count],
-                  ["PROMO", skill.promotion_count],
-                  ["Versions", (versions || []).filter((item) => item.skill === skill.name).length],
+                  [t("assets.skills.metric.memory"), skill.memory_count],
+                  [t("assets.skills.metric.promo"), skill.promotion_count],
+                  [t("assets.skills.metric.versions"), (versions || []).filter((item) => item.skill === skill.name).length],
                 ]}
                 onClick={() => openAsset("skill", skill)}
               />
@@ -144,12 +144,12 @@ export default function AssetsPage({
         {tab === "tools" ? (
           <AssetGrid
             items={tools}
-            empty="No tools found."
+            empty={t("assets.tools.empty")}
             render={(tool) => (
               <AssetCard
                 key={tool.name}
                 title={tool.name}
-                description={tool.description || "Workspace tool asset."}
+                description={tool.description || t("assets.tools.default_desc")}
                 status={pendingReview("tool", tool.name, reviews) !== "-" ? assetStatus("tool", tool.name, reviews) : tool.executable ? "executable" : "not executable"}
                 rows={assetRows({
                   assetType: "tool",
@@ -160,9 +160,9 @@ export default function AssetsPage({
                   pendingReview: pendingReview("tool", tool.name, reviews),
                 })}
                 metrics={[
-                  ["Provider", compact(tool.provider_requirements, "none")],
-                  ["Handler", tool.handler_available ? "yes" : "no"],
-                  ["Executable", tool.executable ? "yes" : "no"],
+                  [t("assets.tools.metric.provider"), compact(tool.provider_requirements, t("common.none"))],
+                  [t("assets.tools.metric.handler"), tool.handler_available ? t("common.yes") : t("common.no")],
+                  [t("assets.tools.metric.executable"), tool.executable ? t("common.yes") : t("common.no")],
                 ]}
                 onClick={() => openAsset("tool", tool)}
               />
@@ -173,24 +173,24 @@ export default function AssetsPage({
         {tab === "workflows" ? (
           <AssetGrid
             items={promotions}
-            empty="No workflow/PROMO sources found."
+            empty={t("promotions.empty")}
             render={(promo) => (
               <AssetCard
                 key={promo.promo_id}
                 title={promo.promo_id}
-                description={promo.proposed_change_summary || promo.reason || "PROMO-backed evolution workflow."}
+                description={promo.proposed_change_summary || promo.reason || t("assets.workflows.default_desc")}
                 status={promo.promotion_decision || promo.status || "proposed"}
                 rows={[
-                  ["Target asset", promo.target_skill],
-                  ["Source memory", compact(promo.source_memory_ids)],
-                  ["Linked reviews", compact(promo.linked_reviews)],
-                  ["Linked version", compact(promo.linked_version)],
-                  ["Next action", promo.requires_regeneration ? "regenerate" : promo.linked_version ? "view version" : "create review"],
+                  [t("assets.workflows.metric.target_asset"), promo.target_skill],
+                  [t("assets.workflows.metric.source_memory"), compact(promo.source_memory_ids)],
+                  [t("assets.workflows.metric.linked_reviews"), compact(promo.linked_reviews)],
+                  [t("assets.workflows.metric.linked_version"), compact(promo.linked_version)],
+                  [t("assets.workflows.metric.next_action"), promo.requires_regeneration ? t("assets.workflows.next_action.regenerate") : promo.linked_version ? t("assets.workflows.next_action.view_version") : t("assets.workflows.next_action.create_review")],
                 ]}
                 metrics={[
-                  ["Score", promo.promotion_score],
-                  ["Eligible", promo.eligible_target],
-                  ["Schema", promo.schema_status],
+                  [t("assets.workflows.metric.score"), promo.promotion_score],
+                  [t("assets.workflows.metric.eligible"), promo.eligible_target],
+                  [t("assets.workflows.metric.schema"), promo.schema_status],
                 ]}
                 onClick={() => openAsset("workflow", promo)}
               />
@@ -201,7 +201,7 @@ export default function AssetsPage({
         {tab === "memories" ? (
           <AssetGrid
             items={memories}
-            empty="No memories found."
+            empty={t("assets.memories.empty")}
             render={(memory) => (
               <AssetCard
                 key={memory.memory_id || `${memory.skill}-${memory.type}-${memory.title}`}

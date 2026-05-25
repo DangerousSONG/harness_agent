@@ -1135,6 +1135,29 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(tool_call["body"]["params"]["name"], "alibaba_web_search")
             self.assertEqual(tool_call["body"]["params"]["arguments"], {"query": "今天英伟达财报如何", "count": 5})
 
+    def test_clean_first_paragraph_strips_baijiahao_nav_and_image_md(self):
+        from runtime.tool_registry import clean_first_paragraph
+
+        sample = (
+            "英伟达今夜财报定生死，AI算力神话还能续多久？: icon_voice_on icon_voice "
+            "[![[到百度首页](https://mbdp01.bdstatic.com/static/landing-pc/img/logo_top.png)]"
+            "(https://www.baidu.com) [百度首页](https://www.baidu.com) "
+            "[登录](https://passport.baidu.com/v2/?login)"
+        )
+        cleaned = clean_first_paragraph(sample)
+        self.assertEqual(cleaned, "英伟达今夜财报定生死，AI算力神话还能续多久？")
+        self.assertNotIn("baidu", cleaned)
+        self.assertNotIn("![", cleaned)
+        self.assertNotIn("登录", cleaned)
+
+    def test_trace_marks_essential_types_and_failures(self):
+        from runtime.chat_response import trace
+
+        self.assertTrue(trace("tool_call", "X").get("essential"))
+        self.assertTrue(trace("sources", "X").get("essential"))
+        self.assertFalse(trace("intent_analysis", "X").get("essential"))
+        self.assertTrue(trace("tool_registry_check", "X", status="failed").get("essential"))
+
     def test_web_research_surfaces_crawl4ai_unavailable_in_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

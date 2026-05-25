@@ -1,16 +1,17 @@
 import { ArrowRight, Sparkles } from "lucide-react";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
-import { compact, nextActionLabel } from "../lib/format";
+import { compact, nextActionKey, nextActionLabel } from "../lib/format";
+import { useTranslate } from "../lib/i18n.jsx";
 
-const labels = {
-  memory: "Memory",
-  promo: "PROMO",
-  regression_review: "Regression Review",
-  regression_applied: "Regression Applied",
-  skill_promotion_review: "Skill Patch Review",
-  skill_applied: "Skill Applied",
-  version: "Version Recorded",
+const STEP_KEYS = {
+  memory: "evolution.step.memory",
+  promo: "evolution.step.promo",
+  regression_review: "evolution.step.regression_review",
+  regression_applied: "evolution.step.regression_applied",
+  skill_promotion_review: "evolution.step.skill_promotion_review",
+  skill_applied: "evolution.step.skill_applied",
+  version: "evolution.step.version",
 };
 
 export default function EvolutionPage({
@@ -22,6 +23,7 @@ export default function EvolutionPage({
   currentPromotion,
   busyPromoId,
 }) {
+  const t = useTranslate();
   const hasPromos = Boolean(promotions?.length);
   const steps = expandSteps(evolutionState);
   const requiresRegeneration = Boolean(currentPromotion?.requires_regeneration);
@@ -32,10 +34,7 @@ export default function EvolutionPage({
       <div className="mx-auto max-w-5xl">
         <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-zinc-950">Evolution</h1>
-            <p className="mt-1 text-sm text-zinc-500">
-              Follow one PROMO from memory signal to recorded Skill version.
-            </p>
+            <h1 className="text-xl font-semibold text-zinc-950">{t("evolution.title")}</h1>
           </div>
           {hasPromos ? (
             <select
@@ -53,11 +52,11 @@ export default function EvolutionPage({
         </div>
 
         {!hasPromos ? (
-          <EmptyState title="No promotion candidates yet." />
+          <EmptyState title={t("evolution.no_candidates")} />
         ) : candidateMissing ? (
           <EmptyState
-            title="Promotion candidate not found"
-            detail="Refresh promotions and select an existing local candidate."
+            title={t("evolution.not_found")}
+            detail={t("evolution.not_found_detail")}
           />
         ) : (
           <div className="grid gap-5 lg:grid-cols-[1fr_18rem]">
@@ -71,7 +70,7 @@ export default function EvolutionPage({
                     {compact(evolutionState?.promo_id || selectedPromoId)}
                   </h2>
                   <p className="text-sm text-zinc-500">
-                    Target skill: {compact(evolutionState?.target_skill)}
+                    {t("promotion.field.target_skill")}: {compact(evolutionState?.target_skill)}
                   </p>
                 </div>
               </div>
@@ -80,7 +79,7 @@ export default function EvolutionPage({
                 {steps.map((step, index) => (
                   <div className="flex items-center gap-4" key={step.name}>
                     <div className="flex min-w-0 flex-1 items-center gap-4 rounded-lg border border-line bg-zinc-50 px-4 py-3">
-                      <span className="text-sm font-semibold text-zinc-950">{labels[step.name]}</span>
+                      <span className="text-sm font-semibold text-zinc-950">{STEP_KEYS[step.name] ? t(STEP_KEYS[step.name]) : step.name}</span>
                       <div className="ml-auto">
                         <StatusPill status={step.status} />
                       </div>
@@ -92,11 +91,13 @@ export default function EvolutionPage({
             </section>
 
             <aside className="card p-5">
-              <p className="text-sm font-semibold text-zinc-950">Next Action</p>
+              <p className="text-sm font-semibold text-zinc-950">{t("panel.next_action")}</p>
               <p className="mt-3 text-sm leading-6 text-zinc-600">
                 {requiresRegeneration
-                  ? "Regenerate with Promotion Eligibility"
-                  : nextActionLabel(evolutionState?.next_action)}
+                  ? t("panel.next_action.regenerate")
+                  : nextActionKey(evolutionState?.next_action)
+                    ? t(nextActionKey(evolutionState?.next_action))
+                    : nextActionLabel(evolutionState?.next_action)}
               </p>
               <button
                 className="primary-button mt-5 w-full"
@@ -104,15 +105,15 @@ export default function EvolutionPage({
                 onClick={() => onContinue(selectedPromoId)}
               >
                 {busyPromoId === selectedPromoId
-                  ? "Working..."
+                  ? t("common.working")
                   : requiresRegeneration
-                    ? "Regenerate with Promotion Eligibility"
-                    : "Continue Evolution"}
+                    ? t("panel.next_action.regenerate")
+                    : t("evolution.continue")}
               </button>
               <div className="mt-5 space-y-2 text-xs text-zinc-500">
                 {steps.map((step) => (
                   <p key={`${step.name}-review`}>
-                    {labels[step.name]}: {compact(step.review_id || step.version || step.status)}
+                    {STEP_KEYS[step.name] ? t(STEP_KEYS[step.name]) : step.name}: {compact(step.review_id || step.version || step.status)}
                   </p>
                 ))}
               </div>

@@ -1,5 +1,6 @@
-openai
-python-dotenv
-fastapi
-uvicorn
-crawl4ai
+openai>=1.40
+python-dotenv>=1.0
+fastapi>=0.110
+uvicorn>=0.29
+crawl4ai>=0.3
+playwright>=1.40

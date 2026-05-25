@@ -713,20 +713,69 @@ def call_bailian_summary(query: str, markdown: str, api_key: str, fallback_summa
 def fallback_markdown_summary(pages: list[dict[str, Any]]) -> str:
     paragraphs: list[str] = []
     for page in pages:
-        first = first_markdown_paragraph(page.get("markdown", ""))
-        if first:
-            paragraphs.append(f"{page.get('title') or page.get('url')}: {first}\n来源：{page.get('url')}")
+        snippet = clean_first_paragraph(page.get("markdown", ""))
+        if snippet:
+            paragraphs.append(f"- {page.get('title') or page.get('url')}\n  {snippet}\n  来源：{page.get('url')}")
         if len(paragraphs) >= 3:
             break
-    return "\n\n".join(paragraphs)
+    if not paragraphs:
+        return ""
+    header = "**自动摘要不可用（未配置 OPENAI_MODEL 或调用失败），下面是各来源去掉导航/图片后的首段：**\n"
+    return header + "\n\n".join(paragraphs)
 
 
 def first_markdown_paragraph(markdown: str) -> str:
+    return clean_first_paragraph(markdown)
+
+
+_IMAGE_MD_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_LINK_MD_RE = re.compile(r"\[([^\]]*)\]\(([^)]*)\)")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+_EMPTY_MD_TOKENS_RE = re.compile(r"!?\[\s*\]\([^)]*\)|!?\[\]")
+_NAV_TOKENS = (
+    "icon_voice_on", "icon_voice", "百度首页", "登录", "注册", "搜索", "首页",
+    "Login", "Sign in", "Sign up", "Search", "Home",
+)
+
+
+def clean_first_paragraph(markdown: str) -> str:
+    """Return the first paragraph of content text, stripped of markdown
+    images, link cruft, and navigation tokens."""
+    if not markdown:
+        return ""
+    cleaned_blocks: list[str] = []
     for block in re.split(r"\n\s*\n", markdown.strip()):
-        clean = re.sub(r"\s+", " ", block).strip()
-        if clean and not clean.startswith("#"):
-            return clean[:500]
-    return ""
+        block = _IMAGE_MD_RE.sub("", block)
+        block = _LINK_MD_RE.sub(lambda m: m.group(1), block)
+        block = _EMPTY_MD_TOKENS_RE.sub("", block)
+        block = _WHITESPACE_RE.sub(" ", block).strip(" -*•·|>\t")
+        if not block or block.startswith("#"):
+            continue
+        letters = sum(1 for ch in block if ch.isalnum() or "一" <= ch <= "鿿")
+        if letters < 12:
+            continue
+        cleaned_blocks.append(block)
+        if len(cleaned_blocks) >= 1:
+            break
+    if not cleaned_blocks:
+        return ""
+    text = cleaned_blocks[0]
+    # Prefer the first sentence — many scraped pages append a navigation menu
+    # right after the headline.
+    sentence_match = re.search(r"[。.!?！？]", text)
+    if sentence_match and sentence_match.end() >= 12:
+        text = text[: sentence_match.end()]
+    # Last-ditch: cut at the first nav token.
+    for token in _NAV_TOKENS:
+        idx = text.find(token)
+        if idx >= 12:
+            text = text[:idx].rstrip(" ：:,，·|")
+            break
+    if len(text) > 320:
+        text = text[:320].rstrip() + "…"
+    return text.strip()
 
 
 def strip_html(value: str) -> str:

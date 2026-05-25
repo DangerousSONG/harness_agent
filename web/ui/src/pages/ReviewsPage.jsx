@@ -2,19 +2,19 @@ import { Eye } from "lucide-react";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import { compact, formatDate, titleize } from "../lib/format";
+import { useTranslate } from "../lib/i18n.jsx";
 
 export default function ReviewsPage({ reviews, actionProps, embedded = false }) {
+  const t = useTranslate();
   return (
     <section className="workbench-section">
       <div className="workbench-container">
         {!embedded ? <div className="mb-6">
-          <h1 className="page-title">Reviews</h1>
-          <p className="page-subtitle">
-            Approval, preview, apply, and reject actions stay behind the backend review queue.
-          </p>
+          <h1 className="page-title">{t("reviews.title")}</h1>
+          <p className="page-subtitle">{t("reviews.subtitle")}</p>
         </div> : null}
         {!reviews?.length ? (
-          <EmptyState title="No reviews waiting for approval." />
+          <EmptyState title={t("reviews.empty")} />
         ) : (
           <div className="section-panel overflow-hidden">
             <div className="overflow-x-auto">
@@ -68,7 +68,7 @@ export default function ReviewsPage({ reviews, actionProps, embedded = false }) 
                         <div className="flex flex-wrap justify-end gap-2">
                           <button className="secondary-button px-3 py-1.5" onClick={() => actionProps.onDetails(review.review_id)}>
                             <Eye className="h-4 w-4" />
-                            Details
+                            {t("review.action.review_details")}
                           </button>
                           {review.status === "pending" ? (
                             <button
@@ -76,7 +76,7 @@ export default function ReviewsPage({ reviews, actionProps, embedded = false }) 
                               disabled={actionProps.busyReviewId === review.review_id}
                               onClick={() => actionProps.onApprove(review.review_id)}
                             >
-                              {actionProps.busyReviewId === review.review_id ? "Generating..." : "Generate Preview"}
+                              {actionProps.busyReviewId === review.review_id ? t("common.generating") : t("review.action.generate_preview")}
                             </button>
                           ) : null}
                           {review.status === "approved" ? (
@@ -85,7 +85,7 @@ export default function ReviewsPage({ reviews, actionProps, embedded = false }) 
                               disabled={actionProps.busyReviewId === review.review_id}
                               onClick={() => actionProps.onApply(review.review_id)}
                             >
-                              {actionProps.busyReviewId === review.review_id ? "Applying..." : "Apply Change"}
+                              {actionProps.busyReviewId === review.review_id ? t("common.applying") : t("review.action.apply_change")}
                             </button>
                           ) : null}
                           {review.status === "pending" ? (
@@ -94,7 +94,7 @@ export default function ReviewsPage({ reviews, actionProps, embedded = false }) 
                               disabled={actionProps.busyReviewId === review.review_id}
                               onClick={() => actionProps.onReject(review.review_id)}
                             >
-                              {actionProps.busyReviewId === review.review_id ? "Rejecting..." : "Reject"}
+                              {actionProps.busyReviewId === review.review_id ? t("common.rejecting") : t("review.action.reject")}
                             </button>
                           ) : null}
                         </div>
