@@ -193,11 +193,17 @@ const TRACE_LABELS = {
 function TraceList({ trace }) {
   const t = useTranslate();
   const [showAll, setShowAll] = useState(false);
-  const items = (trace || []).filter((item) => item.type !== "final_result");
+  // next_action items are already rendered as buttons inside the bubble.
+  const items = (trace || []).filter(
+    (item) => item.type !== "final_result" && item.type !== "next_action",
+  );
   if (!items.length) return null;
-  const essential = items.filter((item) => item.essential || item.status === "failed" || item.status === "blocked" || item.status === "waiting");
-  const visible = showAll ? items : (essential.length ? essential : items);
+  const essential = items.filter(
+    (item) => item.essential || item.status === "failed" || item.status === "blocked",
+  );
+  const visible = showAll ? items : essential;
   const hiddenCount = items.length - visible.length;
+  if (!visible.length && !hiddenCount) return null;
   return (
     <div className="mt-3 space-y-2">
       {visible.map((item, index) => (
