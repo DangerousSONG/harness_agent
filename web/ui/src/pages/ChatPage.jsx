@@ -374,7 +374,7 @@ function titleLabel(value) {
 function MarkdownText({ text }) {
   const lines = String(text || "").split("\n");
   return (
-    <div className="space-y-1 text-sm leading-6 text-zinc-900">
+    <div className="space-y-1 text-sm leading-6">
       {lines.map((line, index) => {
         // Strip stand-alone image lines entirely (scraped news pages dump these).
         const imageStripped = line.replace(/!\[[^\]]*\]\([^)]*\)/g, "").trimEnd();
