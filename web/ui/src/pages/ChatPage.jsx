@@ -62,28 +62,28 @@ function Bubble({ role, message, children, time, onAction }) {
           ].join(" ")}
         >
           {showHeader ? (
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <span className={`inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium ${typeStyle.className}`}>
-                <TypeIcon className="h-3.5 w-3.5" />
+            <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] leading-4">
+              <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium ${typeStyle.className}`}>
+                <TypeIcon className="h-3 w-3" />
                 {typeStyle.label}
               </span>
               {showSkillMeta && message.used_skill ? (
-                <span className="rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-600">
+                <span className="rounded bg-zinc-100 px-1.5 py-0.5 font-medium text-zinc-600">
                   {message.used_skill}
                 </span>
               ) : null}
               {message.memory_record_id ? (
-                <span className="rounded bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+                <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-medium text-emerald-700">
                   {message.memory_record_id}
                 </span>
               ) : null}
               {message.intent ? (
-                <span className="rounded bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-500">
+                <span className="rounded px-1.5 py-0.5 font-medium text-zinc-400">
                   {displayIntent(message.intent)}
                 </span>
               ) : null}
               {message.risk ? (
-                <span className="rounded bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-500">
+                <span className="rounded px-1.5 py-0.5 font-medium text-zinc-400">
                   {displayRisk(message.risk)}
                 </span>
               ) : null}
@@ -458,26 +458,26 @@ function renderInline(text) {
 }
 
 function ToolStatus({ name, status }) {
+  const t = useTranslate();
   const parsed = parseToolName(name);
+  const displayName = parsed.path || parsed.label || name;
   return (
-    <div className="ml-10 flex max-w-2xl items-center justify-between gap-4 rounded-lg border border-blue-100 bg-white px-4 py-3 shadow-hairline">
-      <div className="flex min-w-0 items-center gap-3">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-appleBlue">
-          <Wrench className="h-4 w-4" />
-        </span>
-        <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-normal text-zinc-500">Tool call</p>
-          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
-            {parsed.method ? (
-              <span className="rounded bg-blue-50 px-2 py-0.5 font-mono text-[11px] font-semibold text-appleBlue">
-                {parsed.method}
-              </span>
-            ) : null}
-            <code className="truncate text-xs font-semibold text-zinc-700">{parsed.path || parsed.label}</code>
-          </div>
-        </div>
+    <div className="ml-10 inline-flex max-w-2xl items-center gap-3 rounded-full border border-line bg-white py-1.5 pl-1.5 pr-3 shadow-hairline">
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-50 text-appleBlue">
+        <Wrench className="h-3.5 w-3.5" />
+      </span>
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="text-xs font-semibold text-zinc-600">{t("trace.tool_call")}:</span>
+        {parsed.method ? (
+          <span className="rounded bg-blue-50 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-appleBlue">
+            {parsed.method}
+          </span>
+        ) : null}
+        <code className="truncate text-xs font-medium text-zinc-900">{displayName}</code>
       </div>
-      <StatusPill status={status} />
+      <span className="ml-auto shrink-0">
+        <StatusPill status={status} />
+      </span>
     </div>
   );
 }
@@ -577,12 +577,12 @@ export default function ChatPage({
         </div>
       </div>
       <form className="border-t border-line bg-white/80 px-6 py-4" onSubmit={submit}>
-        <div className="mx-auto flex max-w-5xl items-end gap-3 rounded-lg border border-line bg-white p-3 shadow-soft">
-          <button type="button" className="icon-button" aria-label="Attach context">
+        <div className="mx-auto flex max-w-5xl items-end gap-2 rounded-2xl border border-line bg-white p-2.5 shadow-hairline focus-within:border-zinc-300 focus-within:shadow-soft">
+          <button type="button" className="icon-button h-9 w-9" aria-label="Attach context">
             <Paperclip className="h-4 w-4" />
           </button>
           <textarea
-            className="max-h-36 min-h-12 flex-1 resize-none bg-transparent px-1 py-2 text-sm outline-none placeholder:text-zinc-400"
+            className="max-h-36 min-h-9 flex-1 resize-none bg-transparent px-1 py-1.5 text-sm leading-6 outline-none placeholder:text-zinc-400"
             placeholder={t("chat.placeholder")}
             value={value}
             onChange={(event) => setValue(event.target.value)}
@@ -593,12 +593,12 @@ export default function ChatPage({
               }
             }}
           />
-          <button className="primary-button h-10 w-10 px-0" type="submit" disabled={sending}>
+          <button className="primary-button h-9 w-9 rounded-full px-0" type="submit" disabled={sending}>
             <Send className="h-4 w-4" />
           </button>
         </div>
-        <p className="mt-3 text-center text-xs text-zinc-400">
-          SafeHarness Console - Local First, Always in Control.
+        <p className="mt-2 text-center text-[11px] text-zinc-400">
+          SafeHarness Console — Local First, Always in Control.
         </p>
       </form>
     </section>

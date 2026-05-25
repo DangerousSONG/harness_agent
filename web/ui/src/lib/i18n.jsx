@@ -122,6 +122,11 @@ const STRINGS = {
     "common.evolve": "Evolve",
     "common.refresh": "Refresh",
 
+    "trace.tool_call": "Tool call",
+    "trace.skill_route": "Skill",
+    "trace.command_trace": "Bash",
+    "trace.file_trace": "File",
+
     "review.human_required": "Human approval required",
     "review.human_required_sub": "This action may change a long-term Agent asset.",
     "review.field.review_id": "Review ID",
@@ -382,6 +387,11 @@ const STRINGS = {
     "common.regenerate": "重新生成",
     "common.evolve": "演进",
     "common.refresh": "刷新",
+
+    "trace.tool_call": "工具调用",
+    "trace.skill_route": "Skill",
+    "trace.command_trace": "Bash",
+    "trace.file_trace": "文件",
 
     "review.human_required": "需要人工审批",
     "review.human_required_sub": "该操作可能修改长期 Agent 资产。",
