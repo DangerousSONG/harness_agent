@@ -264,6 +264,16 @@ class KnowledgeBaseStore:
             raise FileNotFoundError(f"file not found in kb: {relative_path}")
         kind = _classify_kind(target)
         size = target.stat().st_size
+        if kind == "pdf":
+            extracted = _extract_pdf_text(target.read_bytes())
+            return {
+                "path": relative_path,
+                "kind": "pdf",
+                "size": size,
+                "content": extracted,
+                "truncated": False,
+                "extraction_available": bool(extracted),
+            }
         if kind == "binary":
             return {
                 "path": relative_path,
@@ -299,6 +309,25 @@ class KnowledgeBaseStore:
             "truncated": truncated,
         }
 
+    def read_raw(self, kb_id: str, relative_path: str) -> tuple[bytes, str]:
+        """Return raw bytes + suggested content-type. Used for PDF iframe."""
+        kb_dir = self._require_kb_dir(kb_id)
+        files_root = kb_dir / "files"
+        target = self._safe_path(files_root, relative_path)
+        if target is None or not target.exists() or not target.is_file():
+            raise FileNotFoundError(f"file not found in kb: {relative_path}")
+        suffix = target.suffix.lower()
+        mime = {
+            ".pdf": "application/pdf",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".svg": "image/svg+xml",
+        }.get(suffix, "application/octet-stream")
+        return target.read_bytes(), mime
+
     # ---- Q&A context provider ----------------------------------------
 
     def qa_context(self, kb_ids: list[str], *, byte_budget: int = MAX_QA_CONTEXT_BYTES) -> dict[str, Any]:
@@ -323,6 +352,8 @@ class KnowledgeBaseStore:
                 except FileNotFoundError:
                     continue
                 if payload["kind"] == "binary":
+                    continue
+                if payload["kind"] == "pdf" and not payload.get("content"):
                     continue
                 remaining = byte_budget - used
                 excerpt = payload["content"][: max(0, remaining)]
@@ -433,6 +464,8 @@ class KnowledgeBaseStore:
 def _classify_kind(path: Path) -> str:
     suffix = path.suffix.lower()
     name = path.name.lower()
+    if suffix == ".pdf":
+        return "pdf"
     if suffix in CODE_LIKE_EXTENSIONS:
         return "code"
     if suffix in TEXT_EXTENSIONS or name in {"makefile", "dockerfile", "readme", "license", "license.txt"}:
@@ -453,6 +486,35 @@ def _classify_kind(path: Path) -> str:
         except UnicodeDecodeError:
             return "binary"
     return "binary"
+
+
+def _extract_pdf_text(data: bytes) -> str:
+    """Extract text from a PDF. Returns empty string on any failure so
+    callers degrade gracefully (file still shows as PDF in the viewer
+    via the raw endpoint; chat Q&A just skips it). We swallow ANY
+    exception, not just ImportError, because pypdf's optional
+    cryptography backend can panic at import time on some platforms."""
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except BaseException:
+        # pypdf's optional cryptography backend can panic at import time
+        # (PyO3 PanicException inherits from BaseException, not Exception).
+        return ""
+    try:
+        reader = PdfReader(io.BytesIO(data))
+    except BaseException:
+        return ""
+    chunks: list[str] = []
+    for page in getattr(reader, "pages", []):
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            text = ""
+        if text:
+            chunks.append(text)
+        if sum(len(c) for c in chunks) > 200_000:
+            break
+    return "\n\n".join(chunks)
 
 
 def normalize_kb_id(value: str) -> str:

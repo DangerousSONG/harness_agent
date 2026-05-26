@@ -4,3 +4,4 @@ fastapi>=0.110
 uvicorn>=0.29
 crawl4ai>=0.3
 playwright>=1.40
+pypdf>=4.0

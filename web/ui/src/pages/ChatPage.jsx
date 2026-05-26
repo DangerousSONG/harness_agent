@@ -19,6 +19,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import ReviewCard from "../components/ReviewCard";
 import EmptyState from "../components/EmptyState";
+import MarkdownText from "../components/MarkdownText";
 import { api } from "../lib/api";
 import { formatDate } from "../lib/format";
 import { useTranslate } from "../lib/i18n.jsx";
@@ -378,92 +379,6 @@ function titleLabel(value) {
   return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-function MarkdownText({ text }) {
-  const lines = String(text || "").split("\n");
-  return (
-    <div className="space-y-1 text-sm leading-6">
-      {lines.map((line, index) => {
-        // Strip stand-alone image lines entirely (scraped news pages dump these).
-        const imageStripped = line.replace(/!\[[^\]]*\]\([^)]*\)/g, "").trimEnd();
-        if (line.startsWith("### ")) {
-          return <h4 key={index} className="pt-2 text-sm font-semibold text-zinc-900">{renderInline(line.slice(4))}</h4>;
-        }
-        if (line.startsWith("## ")) {
-          return <h3 key={index} className="pt-2 text-sm font-semibold text-zinc-900">{renderInline(line.slice(3))}</h3>;
-        }
-        if (line.startsWith("# ")) {
-          return <h2 key={index} className="pt-1 text-base font-semibold text-zinc-950">{renderInline(line.slice(2))}</h2>;
-        }
-        const bulletMatch = imageStripped.match(/^(\s*)([-*•])\s+(.*)$/);
-        if (bulletMatch) {
-          const indent = bulletMatch[1].length;
-          return (
-            <div
-              key={index}
-              className="flex gap-2 break-words"
-              style={{ paddingLeft: `${indent * 0.5}rem` }}
-            >
-              <span className="select-none text-zinc-400">•</span>
-              <span className="min-w-0 flex-1">{renderInline(bulletMatch[3])}</span>
-            </div>
-          );
-        }
-        if (!imageStripped.trim()) return <div key={index} className="h-1" />;
-        return (
-          <p key={index} className="whitespace-pre-wrap break-words">
-            {renderInline(imageStripped)}
-          </p>
-        );
-      })}
-    </div>
-  );
-}
-
-function renderInline(text) {
-  if (!text) return null;
-  // Tokenize: links [text](url), bold **x**, italic *x*, code `x`.
-  const tokens = [];
-  let cursor = 0;
-  const pattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*]+)\*\*|`([^`]+)`/g;
-  let match;
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > cursor) {
-      tokens.push({ type: "text", value: text.slice(cursor, match.index) });
-    }
-    if (match[1] && match[2]) {
-      tokens.push({ type: "link", text: match[1], url: match[2] });
-    } else if (match[3]) {
-      tokens.push({ type: "bold", value: match[3] });
-    } else if (match[4]) {
-      tokens.push({ type: "code", value: match[4] });
-    }
-    cursor = pattern.lastIndex;
-  }
-  if (cursor < text.length) tokens.push({ type: "text", value: text.slice(cursor) });
-  return tokens.map((token, idx) => {
-    if (token.type === "link") {
-      return (
-        <a
-          key={idx}
-          href={token.url}
-          target="_blank"
-          rel="noreferrer noopener"
-          className="text-appleBlue underline-offset-2 hover:underline break-all"
-        >
-          {token.text}
-        </a>
-      );
-    }
-    if (token.type === "bold") {
-      return <strong key={idx} className="font-semibold text-zinc-950">{token.value}</strong>;
-    }
-    if (token.type === "code") {
-      return <code key={idx} className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-xs">{token.value}</code>;
-    }
-    return <span key={idx}>{token.value}</span>;
-  });
-}
-
 function ToolStatus({ name, status }) {
   const t = useTranslate();
   const parsed = parseToolName(name);
@@ -659,14 +574,16 @@ export default function ChatPage({
           <button
             type="button"
             className={[
-              "icon-button h-9 w-9",
-              selectedKbIds.length || showKbPicker ? "text-appleBlue" : "",
+              "inline-flex h-9 items-center gap-1.5 rounded-full border px-2.5 text-xs font-semibold transition",
+              selectedKbIds.length || showKbPicker
+                ? "border-appleBlue/30 bg-blue-50 text-appleBlue"
+                : "border-line bg-white text-zinc-600 hover:bg-zinc-50",
             ].join(" ")}
-            aria-label="Attach knowledge base"
             onClick={() => setShowKbPicker((prev) => !prev)}
             title={t("chat.kb.button_title")}
           >
-            <Paperclip className="h-4 w-4" />
+            <Paperclip className="h-3.5 w-3.5" />
+            {t("chat.kb.label")} {selectedKbIds.length}/3
           </button>
           <textarea
             className="max-h-36 min-h-9 flex-1 resize-none bg-transparent px-1 py-1.5 text-sm leading-6 outline-none placeholder:text-zinc-400"

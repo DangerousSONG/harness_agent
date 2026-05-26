@@ -612,6 +612,19 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             return fail(str(exc), status_code=404)
         return ok(payload)
 
+    @app.get("/api/knowledge-bases/{kb_id}/file/raw")
+    def knowledge_base_file_raw(kb_id: str, path: str):
+        from fastapi.responses import Response
+
+        meta = ctx.knowledge_bases.get(kb_id)
+        if not meta:
+            return fail(f"Knowledge base not found: {kb_id}", status_code=404)
+        try:
+            payload, mime = ctx.knowledge_bases.read_raw(kb_id, path)
+        except FileNotFoundError as exc:
+            return fail(str(exc), status_code=404)
+        return Response(content=payload, media_type=mime)
+
     @app.post("/api/knowledge-bases/{kb_id}/upload")
     async def knowledge_base_upload(kb_id: str, request: Request) -> JSONResponse:
         meta = ctx.knowledge_bases.get(kb_id)
