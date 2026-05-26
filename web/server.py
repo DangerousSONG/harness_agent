@@ -1588,24 +1588,97 @@ def _records_from_file(ctx: WebContext, path: Path, skill: str, record_type: str
     for record in ctx.skill_memory._read_records(path):
         fields = dict(record.get("fields", {}))
         memory_id = str(record.get("record_id", ""))
+        occurrence_count = _parse_int(fields.get("Occurrence Count"), 1)
+        linked_promo_id = _linked_promo_id(ctx, memory_id)
         records.append(
             {
                 "memory_id": memory_id,
                 "skill": skill,
                 "type": record_type,
                 "title": str(record.get("title", "")),
-                "occurrence_count": _parse_int(fields.get("Occurrence Count"), 1),
+                "occurrence_count": occurrence_count,
                 "source_file": _display_path(ctx, path),
-                "linked_promo_id": _linked_promo_id(ctx, memory_id),
+                "linked_promo_id": linked_promo_id,
                 "needs_attribution_review": str(fields.get("Needs Attribution Review", "")).lower() == "true",
                 "created_at": fields.get("Time", ""),
                 "updated_at": _mtime(path),
                 "fields": fields,
                 "details": str(record.get("details", "")),
                 "block": str(record.get("block", "")),
+                "promotion_progress": _compute_promotion_progress(fields, occurrence_count, linked_promo_id),
             }
         )
     return records
+
+
+PROMOTION_OCCURRENCE_THRESHOLD = 3
+PROMOTION_STRONG_OCCURRENCE_THRESHOLD = 2
+
+
+def _compute_promotion_progress(
+    fields: dict[str, Any],
+    occurrence_count: int,
+    linked_promo_id: str,
+) -> dict[str, Any]:
+    """Surface what gate keeps this memory from becoming a PROMO so users can
+    see e.g. "2 / 3 occurrences" without diving into the markdown record.
+
+    All values are read from fields already written by SkillMemoryManager
+    when the record was last updated — no re-evaluation is done here, so
+    this stays cheap and consistent with the persisted snapshot.
+    """
+    decision = str(fields.get("Promotion Decision", "wait") or "wait").strip().lower()
+    eligible_target = str(fields.get("Eligible Target", "none") or "none").strip().lower()
+    score_raw = str(fields.get("Promotion Score", "0") or "0").strip()
+    try:
+        promotion_score = float(score_raw)
+    except (TypeError, ValueError):
+        promotion_score = 0.0
+    reason = str(fields.get("Promotion Reason", "") or "").strip()
+    needs_review = str(fields.get("Needs Attribution Review", "")).lower() == "true"
+
+    threshold = PROMOTION_OCCURRENCE_THRESHOLD
+    occurrences_remaining = max(0, threshold - int(occurrence_count or 0))
+
+    if linked_promo_id:
+        kind = "already_promoted"
+        blocker = ""
+    elif decision == "promote":
+        kind = "ready_to_promote"
+        blocker = ""
+    elif decision == "reject":
+        kind = "rejected"
+        blocker = reason or "rejected"
+    elif decision == "policy_review":
+        kind = "policy_review_required"
+        blocker = reason or "policy review required"
+    elif needs_review or "attribution" in reason.lower():
+        kind = "attribution_review_required"
+        blocker = "Attribution confidence is low or target_skill missing."
+    elif occurrence_count < threshold:
+        kind = "needs_more_occurrences"
+        blocker = (
+            f"Need {occurrences_remaining} more occurrence(s) "
+            f"({occurrence_count}/{threshold}) before this can be promoted."
+        )
+    else:
+        kind = "waiting_signal"
+        blocker = reason or "waiting for stronger transferability/testability evidence"
+
+    return {
+        "decision": decision,
+        "eligible_target": eligible_target,
+        "promotion_score": promotion_score,
+        "reason": reason,
+        "occurrence_count": int(occurrence_count or 0),
+        "occurrence_threshold": threshold,
+        "occurrences_remaining": occurrences_remaining,
+        "linked_promo_id": linked_promo_id,
+        "next_step": {"kind": kind, "blocker": blocker},
+        "would_promote_at_next_occurrence": (
+            kind == "needs_more_occurrences" and occurrences_remaining == 1
+        ),
+    }
 
 
 def _find_memory(ctx: WebContext, memory_id: str) -> dict[str, Any] | None:

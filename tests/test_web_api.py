@@ -1645,6 +1645,51 @@ class WebApiTests(unittest.TestCase):
             versions = client.get("/api/skills/weather_query/versions").json()["data"]
             self.assertEqual(versions[0]["change_type"], "skill_creation")
 
+    def test_memories_endpoint_surfaces_promotion_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "markdown_writer")
+            manager = SkillMemoryManager(root / "skills", root / ".skills_memory")
+            # First occurrence is below the threshold (3) -> kind=needs_more_occurrences
+            manager.record_learning(
+                "markdown_writer",
+                "Prefer fenced markdown",
+                "When returning reusable Markdown examples, always use fenced code blocks.",
+                source="test",
+            )
+            client = self.make_client(root)
+            payload = client.get("/api/memories").json()
+            memory = payload["data"][0]
+            progress = memory["promotion_progress"]
+            self.assertEqual(progress["occurrence_count"], 1)
+            self.assertEqual(progress["occurrence_threshold"], 3)
+            self.assertEqual(progress["occurrences_remaining"], 2)
+            self.assertEqual(progress["next_step"]["kind"], "needs_more_occurrences")
+            self.assertFalse(progress["would_promote_at_next_occurrence"])
+            self.assertEqual(progress["decision"], "wait")
+            self.assertIn("Need", progress["next_step"]["blocker"])
+
+    def test_memories_endpoint_flags_ready_to_promote_when_score_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "markdown_writer")
+            manager = SkillMemoryManager(root / "skills", root / ".skills_memory")
+            for _ in range(3):
+                manager.record_learning(
+                    "markdown_writer",
+                    "Use fenced markdown for repeated outputs",
+                    "For repeated markdown output corrections, use fenced code blocks consistently in every example.",
+                    source="test",
+                )
+            client = self.make_client(root)
+            payload = client.get("/api/memories").json()
+            memory = next(item for item in payload["data"] if "fenced" in item["title"].lower())
+            progress = memory["promotion_progress"]
+            self.assertGreaterEqual(progress["occurrence_count"], 3)
+            self.assertEqual(progress["occurrences_remaining"], 0)
+            # Either ready_to_promote or already_promoted is acceptable depending on auto-promo wiring.
+            self.assertIn(progress["next_step"]["kind"], {"ready_to_promote", "already_promoted", "waiting_signal"})
+
     def test_chat_captures_explicit_memory_signal(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

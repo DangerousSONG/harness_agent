@@ -221,7 +221,9 @@ export default function AssetsPage({
                   ["Review", memory.needs_attribution_review ? "needed" : "none"],
                 ]}
                 onClick={() => openAsset("memory", memory)}
-              />
+              >
+                <MemoryPromotionProgress progress={memory.promotion_progress} t={t} />
+              </AssetCard>
             )}
           />
         ) : null}
@@ -280,7 +282,7 @@ function AssetGrid({ items, empty, render }) {
   return <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">{items.map(render)}</div>;
 }
 
-function AssetCard({ title, description, status, rows, metrics, onClick }) {
+function AssetCard({ title, description, status, rows, metrics, children, onClick }) {
   return (
     <article className="section-panel cursor-pointer p-4 transition hover:border-zinc-300" onClick={onClick}>
       <div className="flex items-start justify-between gap-4">
@@ -290,6 +292,7 @@ function AssetCard({ title, description, status, rows, metrics, onClick }) {
         </div>
         <StatusPill status={status || "draft"} />
       </div>
+      {children}
       {metrics?.length ? (
         <div className="mt-4 grid grid-cols-3 gap-2">
           {metrics.map(([label, value]) => (
@@ -306,6 +309,66 @@ function AssetCard({ title, description, status, rows, metrics, onClick }) {
         ))}
       </div>
     </article>
+  );
+}
+
+function MemoryPromotionProgress({ progress, t }) {
+  if (!progress) return null;
+  const { decision, next_step: nextStep, occurrence_count: count, occurrence_threshold: threshold, occurrences_remaining: remaining, promotion_score: score, linked_promo_id: promo } = progress;
+  const kind = nextStep?.kind || "waiting_signal";
+
+  const ratio = Math.min(1, Math.max(0, threshold ? count / threshold : 0));
+  const widthPercent = Math.round(ratio * 100);
+
+  const tone = (() => {
+    if (kind === "ready_to_promote" || kind === "already_promoted") return "emerald";
+    if (kind === "rejected") return "rose";
+    if (kind === "policy_review_required" || kind === "attribution_review_required") return "amber";
+    return "blue";
+  })();
+  const toneClass = {
+    emerald: { bar: "bg-emerald-500", border: "border-emerald-200", bg: "bg-emerald-50/70", text: "text-emerald-800" },
+    rose: { bar: "bg-rose-500", border: "border-rose-200", bg: "bg-rose-50/70", text: "text-rose-800" },
+    amber: { bar: "bg-amber-500", border: "border-amber-200", bg: "bg-amber-50/70", text: "text-amber-800" },
+    blue: { bar: "bg-appleBlue", border: "border-blue-200", bg: "bg-blue-50/60", text: "text-zinc-700" },
+  }[tone];
+
+  const headline = (() => {
+    if (kind === "already_promoted") return t("memory.progress.already_promoted", { promo });
+    if (kind === "ready_to_promote") return t("memory.progress.ready_to_promote");
+    if (kind === "rejected") return t("memory.progress.rejected");
+    if (kind === "policy_review_required") return t("memory.progress.policy_review");
+    if (kind === "attribution_review_required") return t("memory.progress.attribution_required");
+    if (kind === "needs_more_occurrences" && remaining === 1) return t("memory.progress.next_one_more");
+    if (kind === "needs_more_occurrences") return t("memory.progress.need_more", { remaining, threshold });
+    return t("memory.progress.waiting_signal");
+  })();
+
+  return (
+    <div className={`mt-4 rounded-lg border px-3 py-2.5 ${toneClass.border} ${toneClass.bg}`}>
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+          {t("memory.progress.title")}
+        </span>
+        <span className={`text-[11px] font-semibold ${toneClass.text}`}>
+          {t(`memory.decision.${decision || "wait"}`) || decision}
+        </span>
+      </div>
+      <div className="mt-2 flex items-center gap-3">
+        <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-white/80">
+          <div className={`absolute inset-y-0 left-0 transition-all ${toneClass.bar}`} style={{ width: `${widthPercent}%` }} />
+        </div>
+        <span className="font-mono text-[11px] font-semibold text-zinc-700">
+          {t("memory.progress.occurrences", { count, threshold })}
+        </span>
+      </div>
+      <p className={`mt-2 text-xs leading-5 ${toneClass.text}`}>{headline}</p>
+      {score ? (
+        <div className="mt-1 text-[11px] text-zinc-500">
+          {t("memory.progress.score")}: <span className="font-mono font-semibold text-zinc-700">{score.toFixed(2)}</span>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
