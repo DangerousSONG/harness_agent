@@ -211,6 +211,34 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(len(reviews), 1)
             self.assertEqual(reviews[0]["type"], "skill.regression_case")
 
+    def test_promotion_fast_track_walks_evolve_approve_apply_chain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            promo_id = self.make_promo(root)
+            client = self.make_client(root)
+            response = client.post(f"/api/promotions/{promo_id}/fast-track")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            data = payload["data"]
+            self.assertEqual(data["promo_id"], promo_id)
+            self.assertIsInstance(data["steps"], list)
+            stage_names = [step["stage"] for step in data["steps"]]
+            # Must at least go through one evolve step, then approve + apply.
+            self.assertTrue(any(name.startswith("evolve_") for name in stage_names))
+            # Either the chain reached applied or it stopped on a structured blocker.
+            self.assertIn(data["final_status"], {"applied", "blocked", "iteration_cap_reached", "no_more_work"})
+            # No step should silently swallow an error.
+            for step in data["steps"]:
+                if step["ok"] is False:
+                    self.assertIn("message", step)
+
+    def test_promotion_fast_track_returns_404_for_unknown_promo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = self.make_client(Path(tmp))
+            response = client.post("/api/promotions/PROMO-NOPE0000/fast-track")
+            self.assertEqual(response.status_code, 404)
+
     def test_legacy_promo_regeneration_creates_eligible_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

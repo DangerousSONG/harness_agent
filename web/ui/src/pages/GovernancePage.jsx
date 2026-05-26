@@ -33,6 +33,7 @@ export default function GovernancePage({
   onViewPromotion,
   onEvolvePromotion,
   onRegeneratePromotion,
+  onFastTrackPromotion,
   selectedPromoId,
   currentPromotion,
   evolutionState,
@@ -99,6 +100,7 @@ export default function GovernancePage({
             onView={onViewPromotion}
             onEvolve={onEvolvePromotion}
             onRegenerate={onRegeneratePromotion}
+            onFastTrack={onFastTrackPromotion}
           />
         </div>
       ) : null}

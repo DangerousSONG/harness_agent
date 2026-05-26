@@ -601,6 +601,34 @@ export default function App() {
     }
   }
 
+  async function fastTrackPromotion(promoId) {
+    if (!promoId) return;
+    setBusyPromoId(promoId);
+    const toolId = appendToolCall(`POST /api/promotions/${promoId}/fast-track`);
+    try {
+      const payload = await api.fastTrackPromotion(promoId);
+      finishToolCall(toolId, "completed");
+      const final = payload?.data?.final_status || "pending";
+      const lastStep = (payload?.data?.steps || []).slice(-1)[0] || {};
+      if (final === "applied") {
+        setToast(`Fast-track complete: ${promoId} applied.`);
+        appendAgentResult(`Fast-track complete: ${promoId} applied.`);
+      } else {
+        setToast(`Fast-track stopped at ${lastStep.stage || "unknown"} (${final}).`);
+        appendAgentResult(`Fast-track stopped at ${lastStep.stage || "unknown"} (${final}). ${lastStep.message || ""}`.trim());
+      }
+      setSelectedPromoId(promoId);
+      await refreshAfterOperation(promoId);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      finishToolCall(toolId, "failed");
+      appendAgentResult(message);
+      setToast(message);
+    } finally {
+      setBusyPromoId("");
+    }
+  }
+
   async function regeneratePromotion(promoId) {
     if (!promoId) return;
     const promo = promotions.find((item) => item.promo_id === promoId);
@@ -1258,6 +1286,7 @@ export default function App() {
             }}
             onEvolvePromotion={evolvePromotion}
             onRegeneratePromotion={regeneratePromotion}
+            onFastTrackPromotion={fastTrackPromotion}
             selectedPromoId={selectedPromoId}
             currentPromotion={currentPromotion}
             evolutionState={evolutionState}

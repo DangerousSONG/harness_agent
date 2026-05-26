@@ -1,4 +1,4 @@
-import { Eye, Rocket, RefreshCcw } from "lucide-react";
+import { Eye, Rocket, RefreshCcw, Zap } from "lucide-react";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import { compact } from "../lib/format";
@@ -17,7 +17,7 @@ const STATUS_TONE = {
   unknown: { border: "border-line", bg: "bg-zinc-50", text: "text-zinc-600", dot: "bg-zinc-400" },
 };
 
-export default function PromotionsPage({ promotions, busyPromoId, onView, onEvolve, onRegenerate }) {
+export default function PromotionsPage({ promotions, busyPromoId, onView, onEvolve, onRegenerate, onFastTrack }) {
   const t = useTranslate();
   return (
     <section className="min-h-0 flex-1 overflow-auto px-6 py-6">
@@ -38,6 +38,7 @@ export default function PromotionsPage({ promotions, busyPromoId, onView, onEvol
                 onView={onView}
                 onEvolve={onEvolve}
                 onRegenerate={onRegenerate}
+                onFastTrack={onFastTrack}
               />
             ))}
           </div>
@@ -47,7 +48,7 @@ export default function PromotionsPage({ promotions, busyPromoId, onView, onEvol
   );
 }
 
-function PromotionRow({ promo, t, busy, onView, onEvolve, onRegenerate }) {
+function PromotionRow({ promo, t, busy, onView, onEvolve, onRegenerate, onFastTrack }) {
   const classification = promo.status_classification || { kind: "unknown", fix: { kind: "none" } };
   const kind = classification.kind || "unknown";
   const tone = STATUS_TONE[kind] || STATUS_TONE.unknown;
@@ -76,6 +77,21 @@ function PromotionRow({ promo, t, busy, onView, onEvolve, onRegenerate }) {
             <button className="primary-button" disabled={busy} onClick={() => onRegenerate(promo.promo_id)}>
               <RefreshCcw className="h-4 w-4" />
               {t("promotions.fix.regenerate")}
+            </button>
+          ) : null}
+          {fix.kind === "evolve" && onFastTrack ? (
+            <button
+              className="subprimary-button"
+              disabled={busy}
+              onClick={() => {
+                if (window.confirm(t("promotions.fast_track.confirm_body", { promo: promo.promo_id, skill: promo.target_skill }))) {
+                  onFastTrack(promo.promo_id);
+                }
+              }}
+              title={t("promotions.fast_track.confirm_title")}
+            >
+              <Zap className="h-4 w-4" />
+              {t("promotions.fix.fast_track")}
             </button>
           ) : null}
           {fix.kind === "evolve" ? (

@@ -693,6 +693,122 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
         }
         return ok(data, result.message, _flow_next_actions(result.review_id, stage)) if result.ok else fail(result.message)
 
+    @app.post("/api/promotions/{promo_id}/fast-track")
+    def fast_track_promotion(promo_id: str) -> JSONResponse:
+        """Chain evolve → approve → apply for every review the flow creates,
+        until the PROMO is applied or a step blocks. Preserves the same
+        gating that the individual /evolve, /approve, /apply endpoints
+        enforce; this endpoint is a convenience for the common 'I trust
+        the auto-generated regression cases and the proposed patch' path.
+        """
+        if not ctx.promotions.get_candidate(promo_id):
+            return fail(f"Unknown promo_id: {promo_id}", status_code=404)
+
+        steps: list[dict[str, Any]] = []
+        final_status = "pending"
+        max_iterations = 6  # 3 evolve passes + at most 2 reviews — plenty of headroom.
+
+        for iteration in range(max_iterations):
+            result = evolve_skill_from_promotion(
+                browser=ctx.promotions,
+                review_store=ctx.review_store,
+                promo_id=promo_id,
+                project_root=ctx.project_root,
+            )
+            stage = _api_stage(result.stage)
+            review_id = result.review_id
+            steps.append({
+                "stage": f"evolve_{iteration + 1}",
+                "ok": result.ok,
+                "result_stage": stage,
+                "review_id": review_id,
+                "message": result.message,
+            })
+            if not result.ok:
+                final_status = "blocked"
+                break
+            if stage in {"completed", "complete"}:
+                final_status = "applied"
+                break
+            if not review_id:
+                final_status = "no_more_work"
+                break
+
+            review = ctx.review_store.get_review(review_id)
+            if not review:
+                steps.append({
+                    "stage": "lookup_review",
+                    "ok": False,
+                    "review_id": review_id,
+                    "message": "Review not found after evolve created it.",
+                })
+                final_status = "blocked"
+                break
+            review_status = str(review.get("status", "") or "").strip().lower()
+
+            if review_status == "pending":
+                try:
+                    approved, _ = ctx.review_store.approve_review(review_id)
+                    review_status = str(approved.get("status", "") or "").strip().lower()
+                    steps.append({
+                        "stage": "approve",
+                        "ok": True,
+                        "review_id": review_id,
+                        "review_type": str(review.get("type", "")),
+                        "status": review_status,
+                    })
+                except ValueError as exc:
+                    steps.append({
+                        "stage": "approve",
+                        "ok": False,
+                        "review_id": review_id,
+                        "review_type": str(review.get("type", "")),
+                        "message": str(exc),
+                    })
+                    final_status = "blocked"
+                    break
+
+            if review_status == "approved":
+                try:
+                    applied, message = ctx.review_store.apply_review(review_id)
+                    steps.append({
+                        "stage": "apply",
+                        "ok": True,
+                        "review_id": review_id,
+                        "review_type": str(applied.get("type", "")),
+                        "status": str(applied.get("status", "")),
+                        "message": message,
+                    })
+                except ValueError as exc:
+                    steps.append({
+                        "stage": "apply",
+                        "ok": False,
+                        "review_id": review_id,
+                        "review_type": str(review.get("type", "")),
+                        "message": str(exc),
+                    })
+                    final_status = "blocked"
+                    break
+            else:
+                # Review ended up in a non-actionable state (rejected, etc.).
+                steps.append({
+                    "stage": "blocked_by_review_status",
+                    "ok": False,
+                    "review_id": review_id,
+                    "status": review_status,
+                })
+                final_status = "blocked"
+                break
+        else:
+            final_status = "iteration_cap_reached"
+
+        return ok({
+            "promo_id": promo_id,
+            "steps": steps,
+            "final_status": final_status,
+            "version": _version_for_promo(ctx, promo_id),
+        })
+
     @app.post("/api/promotions/{promo_id}/regenerate")
     def regenerate_promotion(promo_id: str) -> JSONResponse:
         promo = ctx.promotions.get_candidate(promo_id)
