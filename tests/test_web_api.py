@@ -787,7 +787,7 @@ class WebApiTests(unittest.TestCase):
                 "extracted_at": "2026-05-21T00:00:00+00:00",
                 "content_length": 58,
             }
-            with patch("runtime.tool_registry.crawl_url_to_markdown", return_value=page):
+            with patch("runtime.tool_registry.crawl_urls_to_markdown", return_value=[page]):
                 response = client.post("/api/chat", json={"message": "总结 https://example.com/earnings"})
             self.assertEqual(response.status_code, 200)
             payload = response.json()
@@ -830,7 +830,7 @@ class WebApiTests(unittest.TestCase):
             }
             with patch.dict(os.environ, {"SEARCH_PROVIDER": "duckduckgo"}, clear=False):
                 with patch("runtime.tool_registry.urlopen", return_value=FakeHtmlResponse(html)):
-                    with patch("runtime.tool_registry.crawl_url_to_markdown", return_value=page):
+                    with patch("runtime.tool_registry.crawl_urls_to_markdown", return_value=[page]):
                         response = client.post("/api/tools/web_research/run", json={"inputs": {"query": "latest AI news"}})
             self.assertEqual(response.status_code, 200)
             payload = response.json()
@@ -1186,7 +1186,7 @@ class WebApiTests(unittest.TestCase):
                 "content_length": 0,
             }
             with patch.dict(os.environ, {"WEB_SEARCH_MOCK_RESULTS": json.dumps([{"title": "X", "url": "https://example.com/story"}])}, clear=False):
-                with patch("runtime.tool_registry.crawl_url_to_markdown", return_value=unavailable):
+                with patch("runtime.tool_registry.crawl_urls_to_markdown", return_value=[unavailable]):
                     response = client.post(
                         "/api/tools/web_research/run",
                         json={"inputs": {"query": "test"}},
@@ -1348,7 +1348,7 @@ class WebApiTests(unittest.TestCase):
             }
             with patch.dict(os.environ, env_overrides, clear=False):
                 with patch.object(web_search_provider, "call_configured_provider", side_effect=fake_call):
-                    with patch("runtime.tool_registry.crawl_url_to_markdown", return_value=page):
+                    with patch("runtime.tool_registry.crawl_urls_to_markdown", return_value=[page]):
                         response = client.post(
                             "/api/tools/web_research/run",
                             json={"inputs": {"query": "今天英伟达财报如何"}},

@@ -267,7 +267,7 @@ class Executor:
         mode: str,
     ) -> dict[str, Any]:
         handler_name = "web_research" if "web_research" in ctx.tool_registry.handlers else "web_search"
-        inputs = {"query": _query_for_research(message, intent), "urls": urls, "max_results": 5, "language": "zh-CN"}
+        inputs = {"query": _query_for_research(message, intent), "urls": urls, "max_results": 3, "language": "zh-CN"}
         result = ctx.tool_registry.handlers[handler_name](inputs)
         run_result = {"ok": bool(result.get("ok", True)), "tool_name": handler_name, **({"result": result.get("result", result)} if result.get("ok", True) else result)}
         effective_mode = (run_result.get("result", {}) or {}).get("search_mode") or mode

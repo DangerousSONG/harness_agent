@@ -251,7 +251,7 @@ def run_web_research(inputs: dict[str, Any]) -> dict[str, Any]:
     safety_error = validate_web_research_request(query, direct_urls)
     if safety_error:
         return safety_error
-    max_results = clamp_int(inputs.get("max_results", 5), minimum=1, maximum=5)
+    max_results = clamp_int(inputs.get("max_results", 3), minimum=1, maximum=5)
     selected_urls = direct_urls[:max_results]
     search_mode = "direct_url" if selected_urls else "provider_search"
     search_results: list[dict[str, Any]] = []
@@ -274,7 +274,7 @@ def run_web_research(inputs: dict[str, Any]) -> dict[str, Any]:
             "search_mode": search_mode,
         }
 
-    crawled_pages = [crawl_url_to_markdown(url) for url in selected_urls]
+    crawled_pages = crawl_urls_to_markdown(selected_urls)
     usable_pages = [page for page in crawled_pages if page.get("crawl_status") == "completed" and page.get("markdown", "").strip()]
     if usable_pages:
         summary = summarize_markdown_with_bailian(query or "Summarize the provided URL content.", usable_pages)
@@ -496,60 +496,157 @@ def normalize_search_results(results: Any, max_results: int) -> list[dict[str, A
 
 
 def crawl_url_to_markdown(url: str) -> dict[str, Any]:
+    """Crawl a single URL. Prefer crawl_urls_to_markdown for batches; this
+    is kept for tests that mock single-URL crawls."""
+    results = crawl_urls_to_markdown([url])
+    return results[0] if results else _crawl_failure(url, "no result")
+
+
+def crawl_urls_to_markdown(
+    urls: list[str],
+    *,
+    max_concurrency: int = 3,
+    per_url_timeout: float = 12.0,
+) -> list[dict[str, Any]]:
+    """Crawl multiple URLs in parallel under a single AsyncWebCrawler.
+
+    Reusing one crawler avoids spinning up a fresh Chromium browser per URL
+    (which is what made the previous serial loop take 20-30s for 5 URLs).
+    Each URL still has its own timeout so a single slow page cannot stall
+    the whole batch.
+    """
     extracted_at = now_iso()
-    safety_error = validate_public_http_url(url)
-    if safety_error:
-        return {
-            "title": "",
-            "url": url,
-            "markdown": "",
-            "crawl_status": "blocked",
-            "error": safety_error,
-            "extracted_at": extracted_at,
-            "content_length": 0,
-        }
+    safe_urls: list[tuple[int, str]] = []
+    blocked: dict[int, dict[str, Any]] = {}
+    for idx, url in enumerate(urls):
+        safety_error = validate_public_http_url(url)
+        if safety_error:
+            blocked[idx] = {
+                "title": "",
+                "url": url,
+                "markdown": "",
+                "crawl_status": "blocked",
+                "error": safety_error,
+                "extracted_at": extracted_at,
+                "content_length": 0,
+            }
+        else:
+            safe_urls.append((idx, url))
+
+    if not safe_urls:
+        return [blocked.get(idx, _crawl_failure(urls[idx], "no result")) for idx in range(len(urls))]
+
     try:
         from crawl4ai import AsyncWebCrawler  # type: ignore
     except ImportError:
-        return {
+        unavailable = {
             "title": "",
-            "url": url,
+            "url": "",
             "markdown": "",
             "crawl_status": "crawl4ai_unavailable",
             "error": "crawl4ai is not installed; raw HTML was not passed to the model.",
             "extracted_at": extracted_at,
             "content_length": 0,
         }
+        return [
+            blocked.get(idx, {**unavailable, "url": urls[idx]})
+            for idx in range(len(urls))
+        ]
 
-    async def run_crawl() -> Any:
+    async def crawl_one(crawler: Any, url: str, semaphore: asyncio.Semaphore) -> dict[str, Any]:
+        async with semaphore:
+            try:
+                result = await asyncio.wait_for(crawler.arun(url=url), timeout=per_url_timeout)
+            except asyncio.TimeoutError:
+                return _crawl_failure(url, f"crawl timed out after {per_url_timeout}s", status="timed_out")
+            except Exception as exc:
+                return _crawl_failure(url, str(exc))
+        markdown = str(getattr(result, "markdown", "") or getattr(result, "fit_markdown", "") or "")
+        title = str(getattr(result, "title", "") or "")
+        if not title:
+            metadata = getattr(result, "metadata", {}) or {}
+            title = str(metadata.get("title", "")) if isinstance(metadata, dict) else ""
+        return {
+            "title": title,
+            "url": url,
+            "markdown": markdown,
+            "crawl_status": "completed" if markdown.strip() else "empty",
+            "extracted_at": extracted_at,
+            "content_length": len(markdown),
+        }
+
+    async def crawl_all() -> list[dict[str, Any]]:
+        semaphore = asyncio.Semaphore(max(1, max_concurrency))
         async with AsyncWebCrawler() as crawler:
-            return await crawler.arun(url=url)
+            tasks = [
+                asyncio.create_task(crawl_one(crawler, url, semaphore))
+                for _, url in safe_urls
+            ]
+            results: list[dict[str, Any] | None] = [None] * len(tasks)
+            successes = 0
+            pending = set(tasks)
+            try:
+                while pending:
+                    done, pending = await asyncio.wait(
+                        pending, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for task in done:
+                        idx = tasks.index(task)
+                        page = task.result()
+                        results[idx] = page
+                        if page.get("crawl_status") == "completed" and page.get("markdown", "").strip():
+                            successes += 1
+                    # Once we have enough usable pages, cancel the rest — the
+                    # summary stage only needs 1-2 good crawls anyway.
+                    if successes >= 2 and pending:
+                        for task in pending:
+                            task.cancel()
+                        for task in pending:
+                            try:
+                                await task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                            cancelled_idx = tasks.index(task)
+                            if results[cancelled_idx] is None:
+                                cancelled_url = safe_urls[cancelled_idx][1]
+                                results[cancelled_idx] = _crawl_failure(
+                                    cancelled_url,
+                                    "skipped: enough usable pages collected",
+                                    status="skipped",
+                                )
+                        pending = set()
+            finally:
+                # Drain any unfinished tasks defensively.
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+            return [page or _crawl_failure(safe_urls[idx][1], "no result") for idx, page in enumerate(results)]
 
     try:
-        result = run_async_blocking(run_crawl)
+        crawled = run_async_blocking(crawl_all)
     except Exception as exc:  # pragma: no cover - defensive around external crawler.
-        return {
-            "title": "",
-            "url": url,
-            "markdown": "",
-            "crawl_status": "failed",
-            "error": str(exc),
-            "extracted_at": extracted_at,
-            "content_length": 0,
-        }
-    markdown = str(getattr(result, "markdown", "") or getattr(result, "fit_markdown", "") or "")
-    title = str(getattr(result, "title", "") or "")
-    if not title:
-        metadata = getattr(result, "metadata", {}) or {}
-        title = str(metadata.get("title", "")) if isinstance(metadata, dict) else ""
-    status = "completed" if markdown.strip() else "empty"
+        crawled = [_crawl_failure(url, str(exc)) for _, url in safe_urls]
+
+    out: list[dict[str, Any]] = []
+    cursor = 0
+    for idx in range(len(urls)):
+        if idx in blocked:
+            out.append(blocked[idx])
+        else:
+            out.append(crawled[cursor])
+            cursor += 1
+    return out
+
+
+def _crawl_failure(url: str, error: str, *, status: str = "failed") -> dict[str, Any]:
     return {
-        "title": title,
+        "title": "",
         "url": url,
-        "markdown": markdown,
+        "markdown": "",
         "crawl_status": status,
-        "extracted_at": extracted_at,
-        "content_length": len(markdown),
+        "error": error,
+        "extracted_at": now_iso(),
+        "content_length": 0,
     }
 
 
@@ -651,9 +748,10 @@ def call_openai_summary(query: str, markdown: str, api_key: str, model: str, fal
         "model": model,
         "messages": [
             {"role": "system", "content": "Summarize only from the provided Markdown. Cite source URLs. Do not use raw HTML or invent facts."},
-            {"role": "user", "content": f"Question: {query}\n\nMarkdown sources:\n{markdown[:18000]}"},
+            {"role": "user", "content": f"Question: {query}\n\nMarkdown sources:\n{markdown[:9000]}"},
         ],
         "temperature": 0.2,
+        "max_tokens": 600,
     }).encode("utf-8")
     try:
         from urllib.request import Request
@@ -663,7 +761,7 @@ def call_openai_summary(query: str, markdown: str, api_key: str, model: str, fal
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             method="POST",
         )
-        with urlopen(request, timeout=20) as response:
+        with urlopen(request, timeout=12) as response:
             data = json.loads(response.read().decode("utf-8"))
         content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
         if content:
@@ -684,9 +782,10 @@ def call_bailian_summary(query: str, markdown: str, api_key: str, fallback_summa
         "model": model,
         "messages": [
             {"role": "system", "content": "Summarize only from the provided Markdown. Cite source URLs. Do not use raw HTML or invent facts."},
-            {"role": "user", "content": f"Question: {query}\n\nMarkdown sources:\n{markdown[:18000]}"},
+            {"role": "user", "content": f"Question: {query}\n\nMarkdown sources:\n{markdown[:9000]}"},
         ],
         "temperature": 0.2,
+        "max_tokens": 600,
     }).encode("utf-8")
     try:
         from urllib.request import Request
@@ -696,7 +795,7 @@ def call_bailian_summary(query: str, markdown: str, api_key: str, fallback_summa
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             method="POST",
         )
-        with urlopen(request, timeout=20) as response:
+        with urlopen(request, timeout=12) as response:
             data = json.loads(response.read().decode("utf-8"))
         content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
         if content:
