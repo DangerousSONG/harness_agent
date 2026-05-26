@@ -259,20 +259,41 @@ function OpportunitiesList({ opportunities, signalsById, selected, onToggle, onC
   if (!opportunities.length) {
     return <EmptyState title={t("side_channel.empty.opportunities")} />;
   }
+  const selectedSkill = opportunities.find((opp) => selected.has(opp.opportunity_id))?.target_skill || "";
   return (
     <div className="space-y-3">
       {selected.size ? (
-        <div className="flex flex-wrap items-center justify-between rounded-lg border border-line bg-white px-3 py-2 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-white px-3 py-2 text-sm">
           <span className="text-zinc-700">
             {t("side_channel.batch.selected", { count: selected.size })}
+            {selectedSkill ? (
+              <span className="ml-2 text-xs text-zinc-500">
+                {t("side_channel.batch.locked_skill")}: <span className="font-mono">{selectedSkill}</span>
+              </span>
+            ) : null}
           </span>
           <button className="primary-button" onClick={onCreateBatch} disabled={busy}>
             {t("side_channel.action.create_batch")}
           </button>
         </div>
       ) : null}
-      {opportunities.map((opp) => (
-        <article key={opp.opportunity_id} className="section-panel p-4">
+      {opportunities.map((opp) => {
+        const isRejected = opp.decision === "reject";
+        const lockedByOtherSkill = Boolean(selectedSkill) && opp.target_skill !== selectedSkill;
+        const isDisabled = isRejected || lockedByOtherSkill;
+        const disabledReason = isRejected
+          ? t("side_channel.disabled.rejected")
+          : lockedByOtherSkill
+          ? t("side_channel.disabled.cross_skill", { skill: selectedSkill })
+          : "";
+        return (
+        <article
+          key={opp.opportunity_id}
+          className={[
+            "section-panel p-4 transition",
+            isDisabled ? "opacity-50" : "",
+          ].join(" ")}
+        >
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
@@ -281,7 +302,8 @@ function OpportunitiesList({ opportunities, signalsById, selected, onToggle, onC
                   className="h-4 w-4 rounded border-line"
                   checked={selected.has(opp.opportunity_id)}
                   onChange={() => onToggle(opp.opportunity_id)}
-                  disabled={opp.decision === "reject"}
+                  disabled={isDisabled}
+                  title={disabledReason}
                 />
                 <span className="mono-badge">{opp.opportunity_id}</span>
                 <StatusPill status={opp.decision} />
@@ -340,8 +362,14 @@ function OpportunitiesList({ opportunities, signalsById, selected, onToggle, onC
               })}
             </ul>
           </details>
+          {lockedByOtherSkill ? (
+            <p className="mt-2 text-[11px] text-zinc-500">
+              {disabledReason}
+            </p>
+          ) : null}
         </article>
-      ))}
+      );
+      })}
     </div>
   );
 }
