@@ -296,9 +296,19 @@ function OpportunitiesList({ opportunities, signalsById, selected, onToggle, onC
                 <span className="text-xs text-zinc-500">risk={opp.risk_level}</span>
               </div>
               <p className="mt-2 line-clamp-2 text-sm text-zinc-600">{compact(opp.summary)}</p>
-              <p className="mt-1 text-xs text-zinc-500">
-                {t("side_channel.field.reason")}: {compact(opp.reason)}
-              </p>
+              <div className="mt-2 rounded-md border border-line bg-zinc-50/60 px-3 py-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                  {t("side_channel.field.reason")}
+                </p>
+                <p className="mt-1 text-sm leading-relaxed text-zinc-800">
+                  {compact(opp.reason)}
+                </p>
+                {opp.score_breakdown ? (
+                  <p className="mt-1.5 font-mono text-[10px] text-zinc-500">
+                    {t("side_channel.field.score_breakdown")}: {opp.score_breakdown}
+                  </p>
+                ) : null}
+              </div>
             </div>
           </div>
           <div className="mt-3 grid gap-2 text-xs text-zinc-500 sm:grid-cols-2">
