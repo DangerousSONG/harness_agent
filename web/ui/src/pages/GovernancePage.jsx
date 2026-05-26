@@ -3,6 +3,7 @@ import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import { compact, formatDate, titleize } from "../lib/format";
 import { useTranslate } from "../lib/i18n.jsx";
+import { EvolutionTimeline } from "./EvolutionPage";
 import PromotionsPage from "./PromotionsPage";
 import ReviewsPage from "./ReviewsPage";
 import VersionsPage from "./VersionsPage";
@@ -32,6 +33,10 @@ export default function GovernancePage({
   onViewPromotion,
   onEvolvePromotion,
   onRegeneratePromotion,
+  selectedPromoId,
+  currentPromotion,
+  evolutionState,
+  onContinueEvolution,
 }) {
   const t = useTranslate();
   const tabCounts = {
@@ -77,13 +82,25 @@ export default function GovernancePage({
       </div>
 
       {activeTab === "promotions" ? (
-        <PromotionsPage
-          promotions={promotions}
-          busyPromoId={busyPromoId}
-          onView={onViewPromotion}
-          onEvolve={onEvolvePromotion}
-          onRegenerate={onRegeneratePromotion}
-        />
+        <div className="workbench-container space-y-3 px-6">
+          {selectedPromoId && currentPromotion ? (
+            <EvolutionTimeline
+              promoId={selectedPromoId}
+              targetSkill={evolutionState?.target_skill || currentPromotion?.target_skill}
+              evolutionState={evolutionState}
+              currentPromotion={currentPromotion}
+              onContinue={onContinueEvolution}
+              busyPromoId={busyPromoId}
+            />
+          ) : null}
+          <PromotionsPage
+            promotions={promotions}
+            busyPromoId={busyPromoId}
+            onView={onViewPromotion}
+            onEvolve={onEvolvePromotion}
+            onRegenerate={onRegeneratePromotion}
+          />
+        </div>
       ) : null}
       {activeTab === "reviews" ? <ReviewsPage reviews={reviews} actionProps={actionProps} embedded /> : null}
       {activeTab === "versions" ? (

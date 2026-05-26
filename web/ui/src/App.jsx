@@ -1258,6 +1258,10 @@ export default function App() {
             }}
             onEvolvePromotion={evolvePromotion}
             onRegeneratePromotion={regeneratePromotion}
+            selectedPromoId={selectedPromoId}
+            currentPromotion={currentPromotion}
+            evolutionState={evolutionState}
+            onContinueEvolution={continueEvolution}
           />
         ) : null}
         {page === "settings" ? <SettingsPage dashboard={dashboard} /> : null}
