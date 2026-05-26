@@ -67,6 +67,7 @@ class EvolutionOpportunity:
     should_improve: list[str]
     must_not_regress: list[str]
     related_promo_ids: list[str] = field(default_factory=list)
+    score_breakdown: str = ""
     created_at: str = field(default_factory=_utc_now)
 
     def to_dict(self) -> dict[str, Any]:

@@ -328,8 +328,9 @@ class EvolutionScout:
             decision, opp_type, priority, risk, confidence = _make_decision(
                 members, score, components
             )
-            reason = _reason_text(decision, components, members)
-            should_improve = _derive_should_improve(members)
+            reason = _reason_text(decision, components, members, target_skill=skill)
+            score_breakdown = _score_breakdown(decision, components, members)
+            should_improve = _derive_should_improve(members, decision=decision, target_skill=skill)
             must_not_regress = _derive_must_not_regress(members)
             related_promos = sorted(
                 {s["source_ref"] for s in members if s["source_type"] == "promo"}
@@ -345,6 +346,7 @@ class EvolutionScout:
                 risk_level=risk,
                 confidence=confidence,
                 reason=reason,
+                score_breakdown=score_breakdown,
                 should_improve=should_improve,
                 must_not_regress=must_not_regress,
                 related_promo_ids=related_promos,
@@ -526,30 +528,107 @@ def _reason_text(
     decision: str,
     components: dict[str, float],
     members: list[dict[str, Any]],
+    *,
+    target_skill: str = "",
 ) -> str:
+    """Return a Chinese narrative explaining *why* this needs evolution and
+    *what* the expected outcome is. The technical score breakdown lives in
+    a separate ``score_breakdown`` field for audit, so this stays readable.
+    """
+    frequency = sum(int(s.get("frequency", 1)) for s in members)
+    has_safety = components.get("safety_gain", 0) > 0
+    has_promo = any(s.get("source_type") == "promo" for s in members)
+    cross_skill = components.get("transferability", 0) >= 1.0
+    skill_label = f"`{target_skill}`" if target_skill else "目标 skill"
+
+    if decision == "promote" and has_safety:
+        why = f"信号涉及安全策略或审批被拒事件，{skill_label} 在类似场景下需要主动避让而不是事后拦截。"
+        effect = "升级后预期能减少重复触发 ReviewQueue 审批，缩短人工介入路径，同时保留既有安全护栏。"
+    elif decision == "promote" and frequency >= 2:
+        why = f"这条经验在 {skill_label} 已重复出现 {frequency} 次，属于稳定可复用的模式。"
+        effect = "升级后预期把它固化进 SKILL.md 的 Memory-derived rules，减少同类问题再次发生时的纠正成本。"
+    elif decision == "promote" and cross_skill:
+        why = f"信号跨多个 skill 出现，说明这是通用经验而不是个例。"
+        effect = "升级后预期能让相关 skill 共享这条规则，避免逐个修改。"
+    elif decision == "promote":
+        why = f"评分高于晋升阈值（≥0.45），且 {skill_label} 的归属置信度足够。"
+        effect = "升级后预期把这条经验固化为 skill 规则。"
+    elif decision == "request_eval":
+        why = "评分达到晋升阈值但证据只有 1 次出现，且没有现成的 PROMO 来佐证可测试性。"
+        effect = "建议先补一组 regression case（positive + negative），覆盖建立后再考虑升级。"
+    elif decision == "defer":
+        if all(s.get("observed_skill") == "self_improvement" for s in members):
+            why = "信号全部归属在 self_improvement，缺少明确的目标 skill，不适合直接升级。"
+        else:
+            why = "评分介于观察区间（0.30–0.45），证据强度尚不足以做出升级判断。"
+        effect = "保留观察，等待新的同类信号出现，或人工标注归属后再评估。"
+    else:  # reject
+        why = "评分低于观察阈值（<0.30），且不属于 safety 事件，更像是一次性偏好或低质量信号。"
+        effect = "不进入 skill rules，避免污染长期规则集。"
+
+    return f"为什么：{why} 预期效果：{effect}"
+
+
+def _score_breakdown(decision: str, components: dict[str, float], members: list[dict[str, Any]]) -> str:
+    """Technical breakdown kept alongside the human-readable reason."""
     frequency = sum(int(s.get("frequency", 1)) for s in members)
     parts = [
         f"decision={decision}",
         f"frequency={frequency}",
         f"transferability={components['transferability']:.2f}",
+        f"impact={components['impact']:.2f}",
         f"safety_gain={components['safety_gain']:.2f}",
         f"skill_confidence={components['skill_confidence']:.2f}",
+        f"testability={components['testability']:.2f}",
     ]
     return "; ".join(parts)
 
 
-def _derive_should_improve(members: list[dict[str, Any]]) -> list[str]:
-    return sorted({
-        f"reduce repetition of pattern '{tag}'" for s in members for tag in s.get("tags", [])
-        if tag not in {"error", "learning", "feature_request", "promo"}
-    })[:5]
+def _derive_should_improve(
+    members: list[dict[str, Any]],
+    *,
+    decision: str = "",
+    target_skill: str = "",
+) -> list[str]:
+    """Build a context-aware list of 'what we want this evolution to fix'.
+
+    Falls back to the old tag-based phrasing when we cannot derive
+    something more specific from the signal source types.
+    """
+    skill_label = target_skill or "目标 skill"
+    tags = {tag for signal in members for tag in (signal.get("tags") or [])}
+    source_types = {signal.get("source_type") for signal in members}
+    out: list[str] = []
+
+    if "safety" in tags:
+        out.append(f"让 {skill_label} 在触发安全策略前主动停止，减少 ReviewQueue 反复打断")
+    if any("error" in (st or "") for st in source_types):
+        out.append(f"减少 {skill_label} 在类似输入下重复抛同一种错误")
+    if any("feature_request" in (st or "") for st in source_types):
+        out.append(f"覆盖 {skill_label} 现在缺失的能力调用方式")
+    if any(st == "promo" for st in source_types):
+        out.append("把已有 PROMO 候选合并审查，避免碎片化升级")
+    if "rollback" in tags:
+        out.append("识别并避免触发版本回滚的输入模式")
+
+    if not out:
+        # Fall back to the old tag-based phrasing for unusual clusters.
+        out = sorted(
+            {
+                f"减少 '{tag}' 模式的重复出现"
+                for tag in tags
+                if tag not in {"error", "learning", "feature_request", "promo"}
+            }
+        )
+
+    return out[:5]
 
 
 def _derive_must_not_regress(members: list[dict[str, Any]]) -> list[str]:
-    out = {"must not relax existing safety policy", "must not bypass ReviewQueue approval"}
+    out = ["不放宽既有的安全策略", "不绕过 ReviewQueue 审批"]
     if any("safety" in (s.get("tags") or []) for s in members):
-        out.add("must preserve safety-gain assertions")
-    return sorted(out)
+        out.append("保留 safety_gain 相关的断言不被覆盖")
+    return out
 
 
 def _summary_text(members: list[dict[str, Any]], cluster_key: str) -> str:
