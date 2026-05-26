@@ -1280,6 +1280,12 @@ def _promotion_view(ctx: WebContext, candidate: Any) -> dict[str, Any]:
         "rollback_plan": data.get("rollback_plan", ""),
         "linked_reviews": linked_reviews,
         "linked_version": linked_version,
+        "status_classification": _classify_promotion_status(
+            candidate,
+            missing_fields=missing_fields,
+            linked_version=linked_version,
+            linked_reviews=linked_reviews,
+        ),
     }
 
 
@@ -1293,6 +1299,136 @@ def _missing_promotion_eligibility(candidate: Any) -> list[str]:
     if data.get("eligible_target") in {"", None, "legacy"}:
         missing.append("eligible_target")
     return missing
+
+
+def _classify_promotion_status(
+    candidate: Any,
+    *,
+    missing_fields: list[str],
+    linked_version: str,
+    linked_reviews: list[str],
+) -> dict[str, Any]:
+    """Classify why a PROMO is or isn't ready to enter skill evolution and
+    return a structured 'fix' instruction the UI can render directly.
+
+    Mirrors the gating in evolve_skill_from_promotion._promotion_decision_block
+    so the UI matches what the evolve endpoint will reply.
+    """
+    data = candidate.to_dict() if hasattr(candidate, "to_dict") else dict(candidate)
+    promo_id = str(data.get("promo_id", "") or "")
+    decision = str(data.get("promotion_decision", "") or "").strip().lower()
+    target = str(data.get("eligible_target", "") or "").strip().lower()
+    error_code = str(data.get("error_code", "") or "").strip()
+
+    none_fix = {"kind": "none", "label": "", "action": None}
+
+    if linked_version:
+        return {
+            "kind": "applied",
+            "summary": "Already applied as a Skill version.",
+            "field": "",
+            "actual": "",
+            "expected": "",
+            "fix": none_fix,
+            "evolvable": False,
+        }
+    if error_code == "SOURCE_MEMORY_NOT_FOUND":
+        return {
+            "kind": "dangling_source",
+            "summary": "Source memory record was deleted; this PROMO is dangling.",
+            "field": "source_memory_ids",
+            "actual": "missing",
+            "expected": "existing memory record",
+            "fix": none_fix,
+            "evolvable": False,
+        }
+    if missing_fields:
+        return {
+            "kind": "legacy",
+            "summary": f"Missing promotion fields: {', '.join(missing_fields)}.",
+            "field": ",".join(missing_fields),
+            "actual": "legacy",
+            "expected": "eligible",
+            "fix": {
+                "kind": "regenerate",
+                "label": "Regenerate with Promotion Eligibility",
+                "action": {"method": "POST", "path": f"/api/promotions/{promo_id}/regenerate"},
+            },
+            "evolvable": False,
+        }
+    if decision == "reject":
+        return {
+            "kind": "rejected",
+            "summary": "Promotion eligibility decided reject.",
+            "field": "promotion_decision",
+            "actual": "reject",
+            "expected": "promote",
+            "fix": none_fix,
+            "evolvable": False,
+        }
+    if decision == "policy_review":
+        return {
+            "kind": "policy_review_required",
+            "summary": "Safety or policy candidate requires policy review before promotion.",
+            "field": "promotion_decision",
+            "actual": "policy_review",
+            "expected": "promote",
+            "fix": none_fix,
+            "evolvable": False,
+        }
+    if decision == "wait":
+        return {
+            "kind": "waiting_for_signal",
+            "summary": "Waiting for more occurrences or stronger transferability/testability evidence.",
+            "field": "promotion_decision",
+            "actual": "wait",
+            "expected": "promote",
+            "fix": {"kind": "wait", "label": "", "action": None},
+            "evolvable": False,
+        }
+    if decision == "promote" and target and target != "skill_rule":
+        return {
+            "kind": "wrong_eligible_target",
+            "summary": f"eligible_target={target} cannot enter skill evolution (needs skill_rule).",
+            "field": "eligible_target",
+            "actual": target,
+            "expected": "skill_rule",
+            "fix": none_fix,
+            "evolvable": False,
+        }
+    if decision == "promote" and target == "skill_rule":
+        if linked_reviews:
+            return {
+                "kind": "in_flight",
+                "summary": "Skill evolution review(s) created; waiting for approval and apply.",
+                "field": "",
+                "actual": "review_pending",
+                "expected": "review_applied",
+                "fix": {"kind": "open_review", "label": "Open review", "action": None},
+                "evolvable": True,
+            }
+        return {
+            "kind": "ready",
+            "summary": "Ready to enter skill evolution.",
+            "field": "",
+            "actual": "promote",
+            "expected": "promote",
+            "fix": {
+                "kind": "evolve",
+                "label": "Evolve",
+                "action": {"method": "POST", "path": f"/api/promotions/{promo_id}/evolve"},
+            },
+            "evolvable": True,
+        }
+    return {
+        "kind": "unknown",
+        "summary": f"decision={decision or 'unknown'}, eligible_target={target or 'unknown'}; cannot enter evolution.",
+        "field": "promotion_decision",
+        "actual": f"{decision}/{target}",
+        "expected": "promote/skill_rule",
+        "fix": none_fix,
+        "evolvable": False,
+    }
 
 
 def _tool_views(ctx: WebContext) -> list[dict[str, Any]]:

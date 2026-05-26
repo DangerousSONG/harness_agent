@@ -1645,6 +1645,86 @@ class WebApiTests(unittest.TestCase):
             versions = client.get("/api/skills/weather_query/versions").json()["data"]
             self.assertEqual(versions[0]["change_type"], "skill_creation")
 
+    def test_promotions_endpoint_classifies_legacy_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            memory_dir = root / "skills" / "markdown_writer" / "memory"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            (memory_dir / "LEARNINGS.md").write_text(
+                "\n".join(
+                    [
+                        "# Learnings",
+                        "",
+                        "## LRN-LEGACY1 - Prefer fenced markdown",
+                        "- Time: 2026-05-19T00:00:00+00:00",
+                        "- Priority: P2",
+                        "- Status: open",
+                        "- Domain: markdown",
+                        "- Source: test",
+                        "- Occurrence Count: 3",
+                        "- Target Skill: markdown_writer",
+                        "- Attribution Confidence: high",
+                        "",
+                        "### Details",
+                        "Always use fenced code blocks when returning reusable Markdown examples.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            promo_dir = root / ".skills_memory"
+            promo_dir.mkdir(parents=True, exist_ok=True)
+            (promo_dir / "PROMOTION_CANDIDATES.md").write_text(
+                "\n".join(
+                    [
+                        "# Promotion Candidates",
+                        "",
+                        "## PROMO-LEGACY1 - Old candidate",
+                        "- Candidate ID: PROMO-LEGACY1",
+                        "- Record ID: LRN-LEGACY1",
+                        "- Target Skill: markdown_writer",
+                        "- Proposed Change Summary: Old candidate",
+                        "- Target Files: skills/markdown_writer/SKILL.md",
+                        "- Occurrence Count: 3",
+                        "- Status: proposed",
+                        "- Evaluation Plan: test",
+                        "- Rollback Plan: test",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            client = self.make_client(root)
+            payload = client.get("/api/promotions/PROMO-LEGACY1").json()
+            data = payload["data"]
+            classification = data["status_classification"]
+            self.assertEqual(classification["kind"], "legacy")
+            self.assertEqual(classification["fix"]["kind"], "regenerate")
+            self.assertEqual(
+                classification["fix"]["action"]["path"],
+                "/api/promotions/PROMO-LEGACY1/regenerate",
+            )
+            self.assertFalse(classification["evolvable"])
+            self.assertIn("promotion_decision", classification["field"])
+
+    def test_promotions_endpoint_classifies_ready_when_eligible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            promo_id = self.make_promo(root)
+            client = self.make_client(root)
+            payload = client.get(f"/api/promotions/{promo_id}").json()
+            data = payload["data"]
+            classification = data["status_classification"]
+            self.assertIn(classification["kind"], {"ready", "in_flight", "applied"})
+            if classification["kind"] == "ready":
+                self.assertEqual(classification["fix"]["kind"], "evolve")
+                self.assertEqual(
+                    classification["fix"]["action"]["path"],
+                    f"/api/promotions/{promo_id}/evolve",
+                )
+                self.assertTrue(classification["evolvable"])
+
     def test_memories_endpoint_surfaces_promotion_progress(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
