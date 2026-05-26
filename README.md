@@ -161,6 +161,9 @@ copy .env.example .env
 OPENAI_API_KEY=your-api-key
 MODEL_ID=your-model-id
 OPENAI_BASE_URL=
+# 旁路 Scout / Optimizer 默认 deterministic；接 LLM 时设置：
+# EVOLUTION_LLM_ENABLED=1
+# OPENAI_MODEL=<同 MODEL_ID 或专用模型>
 ```
 
 启动：
@@ -488,6 +491,91 @@ LearningSignal   ──┐
 - **ValidationGate**：MVP 为 deterministic 评分（读取目标 `SKILL.md` + `eval/cases.yaml`），接口预留给后续 LLM 评测器。失败的 edit 进入 `.evolution/rejected_edits/`，**不会**创建 review。
 - **审批仍走 ReviewQueue**：验证通过的 edit 创建 `skill.bounded_edit` 类型 review，由人审查 diff，`/approve` 之后再 `/apply`。`apply` 时会重新校验 `edit_ops` 合法性、写文件，并登记新版本到 `.skills_versions/`。
 
+### 信号采集规则（Scout）
+
+| 项 | 规则 |
+|---|---|
+| 扫描的文件 | 全局：`.skills_memory/GLOBAL_LEARNINGS.md`、`GLOBAL_ERRORS.md`、`GLOBAL_FEATURE_REQUESTS.md`、`PROMOTION_CANDIDATES.md`；按 skill：`skills/<skill>/memory/LEARNINGS.md`、`ERRORS.md`、`FEATURE_REQUESTS.md`、`POLICY_CANDIDATES.md`、`REGRESSION_TESTS.md` |
+| 跳过 | 包含 `ignore previous instructions / disable safety / bypass approval / bypass policy / system administrator / send this secret` 等 memory-poisoning 字样的条目，整条丢弃并在 `skipped_signal_count` 中累计 |
+| 字段 | 每条 `LearningSignal` 必备 `signal_id`、`source_type`（`learning / error / feature_request / policy_candidate / regression_test / global_learning / global_error / global_feature_request / promo`）、`source_path`、`source_ref`（`LRN-… / ERR-… / FEAT-… / PROMO-…`）、`observed_skill`、`content`、`tags`、`frequency`、`severity` |
+| `frequency` | 取 memory 记录 `Occurrence Count` 字段；缺省 1 |
+| `severity` | 取 memory `Priority`/`Severity` 字段；error 类记录默认 `high`，其他默认 `medium` |
+| `tags` | 自动派生：`error/learning/feature_request/promo` + 命中的工具名（`read_file / edit_file / write_file / load_skill`）、关键词（`markdown / json / weather` 等）和安全标签（命中 `leak / secret / credential / approval / safety / policy / rollback / 回退 / 审批` 任一时打上 `safety`） |
+| 去重 | `(source_path, source_ref)` 唯一；重复扫描幂等，不会复写已有 signal |
+| 内容截断 | content 最长 1500 字符，超出部分丢弃 |
+
+### 判断规则（Scout 评分 + 决策）
+
+聚类：按 `(observed_skill, cluster_key)` 分组。`cluster_key` 优先取 signal 的前 5 个 tag 拼成 `tag:t1|t2|...`，缺 tag 时取 content 中频率最高的前 5 个词作为 `kw:w1|w2|...`。
+
+九维评分输入与权重（见 `runtime/evolution_scout.py::_evolution_score`）：
+
+| 分量 | 取值范围 | 计算 | 权重 |
+|---|---|---|---|
+| `frequency` | 0..1 | `min(1.0, Σfrequency / 5.0)` | +0.20 |
+| `transferability` | {0.6, 1.0} | 同一聚类涉及多个 skill ⇒ 1.0；否则 0.6 | +0.20 |
+| `impact` | 0..1 | 命中 `safety` 标签 ⇒ 1.0；否则 `min(1.0, 0.3 + 0.15·Σfrequency)` | +0.20 |
+| `skill_confidence` | {0.5, 1.0} | 全部信号都不归属 `self_improvement` ⇒ 1.0；否则 0.5 | +0.15 |
+| `testability` | {0.5, 0.8} | 聚类中含 PROMO 信号 ⇒ 0.8；否则 0.5 | +0.15 |
+| `safety_gain` | {0.0, 1.0} | 命中 `safety` 标签 ⇒ 1.0 | +0.10 |
+| `regression_risk` | {0.3, 0.4} | 有 PROMO ⇒ 0.3，否则 0.4 | −0.15 |
+| `overfitting_risk` | {0.2, 0.5} | `Σfrequency ≤ 1` ⇒ 0.5，否则 0.2 | −0.10 |
+| `cost_increase` | 0.1（常量） | 一律 0.1 | −0.10 |
+
+`evolution_score = 0.20·f + 0.20·t + 0.20·i + 0.15·sc + 0.15·te + 0.10·sg − 0.15·rr − 0.10·or − 0.10·ci`
+
+决策表（`_make_decision`，顺序判断，先匹配先用）：
+
+| 条件 | 结果 |
+|---|---|
+| 所有信号均归属 `self_improvement` 且无 `safety` 标签 | `decision=defer, opportunity_type=defer, priority=low, risk=low, confidence=low` |
+| 命中 `safety_gain` 且 `skill_confidence ≥ 0.5` | `decision=promote, opportunity_type=safety_gain, priority=high, risk=medium, confidence=medium` |
+| `score ≥ 0.45` 且 `Σfrequency ≥ 2` | `decision=promote, opportunity_type=promote, priority=medium, risk=medium, confidence=medium` |
+| `score ≥ 0.45` 且 `Σfrequency < 2` 且无 PROMO 证据 | `decision=request_eval, opportunity_type=request_eval, priority=medium, risk=medium, confidence=low` |
+| `score ≥ 0.30` | `decision=defer, opportunity_type=defer, priority=low, risk=low, confidence=low` |
+| 其它 | `decision=reject, opportunity_type=defer, priority=low, risk=low, confidence=low` |
+
+`should_improve`：从信号 tag 中提取（剔除元标签 `error / learning / feature_request / promo`），最多 5 条。
+`must_not_regress`：始终包含 `must not relax existing safety policy`、`must not bypass ReviewQueue approval`；如果聚类含 `safety` 标签则追加 `must preserve safety-gain assertions`。
+
+Batch 合并规则（`create_batch`）：必须同 skill；`priority`、`risk_level` 取所有 opportunity 的最大档位；`should_improve` / `must_not_regress` 取并集；`promo_ids` 去重合并。跨 skill 调用会抛 `ValueError`。
+
+### Optimizer 受约束补丁规则
+
+`propose()` 接受 `batch_id` 或 `opportunity_id`；任何带 `decision=reject` 的 opportunity 都会让整次提案被拒绝；`signal_ids` 必须非空。
+
+`edit_ops` 形态（在 `evolution_stores.validate_edit_ops` 中强制）：
+
+- `op ∈ {add, replace, delete}`
+- `target_section == "## Memory-derived rules"`
+- 单次提案最多 `MAX_EDIT_OPS = 5` 个 op
+- 每个 op 的 `text` / `replace_text` 长度 ≤ `MAX_EDIT_OP_LENGTH = 500`
+- `add` 要求 `text` 非空；`replace` 要求 `text` 和 `replace_text` 都非空；`delete` 要求 `text` 非空
+
+bullet 文本（deterministic 路径）：取 opportunity 的 `should_improve` 列表、`summary` 第一段，按出现顺序去重，最多 3 条。LLM 路径见下文。
+
+`ValidationGate.evaluate` 默认逻辑：
+
+- `train_score`：默认 `0.6`（可由外部 callable 替换）
+- `validation_score`：读 `SKILL.md`；新 bullet 若已存在则减 `0.05`（重复），不存在则加 `0.10`；范围 [0, 1]，起始 `0.5`
+- `regression_score`：读 `eval/cases.yaml`；包含禁词 `disable safety / bypass approval / ignore previous` 中任一 ⇒ 直接 0.0；`cases:` 非空 ⇒ 0.75；否则 0.6
+- 判定：`validation_score ≥ min_validation_score`（默认 0.5） 且 `regression_score ≥ min_regression_score`（默认 0.5）
+
+失败 ⇒ 写入 `.evolution/rejected_edits/<edit_id>.json`，**不会**创建 review。
+成功 ⇒ 写入 `.evolution/validation_results/<val_id>.json`，并允许 `submit_review` 创建 `skill.bounded_edit` review。
+
+### LLM 接入（opt-in）
+
+设置 `EVOLUTION_LLM_ENABLED=1`（同时需要 `OPENAI_API_KEY` 和 `OPENAI_MODEL`），CLI 和 web server 启动时会自动把 LLM 增强器注入到 Scout 与 Optimizer。默认关闭时全链路使用 deterministic 路径，单测可在无网络环境跑通。
+
+| 接入点 | LLM 做什么 | LLM 不能做什么 |
+|---|---|---|
+| `LLMOpportunityEnricher` | 丰富 `reason` 文本、扩展 `should_improve` / `must_not_regress` | 改 `decision`、`evolution_score`、`signal_ids`、`target_skill` |
+| `LLMBulletWriter` | 直接生成 1–3 条 `## Memory-derived rules` 文本（最长 240 字符/条） | 突破 `add/replace/delete` 类型、扩展 section、绕过 `validate_edit_ops` |
+| `LLMValidationGate` | 读 `SKILL.md` + `eval/cases.yaml` 给 train/validation/regression 三个分数 | 直接 apply、跳过 ReviewQueue、调用 `apply_edit_ops_to_text` |
+
+LLM 输出全部经过 `redact_secrets` + `looks_like_memory_poisoning` 清洗；任何包含 `ignore previous instructions / disable safety / bypass approval` 字样的字段会被丢弃，回退到 deterministic 结果。网络错误、解析错误也都自动回退，绝不阻塞 pipeline。
+
 落盘目录：
 
 ```text
@@ -522,6 +610,24 @@ LearningSignal   ──┐
 /approve REV-xxxx
 /apply REV-xxxx
 ```
+
+### Side-Channel REST API（供 UI 使用）
+
+| Method | Path | 作用 |
+|---|---|---|
+| POST | `/api/evolution/scout/scan` | 跑一次扫描，返回新增 signal / opportunity 数量 |
+| GET | `/api/evolution/scout/signals` | 列出所有 LearningSignal |
+| GET | `/api/evolution/scout/opportunities` | 按 `evolution_score` 降序列出 opportunity |
+| GET | `/api/evolution/scout/opportunities/{id}` | 单条 opportunity 详情，附原始 signals |
+| GET | `/api/evolution/scout/batches` | 列出 batch |
+| POST | `/api/evolution/scout/batches` | body `{ "opportunity_ids": [...] }`，合并为 batch（必须同 skill） |
+| POST | `/api/evolution/optimizer/propose` | body `{ "batch_id" \| "opportunity_id" }`，生成 bounded edit |
+| GET | `/api/evolution/optimizer/edits` | 列出 edit |
+| GET | `/api/evolution/optimizer/edits/{edit_id}` | 单条 edit 详情 |
+| POST | `/api/evolution/optimizer/edits/{edit_id}/validate` | 跑 ValidationGate；通过则创建 `skill.bounded_edit` review，返回 `review_id` |
+| GET | `/api/evolution/optimizer/rejected` | 被拒绝的 edit 与 reject_reason |
+
+UI 入口：进入 **Self-Evolution → Side-Channel** 标签，包含 Opportunities / Batches / Edits / Rejected 四个子区域。选中多个 opportunity 可一键合批，点 batch 上的 Optimize 直接生成 edit，再点 Validate 通过则创建 review；review 进入既有的 Reviews 标签，由人 `/approve` 和 `/apply`。
 
 ## 完整示例：markdown_writer
 

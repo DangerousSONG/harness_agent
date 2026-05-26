@@ -1431,7 +1431,7 @@ function normalizeChangesTab(tab) {
 }
 
 function normalizeGovernanceTab(tab) {
-  return ["promotions", "reviews", "versions", "rollbacks", "safety-checks"].includes(tab) ? tab : "promotions";
+  return ["promotions", "reviews", "versions", "rollbacks", "safety-checks", "side-channel"].includes(tab) ? tab : "promotions";
 }
 
 function makeId() {

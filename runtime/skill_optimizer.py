@@ -58,11 +58,13 @@ class SkillOptimizer:
         stores: EvolutionStores,
         review_store,
         validation_gate: "ValidationGate | None" = None,
+        bullet_writer: Any = None,
     ):
         self.project_root = Path(project_root)
         self.stores = stores
         self.review_store = review_store
         self.validation_gate = validation_gate or ValidationGate()
+        self.bullet_writer = bullet_writer
 
     def propose(
         self,
@@ -112,6 +114,13 @@ class SkillOptimizer:
             )
 
         edit_ops = _build_edit_ops(opportunities, self.stores)
+        if self.bullet_writer is not None:
+            llm_bullets = self._llm_bullets(opportunities)
+            if llm_bullets:
+                edit_ops = [
+                    {"op": "add", "target_section": "## Memory-derived rules", "text": bullet}
+                    for bullet in llm_bullets[:3]
+                ]
         ok, reason = validate_edit_ops(edit_ops)
         if not ok:
             return OptimizerResult(False, f"refused: {reason}")
@@ -237,6 +246,20 @@ class SkillOptimizer:
             edit_id=edit_id,
             review_id=review_id,
         )
+
+    def _llm_bullets(self, opportunities: list[dict[str, Any]]) -> list[str]:
+        if self.bullet_writer is None or not opportunities:
+            return []
+        signals: list[dict[str, Any]] = []
+        for opp in opportunities:
+            for signal_id in opp.get("signal_ids", []):
+                signal = self.stores.signals.get(signal_id)
+                if signal:
+                    signals.append(signal)
+        try:
+            return self.bullet_writer.write(opportunities[0], signals)
+        except Exception:
+            return []
 
     def _reject(
         self,

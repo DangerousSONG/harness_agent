@@ -6,12 +6,14 @@ import { useTranslate } from "../lib/i18n.jsx";
 import { EvolutionTimeline } from "./EvolutionPage";
 import PromotionsPage from "./PromotionsPage";
 import ReviewsPage from "./ReviewsPage";
+import SideChannelPage from "./SideChannelPage";
 import VersionsPage from "./VersionsPage";
 
 const TABS = [
   { id: "promotions", labelKey: "governance.tab.promotions" },
   { id: "reviews", labelKey: "governance.tab.reviews" },
   { id: "versions", labelKey: "governance.tab.versions" },
+  { id: "side-channel", labelKey: "governance.tab.side_channel" },
   { id: "rollbacks", labelKey: "governance.tab.rollbacks" },
   { id: "safety-checks", labelKey: "governance.tab.safety_checks" },
 ];
@@ -115,6 +117,11 @@ export default function GovernancePage({
           busyVersionKey={busyVersionKey}
           embedded
         />
+      ) : null}
+      {activeTab === "side-channel" ? (
+        <div className="workbench-container">
+          <SideChannelPage />
+        </div>
       ) : null}
       {activeTab === "rollbacks" ? <Rollbacks reviews={reviews} t={t} /> : null}
       {activeTab === "safety-checks" ? <SafetyChecks reviews={reviews} changes={changes} t={t} /> : null}

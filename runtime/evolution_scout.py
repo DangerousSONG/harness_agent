@@ -86,7 +86,8 @@ class ScanResult:
 
 
 class EvolutionScout:
-    """Deterministic, read-only scout. No LLM dependency in the MVP."""
+    """Read-only scout. LLM enrichment is opt-in; the deterministic
+    decision/score path is always authoritative."""
 
     def __init__(
         self,
@@ -94,10 +95,12 @@ class EvolutionScout:
         project_root: Path | str,
         stores: EvolutionStores,
         promotions: PromotionBrowser,
+        llm_enricher: Any = None,
     ):
         self.project_root = Path(project_root)
         self.stores = stores
         self.promotions = promotions
+        self.llm_enricher = llm_enricher
 
     def scan(self) -> ScanResult:
         existing_signals = {self._signal_key(s): s for s in self.stores.signals.list()}
@@ -346,8 +349,30 @@ class EvolutionScout:
                 must_not_regress=must_not_regress,
                 related_promo_ids=related_promos,
             )
+            if self.llm_enricher is not None:
+                self._enrich_opportunity(opp, members)
             opportunities.append(opp)
         return opportunities
+
+    def _enrich_opportunity(
+        self,
+        opp: "EvolutionOpportunity",
+        signals: list[dict[str, Any]],
+    ) -> None:
+        try:
+            result = self.llm_enricher.enrich(opp.to_dict(), signals)
+        except Exception:
+            return
+        if not getattr(result, "used_llm", False):
+            return
+        if result.reason:
+            opp.reason = result.reason + " | " + opp.reason
+        if result.should_improve:
+            opp.should_improve = result.should_improve
+        # must_not_regress is always merged with the deterministic floor.
+        opp.must_not_regress = sorted(
+            set(opp.must_not_regress) | set(result.must_not_regress)
+        )
 
     def _cluster_key(self, signal: dict[str, Any]) -> str:
         tokens = sorted(set(signal.get("tags") or []))[:5]

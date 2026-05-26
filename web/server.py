@@ -20,7 +20,10 @@ except ImportError as exc:  # pragma: no cover - exercised only when dependency 
     ) from exc
 
 from runtime.backends.local import LocalReviewStore
+from runtime.evolution_scout import EvolutionScout
+from runtime.evolution_stores import EvolutionStores
 from runtime.promotion_browser import PromotionBrowser
+from runtime.skill_optimizer import SkillOptimizer
 from runtime.regression_case_proposal import parse_regression_cases
 from runtime.skill_evolution_flow import evolve_skill_from_promotion
 from runtime.skill_evolution_registry import SkillEvolutionRegistry, normalize_skill_name
@@ -232,6 +235,46 @@ class WebContext:
         self.versions = SkillEvolutionRegistry(self.project_root)
         self.policy = load_policy()
         self.tool_registry = ToolRegistry(self.project_root)
+        self.evolution_stores = EvolutionStores(self.project_root)
+        self.evolution_scout, self.skill_optimizer = self._build_evolution_modules()
+
+    def _build_evolution_modules(self):
+        try:
+            from runtime.evolution_llm import (
+                LLMBulletWriter,
+                LLMOpportunityEnricher,
+                LLMValidationGate,
+                llm_enabled,
+            )
+        except Exception:
+            llm_enabled = lambda: False  # noqa: E731
+            LLMBulletWriter = LLMOpportunityEnricher = LLMValidationGate = None  # type: ignore
+        if llm_enabled() and LLMOpportunityEnricher is not None:
+            scout = EvolutionScout(
+                project_root=self.project_root,
+                stores=self.evolution_stores,
+                promotions=self.promotions,
+                llm_enricher=LLMOpportunityEnricher(),
+            )
+            optimizer = SkillOptimizer(
+                project_root=self.project_root,
+                stores=self.evolution_stores,
+                review_store=self.review_store,
+                validation_gate=LLMValidationGate(),
+                bullet_writer=LLMBulletWriter(),
+            )
+        else:
+            scout = EvolutionScout(
+                project_root=self.project_root,
+                stores=self.evolution_stores,
+                promotions=self.promotions,
+            )
+            optimizer = SkillOptimizer(
+                project_root=self.project_root,
+                stores=self.evolution_stores,
+                review_store=self.review_store,
+            )
+        return scout, optimizer
 
 
 def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
@@ -1141,6 +1184,97 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
         except Exception as exc:  # pragma: no cover - environment probe
             info["playwright_browser"] = f"check failed: {exc}"
         return ok(info)
+
+    @app.post("/api/evolution/scout/scan")
+    def evolution_scout_scan() -> JSONResponse:
+        result = ctx.evolution_scout.scan()
+        return ok(result.to_dict(), result.summary)
+
+    @app.get("/api/evolution/scout/signals")
+    def evolution_signals() -> JSONResponse:
+        return ok(ctx.evolution_stores.signals.list())
+
+    @app.get("/api/evolution/scout/opportunities")
+    def evolution_opportunities() -> JSONResponse:
+        items = sorted(
+            ctx.evolution_stores.opportunities.list(),
+            key=lambda opp: opp.get("evolution_score", 0.0),
+            reverse=True,
+        )
+        return ok(items)
+
+    @app.get("/api/evolution/scout/opportunities/{opportunity_id}")
+    def evolution_opportunity_detail(opportunity_id: str) -> JSONResponse:
+        opp = ctx.evolution_stores.opportunities.get(opportunity_id)
+        if not opp:
+            return fail(f"Unknown opportunity_id: {opportunity_id}", status_code=404)
+        signals = [
+            ctx.evolution_stores.signals.get(signal_id)
+            for signal_id in opp.get("signal_ids", [])
+        ]
+        return ok({"opportunity": opp, "signals": [s for s in signals if s]})
+
+    @app.get("/api/evolution/scout/batches")
+    def evolution_batches() -> JSONResponse:
+        return ok(ctx.evolution_stores.batches.list())
+
+    @app.post("/api/evolution/scout/batches")
+    async def evolution_batches_create(request: Request) -> JSONResponse:
+        body = await request.json()
+        opportunity_ids = body.get("opportunity_ids") if isinstance(body, dict) else None
+        if not isinstance(opportunity_ids, list) or not opportunity_ids:
+            return fail("opportunity_ids is required (non-empty list)", status_code=400)
+        try:
+            batch = ctx.evolution_scout.create_batch(opportunity_ids)
+        except ValueError as exc:
+            return fail(str(exc), status_code=400)
+        return ok(batch, f"Created batch {batch['batch_id']}")
+
+    @app.post("/api/evolution/optimizer/propose")
+    async def evolution_optimizer_propose(request: Request) -> JSONResponse:
+        raw = await request.body()
+        try:
+            body = json.loads(raw.decode("utf-8")) if raw else {}
+        except json.JSONDecodeError:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        batch_id = str(body.get("batch_id") or "").strip()
+        opportunity_id = str(body.get("opportunity_id") or "").strip()
+        if not batch_id and not opportunity_id:
+            return fail("batch_id or opportunity_id is required", status_code=400)
+        result = ctx.skill_optimizer.propose(
+            batch_id=batch_id, opportunity_id=opportunity_id
+        )
+        if not result.ok:
+            return fail(result.message, status_code=400)
+        edit = ctx.evolution_stores.skill_edits.get(result.edit_id)
+        return ok(edit or {}, result.message)
+
+    @app.get("/api/evolution/optimizer/edits")
+    def evolution_optimizer_edits() -> JSONResponse:
+        return ok(ctx.evolution_stores.skill_edits.list())
+
+    @app.get("/api/evolution/optimizer/edits/{edit_id}")
+    def evolution_optimizer_edit_detail(edit_id: str) -> JSONResponse:
+        edit = ctx.evolution_stores.skill_edits.get(edit_id)
+        if not edit:
+            return fail(f"Unknown edit_id: {edit_id}", status_code=404)
+        return ok(edit)
+
+    @app.post("/api/evolution/optimizer/edits/{edit_id}/validate")
+    def evolution_optimizer_edit_validate(edit_id: str) -> JSONResponse:
+        validate_result = ctx.skill_optimizer.validate(edit_id)
+        if not validate_result.ok:
+            return fail(validate_result.message, status_code=400, data=validate_result.to_dict())
+        submit_result = ctx.skill_optimizer.submit_review(edit_id)
+        if not submit_result.ok:
+            return fail(submit_result.message, status_code=400, data=submit_result.to_dict())
+        return ok(submit_result.to_dict(), submit_result.message)
+
+    @app.get("/api/evolution/optimizer/rejected")
+    def evolution_optimizer_rejected() -> JSONResponse:
+        return ok(ctx.evolution_stores.rejected_edits.list())
 
     @app.get("/api/evolution/{promo_id}/state")
     def evolution_state(promo_id: str) -> JSONResponse:

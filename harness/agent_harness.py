@@ -151,16 +151,46 @@ PROMOTIONS = PromotionBrowser(
     project_root=PROJECT_ROOT,
 )
 EVOLUTION_STORES = EvolutionStores(PROJECT_ROOT)
-EVOLUTION_SCOUT = EvolutionScout(
-    project_root=PROJECT_ROOT,
-    stores=EVOLUTION_STORES,
-    promotions=PROMOTIONS,
-)
-SKILL_OPTIMIZER = SkillOptimizer(
-    project_root=PROJECT_ROOT,
-    stores=EVOLUTION_STORES,
-    review_store=BACKEND.review_store,
-)
+
+
+def _build_evolution_modules():
+    from runtime.evolution_llm import (
+        LLMBulletWriter,
+        LLMOpportunityEnricher,
+        LLMValidationGate,
+        llm_enabled,
+    )
+
+    if llm_enabled():
+        scout = EvolutionScout(
+            project_root=PROJECT_ROOT,
+            stores=EVOLUTION_STORES,
+            promotions=PROMOTIONS,
+            llm_enricher=LLMOpportunityEnricher(),
+        )
+        optimizer = SkillOptimizer(
+            project_root=PROJECT_ROOT,
+            stores=EVOLUTION_STORES,
+            review_store=BACKEND.review_store,
+            validation_gate=LLMValidationGate(),
+            bullet_writer=LLMBulletWriter(),
+        )
+        print("[SafeHarness] evolution: LLM enrichment ENABLED")
+        return scout, optimizer
+    scout = EvolutionScout(
+        project_root=PROJECT_ROOT,
+        stores=EVOLUTION_STORES,
+        promotions=PROMOTIONS,
+    )
+    optimizer = SkillOptimizer(
+        project_root=PROJECT_ROOT,
+        stores=EVOLUTION_STORES,
+        review_store=BACKEND.review_store,
+    )
+    return scout, optimizer
+
+
+EVOLUTION_SCOUT, SKILL_OPTIMIZER = _build_evolution_modules()
 TASK_MGR = TaskManager(BACKEND.task_store)
 BG = BackgroundManager(BACKEND.job_queue)
 BUS = MessageBus(BACKEND.message_store)
