@@ -1,7 +1,8 @@
-import { Boxes, GitPullRequest, Hammer, Play, Workflow, Wrench, X } from "lucide-react";
+import { BookOpen, Boxes, GitPullRequest, Hammer, Play, Workflow, Wrench, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
+import KnowledgeBasesPage from "./KnowledgeBasesPage";
 import { api, getErrorMessage } from "../lib/api";
 import { compact, formatDate, titleize } from "../lib/format";
 import { useTranslate } from "../lib/i18n.jsx";
@@ -11,6 +12,7 @@ const TABS = [
   { id: "tools", labelKey: "assets.tab.tools", icon: Wrench },
   { id: "workflows", labelKey: "assets.tab.workflows", icon: Workflow },
   { id: "memories", labelKey: "assets.tab.memories", icon: GitPullRequest },
+  { id: "knowledge-bases", labelKey: "assets.tab.knowledge_bases", icon: BookOpen },
   { id: "eval-cases", labelKey: "assets.tab.eval_cases", icon: Hammer },
 ];
 
@@ -227,6 +229,8 @@ export default function AssetsPage({
             )}
           />
         ) : null}
+
+        {tab === "knowledge-bases" ? <KnowledgeBasesPage /> : null}
 
         {tab === "eval-cases" ? (
           <AssetGrid

@@ -139,6 +139,33 @@ export const api = {
       body: JSON.stringify({ command }),
     }),
   knowledgeBases: () => request("/api/knowledge-bases"),
+  knowledgeBase: (id) => request(`/api/knowledge-bases/${encodeURIComponent(id)}`),
+  knowledgeBaseTree: (id) => request(`/api/knowledge-bases/${encodeURIComponent(id)}/tree`),
+  knowledgeBaseFile: (id, path) =>
+    request(`/api/knowledge-bases/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`),
+  knowledgeBaseCreate: (body) =>
+    request("/api/knowledge-bases", { method: "POST", body: JSON.stringify(body || {}) }),
+  knowledgeBaseDelete: (id) =>
+    request(`/api/knowledge-bases/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  knowledgeBaseImportGithub: (id, body) =>
+    request(`/api/knowledge-bases/${encodeURIComponent(id)}/import-github`, {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }),
+  knowledgeBaseUpload: (id, formData) =>
+    fetch(`${API_BASE}/api/knowledge-bases/${encodeURIComponent(id)}/upload`, {
+      method: "POST",
+      body: formData,
+    }).then(async (response) => {
+      const payload = await response.json().catch(() => ({ ok: false, message: "Bad response" }));
+      if (!response.ok || payload.ok === false) {
+        const error = new Error(payload.message || `Upload failed: ${response.status}`);
+        error.status = response.status;
+        error.payload = payload;
+        throw error;
+      }
+      return payload;
+    }),
   chatSend: (message, context = {}) =>
     request("/api/chat", {
       method: "POST",

@@ -22,6 +22,7 @@ except ImportError as exc:  # pragma: no cover - exercised only when dependency 
 from runtime.backends.local import LocalReviewStore
 from runtime.evolution_scout import EvolutionScout
 from runtime.evolution_stores import EvolutionStores
+from runtime.knowledge_base import KnowledgeBaseStore, MAX_QA_CONTEXT_BYTES
 from runtime.promotion_browser import PromotionBrowser
 from runtime.skill_optimizer import SkillOptimizer
 from runtime.regression_case_proposal import parse_regression_cases
@@ -237,6 +238,7 @@ class WebContext:
         self.tool_registry = ToolRegistry(self.project_root)
         self.evolution_stores = EvolutionStores(self.project_root)
         self.evolution_scout, self.skill_optimizer = self._build_evolution_modules()
+        self.knowledge_bases = KnowledgeBaseStore(self.project_root)
 
     def _build_evolution_modules(self):
         try:
@@ -558,17 +560,105 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
 
     @app.get("/api/knowledge-bases")
     def knowledge_bases() -> JSONResponse:
-        return ok(
-            _knowledge_bases(ctx),
-            "Knowledge base assets are not implemented yet.",
-        )
+        return ok(ctx.knowledge_bases.list())
+
+    @app.post("/api/knowledge-bases")
+    async def knowledge_base_create(request: Request) -> JSONResponse:
+        try:
+            body = json.loads((await request.body()).decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        try:
+            meta = ctx.knowledge_bases.create(
+                name=str(body.get("name", "")),
+                description=str(body.get("description", "")),
+                source_type=str(body.get("source_type", "local")),
+                source_url=str(body.get("source_url", "")),
+            )
+        except ValueError as exc:
+            return fail(str(exc), status_code=400)
+        return ok(meta, f"Created knowledge base {meta['kb_id']}")
 
     @app.get("/api/knowledge-bases/{kb_id}")
     def knowledge_base_detail(kb_id: str) -> JSONResponse:
-        kb = next((item for item in _knowledge_bases(ctx) if item.get("kb_id") == kb_id), None)
-        if not kb:
-            return fail(f"Knowledge base asset was not found: {kb_id}", status_code=404)
-        return ok(kb)
+        meta = ctx.knowledge_bases.get(kb_id)
+        if not meta:
+            return fail(f"Knowledge base not found: {kb_id}", status_code=404)
+        return ok(meta)
+
+    @app.delete("/api/knowledge-bases/{kb_id}")
+    def knowledge_base_delete(kb_id: str) -> JSONResponse:
+        if not ctx.knowledge_bases.delete(kb_id):
+            return fail(f"Knowledge base not found: {kb_id}", status_code=404)
+        return ok({"kb_id": kb_id}, f"Deleted knowledge base {kb_id}")
+
+    @app.get("/api/knowledge-bases/{kb_id}/tree")
+    def knowledge_base_tree(kb_id: str) -> JSONResponse:
+        meta = ctx.knowledge_bases.get(kb_id)
+        if not meta:
+            return fail(f"Knowledge base not found: {kb_id}", status_code=404)
+        return ok({"kb": meta, "entries": ctx.knowledge_bases.tree(kb_id)})
+
+    @app.get("/api/knowledge-bases/{kb_id}/file")
+    def knowledge_base_file(kb_id: str, path: str) -> JSONResponse:
+        meta = ctx.knowledge_bases.get(kb_id)
+        if not meta:
+            return fail(f"Knowledge base not found: {kb_id}", status_code=404)
+        try:
+            payload = ctx.knowledge_bases.read(kb_id, path)
+        except FileNotFoundError as exc:
+            return fail(str(exc), status_code=404)
+        return ok(payload)
+
+    @app.post("/api/knowledge-bases/{kb_id}/upload")
+    async def knowledge_base_upload(kb_id: str, request: Request) -> JSONResponse:
+        meta = ctx.knowledge_bases.get(kb_id)
+        if not meta:
+            return fail(f"Knowledge base not found: {kb_id}", status_code=404)
+        form = await request.form()
+        files: dict[str, bytes] = {}
+        for key, value in form.multi_items():
+            filename = getattr(value, "filename", None)
+            if not filename:
+                continue
+            relative = str(form.get(f"path__{key}") or filename).strip()
+            relative = relative.replace("\\", "/").lstrip("/")
+            if not relative:
+                continue
+            data = await value.read()
+            if isinstance(data, str):
+                data = data.encode("utf-8")
+            files[relative] = data
+        if not files:
+            return fail("no files attached", status_code=400)
+        updated = ctx.knowledge_bases.add_files(kb_id, files)
+        return ok(updated, f"Added {len(files)} file(s) to {kb_id}")
+
+    @app.post("/api/knowledge-bases/{kb_id}/import-github")
+    async def knowledge_base_import_github(kb_id: str, request: Request) -> JSONResponse:
+        meta = ctx.knowledge_bases.get(kb_id)
+        if not meta:
+            return fail(f"Knowledge base not found: {kb_id}", status_code=404)
+        try:
+            body = json.loads((await request.body()).decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        repo_url = str(body.get("repo_url", "")).strip()
+        if not repo_url:
+            return fail("repo_url is required", status_code=400)
+        updated = ctx.knowledge_bases.import_github(
+            kb_id,
+            repo_url,
+            branch=str(body.get("branch", "")).strip(),
+            path_prefix=str(body.get("path_prefix", "")).strip(),
+        )
+        if updated.get("import_error"):
+            return fail(updated["import_error"], status_code=400, data=updated)
+        return ok(updated, f"Imported {updated.get('file_count', 0)} file(s) from GitHub")
 
     @app.get("/api/reviews")
     def reviews(
@@ -2096,14 +2186,7 @@ def _eval_summary(ctx: WebContext, skill: str) -> dict[str, Any]:
 
 
 def _knowledge_bases(ctx: WebContext) -> list[dict[str, Any]]:
-    roots = [ctx.project_root / "knowledge_bases", ctx.project_root / "knowledge"]
-    items = []
-    for root in roots:
-        if not root.exists():
-            continue
-        for path in sorted(item for item in root.iterdir() if item.is_dir()):
-            items.append({"kb_id": path.name, "path": _display_path(ctx, path), "updated_at": _mtime(path)})
-    return items
+    return ctx.knowledge_bases.list()
 
 
 def _all_versions(ctx: WebContext) -> list[dict[str, Any]]:
