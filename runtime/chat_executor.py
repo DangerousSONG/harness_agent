@@ -35,6 +35,9 @@ class Executor:
         primary = intent.get("primary", "general_chat")
         if not safety.get("safe", True):
             return self._refuse(safety, task_mode, intent, asset_route, capability, risk, prefix_trace)
+        kb_ids = _normalize_kb_ids(context.get("kb_ids"))
+        if kb_ids:
+            return self._kb_qa(ctx, message, kb_ids, safety, task_mode, intent, asset_route, capability, risk, prefix_trace)
         if primary in {"financial_research_query", "news_query", "web_research_query"}:
             return self._realtime_research(ctx, message, safety, task_mode, intent, asset_route, capability, risk, prefix_trace)
         if primary == "skill_use_request":
@@ -81,6 +84,73 @@ class Executor:
             capability=capability,
             risk=risk,
             traces=prefix_trace,
+        )
+
+    def _kb_qa(
+        self,
+        ctx: Any,
+        message: str,
+        kb_ids: list[str],
+        safety: dict[str, Any],
+        task_mode: dict[str, Any],
+        intent: dict[str, Any],
+        asset_route: dict[str, Any],
+        capability: dict[str, Any],
+        risk: dict[str, Any],
+        prefix_trace: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        store = getattr(ctx, "knowledge_bases", None)
+        if store is None:
+            return self._refuse(
+                {"safe": False, "risk_labels": ["kb_unavailable"]},
+                task_mode, intent, asset_route, capability, risk, prefix_trace,
+            )
+        bundle = store.qa_context(kb_ids)
+        sources = bundle["sources"]
+        if not bundle["context"].strip():
+            return self.composer.compose(
+                response_type="answer",
+                message="Selected knowledge bases are empty or contain no readable text.",
+                safety=safety,
+                task_mode=task_mode,
+                intent=intent,
+                asset_route=asset_route,
+                capability=capability,
+                risk=risk,
+                traces=prefix_trace + [trace("kb_context", "Knowledge base context", status="completed",
+                                              summary=f"0 bytes; {len(kb_ids)} kb_ids requested")],
+                data={"kb_ids": kb_ids, "sources": []},
+            )
+        prompt = (
+            "Answer the user's question using ONLY the knowledge-base excerpts "
+            "below. Cite the file paths you used. If the answer is not in the "
+            "excerpts, say so plainly — do not invent facts.\n\n"
+            f"User question:\n{message}\n\n"
+            f"Knowledge-base excerpts:\n{bundle['context']}"
+        )
+        answer = _llm_free_form_answer(prompt) or (
+            "Configured OPENAI_MODEL did not return a usable answer; "
+            "the excerpts above are the raw context that would have been used."
+        )
+        kb_trace = [
+            trace("kb_context", "Knowledge base context", status="completed",
+                  source_count=len(sources),
+                  summary=f"loaded {bundle['used_bytes']} bytes from {len(sources)} file(s) across {len(kb_ids)} kb(s)"),
+            trace("sources", "Sources / citations", status="completed",
+                  source_count=len(sources),
+                  summary=", ".join(f"{s['kb_name']}::{s['path']}" for s in sources[:4]) or "no sources"),
+        ]
+        return self.composer.compose(
+            response_type="answer",
+            message=answer,
+            safety=safety,
+            task_mode=task_mode,
+            intent=intent,
+            asset_route=asset_route,
+            capability=capability,
+            risk=risk,
+            traces=prefix_trace + kb_trace,
+            data={"kb_ids": kb_ids, "sources": sources, "used_bytes": bundle["used_bytes"]},
         )
 
     def _refuse(
@@ -464,6 +534,19 @@ def _query_for_research(message: str, intent: dict[str, Any]) -> str:
         company = intent.get("entities", {}).get("company") or "NVIDIA"
         return f"{company} latest earnings financial results stock news risks"
     return message
+
+
+def _normalize_kb_ids(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        text = str(item or "").strip().upper()
+        if text.startswith("KB-") and text not in out:
+            out.append(text)
+        if len(out) >= 3:
+            break
+    return out
 
 
 def _extract_urls(message: str) -> list[str]:

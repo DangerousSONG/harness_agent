@@ -499,7 +499,7 @@ export default function App() {
     }
   }
 
-  async function sendChat(message) {
+  async function sendChat(message, extraContext = null) {
     setSending(true);
     setMessages((items) => [
       ...items,
@@ -511,6 +511,7 @@ export default function App() {
         current_promo_id: selectedPromoId || "",
         current_review_id: selectedReviewId || activeReview?.review_id || "",
         page,
+        ...(extraContext || {}),
       });
       setMessages((items) => [
         ...items,
@@ -1403,7 +1404,7 @@ function routeForPage(page, state = {}) {
 
 function normalizeLibraryTab(tab) {
   const normalized = tab === "eval" ? "eval-cases" : tab;
-  return ["skills", "tools", "workflows", "memories", "eval-cases"].includes(normalized) ? normalized : "skills";
+  return ["skills", "tools", "workflows", "memories", "knowledge-bases", "eval-cases"].includes(normalized) ? normalized : "skills";
 }
 
 

@@ -16,9 +16,10 @@ import {
   Database,
   Check,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ReviewCard from "../components/ReviewCard";
 import EmptyState from "../components/EmptyState";
+import { api } from "../lib/api";
 import { formatDate } from "../lib/format";
 import { useTranslate } from "../lib/i18n.jsx";
 import StatusPill from "../components/StatusPill";
@@ -515,12 +516,28 @@ export default function ChatPage({
   const [draft, setDraft] = useState("");
   const value = input ?? draft;
   const setValue = onInput ?? setDraft;
+  const [kbList, setKbList] = useState([]);
+  const [selectedKbIds, setSelectedKbIds] = useState([]);
+  const [showKbPicker, setShowKbPicker] = useState(false);
+
+  useEffect(() => {
+    api.knowledgeBases().then((result) => setKbList(result.data || [])).catch(() => {});
+  }, []);
+
+  const toggleKb = (id) => {
+    setSelectedKbIds((prev) => {
+      if (prev.includes(id)) return prev.filter((item) => item !== id);
+      if (prev.length >= 3) return prev;
+      return [...prev, id];
+    });
+  };
 
   function submit(event) {
     event.preventDefault();
     const message = value.trim();
     if (!message) return;
-    onSend(message);
+    const context = selectedKbIds.length ? { kb_ids: selectedKbIds } : undefined;
+    onSend(message, context);
     setValue("");
   }
 
@@ -570,8 +587,85 @@ export default function ChatPage({
         </div>
       </div>
       <form className="border-t border-line bg-white/80 px-6 py-4" onSubmit={submit}>
+        <div className="mx-auto max-w-5xl">
+          {selectedKbIds.length || showKbPicker ? (
+            <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-line bg-white px-3 py-2 text-xs">
+              <span className="font-semibold text-zinc-600">{t("chat.kb.label")}:</span>
+              {selectedKbIds.map((id) => {
+                const kb = kbList.find((item) => item.kb_id === id);
+                return (
+                  <span
+                    key={id}
+                    className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-appleBlue"
+                  >
+                    {kb?.name || id}
+                    <button
+                      type="button"
+                      onClick={() => toggleKb(id)}
+                      className="text-appleBlue hover:text-blue-700"
+                      aria-label="Remove"
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
+              <span className="text-zinc-400">{selectedKbIds.length}/3</span>
+              <button
+                type="button"
+                className="ml-auto text-zinc-500 hover:text-zinc-800"
+                onClick={() => setShowKbPicker((prev) => !prev)}
+              >
+                {showKbPicker ? t("chat.kb.close_picker") : t("chat.kb.add_more")}
+              </button>
+            </div>
+          ) : null}
+
+          {showKbPicker ? (
+            <div className="mb-2 max-h-40 overflow-auto rounded-lg border border-line bg-white p-2 text-xs">
+              {!kbList.length ? (
+                <p className="text-zinc-500">{t("chat.kb.empty")}</p>
+              ) : (
+                kbList.map((kb) => {
+                  const checked = selectedKbIds.includes(kb.kb_id);
+                  const disabled = !checked && selectedKbIds.length >= 3;
+                  return (
+                    <label
+                      key={kb.kb_id}
+                      className={[
+                        "flex items-center gap-2 rounded px-2 py-1",
+                        disabled ? "opacity-40" : "hover:bg-zinc-50",
+                      ].join(" ")}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={disabled}
+                        onChange={() => toggleKb(kb.kb_id)}
+                      />
+                      <span className="font-semibold text-zinc-900">{kb.name}</span>
+                      <span className="font-mono text-[10px] text-zinc-500">{kb.kb_id}</span>
+                      <span className="ml-auto text-[10px] text-zinc-500">
+                        {kb.file_count} files
+                      </span>
+                    </label>
+                  );
+                })
+              )}
+            </div>
+          ) : null}
+        </div>
         <div className="mx-auto flex max-w-5xl items-end gap-2 rounded-2xl border border-line bg-white p-2.5 shadow-hairline focus-within:border-zinc-300 focus-within:shadow-soft">
-          <button type="button" className="icon-button h-9 w-9" aria-label="Attach context">
+          <button
+            type="button"
+            className={[
+              "icon-button h-9 w-9",
+              selectedKbIds.length || showKbPicker ? "text-appleBlue" : "",
+            ].join(" ")}
+            aria-label="Attach knowledge base"
+            onClick={() => setShowKbPicker((prev) => !prev)}
+            title={t("chat.kb.button_title")}
+          >
             <Paperclip className="h-4 w-4" />
           </button>
           <textarea
