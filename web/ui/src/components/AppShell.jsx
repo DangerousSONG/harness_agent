@@ -25,7 +25,6 @@ const NAV_TOP = [
 
 const NAV_ASSETS = [
   { id: "assets-library", labelKey: "nav.assets.library", icon: Library },
-  { id: "assets-changes", labelKey: "nav.assets.changes", icon: GitCommitHorizontal },
   { id: "assets-governance", labelKey: "nav.assets.governance", icon: GitPullRequest },
 ];
 
