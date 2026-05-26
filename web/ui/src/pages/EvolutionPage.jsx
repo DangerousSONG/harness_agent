@@ -1,5 +1,4 @@
 import { ArrowRight, Sparkles } from "lucide-react";
-import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import { compact, nextActionKey, nextActionLabel } from "../lib/format";
 import { useTranslate } from "../lib/i18n.jsx";
@@ -14,6 +13,75 @@ const STEP_KEYS = {
   version: "evolution.step.version",
 };
 
+export function EvolutionTimeline({
+  promoId,
+  targetSkill,
+  evolutionState,
+  currentPromotion,
+  onContinue,
+  busyPromoId,
+}) {
+  const t = useTranslate();
+  const steps = expandSteps(evolutionState);
+  const requiresRegeneration = Boolean(currentPromotion?.requires_regeneration);
+  const nextAction = evolutionState?.next_action;
+  const nextLabel = requiresRegeneration
+    ? t("panel.next_action.regenerate")
+    : nextActionKey(nextAction)
+      ? t(nextActionKey(nextAction))
+      : nextActionLabel(nextAction);
+  const busy = busyPromoId === promoId;
+  const canContinue = Boolean(promoId) && !busy && nextAction !== "completed";
+
+  return (
+    <section className="section-panel p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-appleBlue">
+            <Sparkles className="h-4 w-4" />
+          </span>
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-950">{compact(promoId, "—")}</h2>
+            <p className="text-xs text-zinc-500">
+              {t("promotion.field.target_skill")}: {compact(targetSkill, "—")}
+            </p>
+          </div>
+        </div>
+        <button
+          className="primary-button"
+          disabled={!canContinue}
+          onClick={() => promoId && onContinue?.(promoId)}
+        >
+          {busy ? t("common.working") : requiresRegeneration ? t("panel.next_action.regenerate") : t("evolution.continue")}
+        </button>
+      </div>
+
+      <p className="mt-3 text-xs text-zinc-500">{nextLabel}</p>
+
+      <div className="mt-4 flex flex-wrap items-stretch gap-2">
+        {steps.map((step, index) => (
+          <div className="flex items-stretch gap-2" key={step.name}>
+            <div className="flex min-w-[7.5rem] flex-col justify-between rounded-lg border border-line bg-zinc-50 px-3 py-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                {STEP_KEYS[step.name] ? t(STEP_KEYS[step.name]) : step.name}
+              </span>
+              <div className="mt-1.5 flex items-center justify-between gap-2">
+                <StatusPill status={step.status} />
+                {step.review_id ? (
+                  <span className="truncate font-mono text-[10px] text-zinc-500">{step.review_id}</span>
+                ) : null}
+              </div>
+            </div>
+            {index < steps.length - 1 ? (
+              <ArrowRight className="h-3.5 w-3.5 shrink-0 self-center text-zinc-300" />
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function EvolutionPage({
   promotions,
   selectedPromoId,
@@ -25,14 +93,11 @@ export default function EvolutionPage({
 }) {
   const t = useTranslate();
   const hasPromos = Boolean(promotions?.length);
-  const steps = expandSteps(evolutionState);
-  const requiresRegeneration = Boolean(currentPromotion?.requires_regeneration);
-  const candidateMissing = Boolean(selectedPromoId && hasPromos && !currentPromotion);
 
   return (
     <section className="min-h-0 flex-1 overflow-auto px-6 py-6">
-      <div className="mx-auto max-w-5xl">
-        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div className="mx-auto max-w-5xl space-y-4">
+        <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-xl font-semibold text-zinc-950">{t("evolution.title")}</h1>
           </div>
@@ -50,76 +115,16 @@ export default function EvolutionPage({
             </select>
           ) : null}
         </div>
-
-        {!hasPromos ? (
-          <EmptyState title={t("evolution.no_candidates")} />
-        ) : candidateMissing ? (
-          <EmptyState
-            title={t("evolution.not_found")}
-            detail={t("evolution.not_found_detail")}
+        {hasPromos && currentPromotion ? (
+          <EvolutionTimeline
+            promoId={selectedPromoId}
+            targetSkill={evolutionState?.target_skill || currentPromotion?.target_skill}
+            evolutionState={evolutionState}
+            currentPromotion={currentPromotion}
+            onContinue={onContinue}
+            busyPromoId={busyPromoId}
           />
-        ) : (
-          <div className="grid gap-5 lg:grid-cols-[1fr_18rem]">
-            <section className="card p-6">
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-appleBlue">
-                  <Sparkles className="h-5 w-5" />
-                </span>
-                <div>
-                  <h2 className="text-base font-semibold text-zinc-950">
-                    {compact(evolutionState?.promo_id || selectedPromoId)}
-                  </h2>
-                  <p className="text-sm text-zinc-500">
-                    {t("promotion.field.target_skill")}: {compact(evolutionState?.target_skill)}
-                  </p>
-                </div>
-              </div>
-
-              <div className="mt-8 space-y-4">
-                {steps.map((step, index) => (
-                  <div className="flex items-center gap-4" key={step.name}>
-                    <div className="flex min-w-0 flex-1 items-center gap-4 rounded-lg border border-line bg-zinc-50 px-4 py-3">
-                      <span className="text-sm font-semibold text-zinc-950">{STEP_KEYS[step.name] ? t(STEP_KEYS[step.name]) : step.name}</span>
-                      <div className="ml-auto">
-                        <StatusPill status={step.status} />
-                      </div>
-                    </div>
-                    {index < steps.length - 1 ? <ArrowRight className="h-4 w-4 shrink-0 text-zinc-300" /> : null}
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            <aside className="card p-5">
-              <p className="text-sm font-semibold text-zinc-950">{t("panel.next_action")}</p>
-              <p className="mt-3 text-sm leading-6 text-zinc-600">
-                {requiresRegeneration
-                  ? t("panel.next_action.regenerate")
-                  : nextActionKey(evolutionState?.next_action)
-                    ? t(nextActionKey(evolutionState?.next_action))
-                    : nextActionLabel(evolutionState?.next_action)}
-              </p>
-              <button
-                className="primary-button mt-5 w-full"
-                disabled={!selectedPromoId || busyPromoId === selectedPromoId}
-                onClick={() => onContinue(selectedPromoId)}
-              >
-                {busyPromoId === selectedPromoId
-                  ? t("common.working")
-                  : requiresRegeneration
-                    ? t("panel.next_action.regenerate")
-                    : t("evolution.continue")}
-              </button>
-              <div className="mt-5 space-y-2 text-xs text-zinc-500">
-                {steps.map((step) => (
-                  <p key={`${step.name}-review`}>
-                    {STEP_KEYS[step.name] ? t(STEP_KEYS[step.name]) : step.name}: {compact(step.review_id || step.version || step.status)}
-                  </p>
-                ))}
-              </div>
-            </aside>
-          </div>
-        )}
+        ) : null}
       </div>
     </section>
   );

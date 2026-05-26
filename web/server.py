@@ -20,7 +20,10 @@ except ImportError as exc:  # pragma: no cover - exercised only when dependency 
     ) from exc
 
 from runtime.backends.local import LocalReviewStore
+from runtime.evolution_scout import EvolutionScout
+from runtime.evolution_stores import EvolutionStores
 from runtime.promotion_browser import PromotionBrowser
+from runtime.skill_optimizer import SkillOptimizer
 from runtime.regression_case_proposal import parse_regression_cases
 from runtime.skill_evolution_flow import evolve_skill_from_promotion
 from runtime.skill_evolution_registry import SkillEvolutionRegistry, normalize_skill_name
@@ -232,6 +235,46 @@ class WebContext:
         self.versions = SkillEvolutionRegistry(self.project_root)
         self.policy = load_policy()
         self.tool_registry = ToolRegistry(self.project_root)
+        self.evolution_stores = EvolutionStores(self.project_root)
+        self.evolution_scout, self.skill_optimizer = self._build_evolution_modules()
+
+    def _build_evolution_modules(self):
+        try:
+            from runtime.evolution_llm import (
+                LLMBulletWriter,
+                LLMOpportunityEnricher,
+                LLMValidationGate,
+                llm_enabled,
+            )
+        except Exception:
+            llm_enabled = lambda: False  # noqa: E731
+            LLMBulletWriter = LLMOpportunityEnricher = LLMValidationGate = None  # type: ignore
+        if llm_enabled() and LLMOpportunityEnricher is not None:
+            scout = EvolutionScout(
+                project_root=self.project_root,
+                stores=self.evolution_stores,
+                promotions=self.promotions,
+                llm_enricher=LLMOpportunityEnricher(),
+            )
+            optimizer = SkillOptimizer(
+                project_root=self.project_root,
+                stores=self.evolution_stores,
+                review_store=self.review_store,
+                validation_gate=LLMValidationGate(),
+                bullet_writer=LLMBulletWriter(),
+            )
+        else:
+            scout = EvolutionScout(
+                project_root=self.project_root,
+                stores=self.evolution_stores,
+                promotions=self.promotions,
+            )
+            optimizer = SkillOptimizer(
+                project_root=self.project_root,
+                stores=self.evolution_stores,
+                review_store=self.review_store,
+            )
+        return scout, optimizer
 
 
 def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
@@ -693,6 +736,122 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
         }
         return ok(data, result.message, _flow_next_actions(result.review_id, stage)) if result.ok else fail(result.message)
 
+    @app.post("/api/promotions/{promo_id}/fast-track")
+    def fast_track_promotion(promo_id: str) -> JSONResponse:
+        """Chain evolve → approve → apply for every review the flow creates,
+        until the PROMO is applied or a step blocks. Preserves the same
+        gating that the individual /evolve, /approve, /apply endpoints
+        enforce; this endpoint is a convenience for the common 'I trust
+        the auto-generated regression cases and the proposed patch' path.
+        """
+        if not ctx.promotions.get_candidate(promo_id):
+            return fail(f"Unknown promo_id: {promo_id}", status_code=404)
+
+        steps: list[dict[str, Any]] = []
+        final_status = "pending"
+        max_iterations = 6  # 3 evolve passes + at most 2 reviews — plenty of headroom.
+
+        for iteration in range(max_iterations):
+            result = evolve_skill_from_promotion(
+                browser=ctx.promotions,
+                review_store=ctx.review_store,
+                promo_id=promo_id,
+                project_root=ctx.project_root,
+            )
+            stage = _api_stage(result.stage)
+            review_id = result.review_id
+            steps.append({
+                "stage": f"evolve_{iteration + 1}",
+                "ok": result.ok,
+                "result_stage": stage,
+                "review_id": review_id,
+                "message": result.message,
+            })
+            if not result.ok:
+                final_status = "blocked"
+                break
+            if stage in {"completed", "complete"}:
+                final_status = "applied"
+                break
+            if not review_id:
+                final_status = "no_more_work"
+                break
+
+            review = ctx.review_store.get_review(review_id)
+            if not review:
+                steps.append({
+                    "stage": "lookup_review",
+                    "ok": False,
+                    "review_id": review_id,
+                    "message": "Review not found after evolve created it.",
+                })
+                final_status = "blocked"
+                break
+            review_status = str(review.get("status", "") or "").strip().lower()
+
+            if review_status == "pending":
+                try:
+                    approved, _ = ctx.review_store.approve_review(review_id)
+                    review_status = str(approved.get("status", "") or "").strip().lower()
+                    steps.append({
+                        "stage": "approve",
+                        "ok": True,
+                        "review_id": review_id,
+                        "review_type": str(review.get("type", "")),
+                        "status": review_status,
+                    })
+                except ValueError as exc:
+                    steps.append({
+                        "stage": "approve",
+                        "ok": False,
+                        "review_id": review_id,
+                        "review_type": str(review.get("type", "")),
+                        "message": str(exc),
+                    })
+                    final_status = "blocked"
+                    break
+
+            if review_status == "approved":
+                try:
+                    applied, message = ctx.review_store.apply_review(review_id)
+                    steps.append({
+                        "stage": "apply",
+                        "ok": True,
+                        "review_id": review_id,
+                        "review_type": str(applied.get("type", "")),
+                        "status": str(applied.get("status", "")),
+                        "message": message,
+                    })
+                except ValueError as exc:
+                    steps.append({
+                        "stage": "apply",
+                        "ok": False,
+                        "review_id": review_id,
+                        "review_type": str(review.get("type", "")),
+                        "message": str(exc),
+                    })
+                    final_status = "blocked"
+                    break
+            else:
+                # Review ended up in a non-actionable state (rejected, etc.).
+                steps.append({
+                    "stage": "blocked_by_review_status",
+                    "ok": False,
+                    "review_id": review_id,
+                    "status": review_status,
+                })
+                final_status = "blocked"
+                break
+        else:
+            final_status = "iteration_cap_reached"
+
+        return ok({
+            "promo_id": promo_id,
+            "steps": steps,
+            "final_status": final_status,
+            "version": _version_for_promo(ctx, promo_id),
+        })
+
     @app.post("/api/promotions/{promo_id}/regenerate")
     def regenerate_promotion(promo_id: str) -> JSONResponse:
         promo = ctx.promotions.get_candidate(promo_id)
@@ -1026,6 +1185,97 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             info["playwright_browser"] = f"check failed: {exc}"
         return ok(info)
 
+    @app.post("/api/evolution/scout/scan")
+    def evolution_scout_scan() -> JSONResponse:
+        result = ctx.evolution_scout.scan()
+        return ok(result.to_dict(), result.summary)
+
+    @app.get("/api/evolution/scout/signals")
+    def evolution_signals() -> JSONResponse:
+        return ok(ctx.evolution_stores.signals.list())
+
+    @app.get("/api/evolution/scout/opportunities")
+    def evolution_opportunities() -> JSONResponse:
+        items = sorted(
+            ctx.evolution_stores.opportunities.list(),
+            key=lambda opp: opp.get("evolution_score", 0.0),
+            reverse=True,
+        )
+        return ok(items)
+
+    @app.get("/api/evolution/scout/opportunities/{opportunity_id}")
+    def evolution_opportunity_detail(opportunity_id: str) -> JSONResponse:
+        opp = ctx.evolution_stores.opportunities.get(opportunity_id)
+        if not opp:
+            return fail(f"Unknown opportunity_id: {opportunity_id}", status_code=404)
+        signals = [
+            ctx.evolution_stores.signals.get(signal_id)
+            for signal_id in opp.get("signal_ids", [])
+        ]
+        return ok({"opportunity": opp, "signals": [s for s in signals if s]})
+
+    @app.get("/api/evolution/scout/batches")
+    def evolution_batches() -> JSONResponse:
+        return ok(ctx.evolution_stores.batches.list())
+
+    @app.post("/api/evolution/scout/batches")
+    async def evolution_batches_create(request: Request) -> JSONResponse:
+        body = await request.json()
+        opportunity_ids = body.get("opportunity_ids") if isinstance(body, dict) else None
+        if not isinstance(opportunity_ids, list) or not opportunity_ids:
+            return fail("opportunity_ids is required (non-empty list)", status_code=400)
+        try:
+            batch = ctx.evolution_scout.create_batch(opportunity_ids)
+        except ValueError as exc:
+            return fail(str(exc), status_code=400)
+        return ok(batch, f"Created batch {batch['batch_id']}")
+
+    @app.post("/api/evolution/optimizer/propose")
+    async def evolution_optimizer_propose(request: Request) -> JSONResponse:
+        raw = await request.body()
+        try:
+            body = json.loads(raw.decode("utf-8")) if raw else {}
+        except json.JSONDecodeError:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        batch_id = str(body.get("batch_id") or "").strip()
+        opportunity_id = str(body.get("opportunity_id") or "").strip()
+        if not batch_id and not opportunity_id:
+            return fail("batch_id or opportunity_id is required", status_code=400)
+        result = ctx.skill_optimizer.propose(
+            batch_id=batch_id, opportunity_id=opportunity_id
+        )
+        if not result.ok:
+            return fail(result.message, status_code=400)
+        edit = ctx.evolution_stores.skill_edits.get(result.edit_id)
+        return ok(edit or {}, result.message)
+
+    @app.get("/api/evolution/optimizer/edits")
+    def evolution_optimizer_edits() -> JSONResponse:
+        return ok(ctx.evolution_stores.skill_edits.list())
+
+    @app.get("/api/evolution/optimizer/edits/{edit_id}")
+    def evolution_optimizer_edit_detail(edit_id: str) -> JSONResponse:
+        edit = ctx.evolution_stores.skill_edits.get(edit_id)
+        if not edit:
+            return fail(f"Unknown edit_id: {edit_id}", status_code=404)
+        return ok(edit)
+
+    @app.post("/api/evolution/optimizer/edits/{edit_id}/validate")
+    def evolution_optimizer_edit_validate(edit_id: str) -> JSONResponse:
+        validate_result = ctx.skill_optimizer.validate(edit_id)
+        if not validate_result.ok:
+            return fail(validate_result.message, status_code=400, data=validate_result.to_dict())
+        submit_result = ctx.skill_optimizer.submit_review(edit_id)
+        if not submit_result.ok:
+            return fail(submit_result.message, status_code=400, data=submit_result.to_dict())
+        return ok(submit_result.to_dict(), submit_result.message)
+
+    @app.get("/api/evolution/optimizer/rejected")
+    def evolution_optimizer_rejected() -> JSONResponse:
+        return ok(ctx.evolution_stores.rejected_edits.list())
+
     @app.get("/api/evolution/{promo_id}/state")
     def evolution_state(promo_id: str) -> JSONResponse:
         promo = ctx.promotions.get_candidate(promo_id)
@@ -1280,6 +1530,12 @@ def _promotion_view(ctx: WebContext, candidate: Any) -> dict[str, Any]:
         "rollback_plan": data.get("rollback_plan", ""),
         "linked_reviews": linked_reviews,
         "linked_version": linked_version,
+        "status_classification": _classify_promotion_status(
+            candidate,
+            missing_fields=missing_fields,
+            linked_version=linked_version,
+            linked_reviews=linked_reviews,
+        ),
     }
 
 
@@ -1293,6 +1549,136 @@ def _missing_promotion_eligibility(candidate: Any) -> list[str]:
     if data.get("eligible_target") in {"", None, "legacy"}:
         missing.append("eligible_target")
     return missing
+
+
+def _classify_promotion_status(
+    candidate: Any,
+    *,
+    missing_fields: list[str],
+    linked_version: str,
+    linked_reviews: list[str],
+) -> dict[str, Any]:
+    """Classify why a PROMO is or isn't ready to enter skill evolution and
+    return a structured 'fix' instruction the UI can render directly.
+
+    Mirrors the gating in evolve_skill_from_promotion._promotion_decision_block
+    so the UI matches what the evolve endpoint will reply.
+    """
+    data = candidate.to_dict() if hasattr(candidate, "to_dict") else dict(candidate)
+    promo_id = str(data.get("promo_id", "") or "")
+    decision = str(data.get("promotion_decision", "") or "").strip().lower()
+    target = str(data.get("eligible_target", "") or "").strip().lower()
+    error_code = str(data.get("error_code", "") or "").strip()
+
+    none_fix = {"kind": "none", "label": "", "action": None}
+
+    if linked_version:
+        return {
+            "kind": "applied",
+            "summary": "Already applied as a Skill version.",
+            "field": "",
+            "actual": "",
+            "expected": "",
+            "fix": none_fix,
+            "evolvable": False,
+        }
+    if error_code == "SOURCE_MEMORY_NOT_FOUND":
+        return {
+            "kind": "dangling_source",
+            "summary": "Source memory record was deleted; this PROMO is dangling.",
+            "field": "source_memory_ids",
+            "actual": "missing",
+            "expected": "existing memory record",
+            "fix": none_fix,
+            "evolvable": False,
+        }
+    if missing_fields:
+        return {
+            "kind": "legacy",
+            "summary": f"Missing promotion fields: {', '.join(missing_fields)}.",
+            "field": ",".join(missing_fields),
+            "actual": "legacy",
+            "expected": "eligible",
+            "fix": {
+                "kind": "regenerate",
+                "label": "Regenerate with Promotion Eligibility",
+                "action": {"method": "POST", "path": f"/api/promotions/{promo_id}/regenerate"},
+            },
+            "evolvable": False,
+        }
+    if decision == "reject":
+        return {
+            "kind": "rejected",
+            "summary": "Promotion eligibility decided reject.",
+            "field": "promotion_decision",
+            "actual": "reject",
+            "expected": "promote",
+            "fix": none_fix,
+            "evolvable": False,
+        }
+    if decision == "policy_review":
+        return {
+            "kind": "policy_review_required",
+            "summary": "Safety or policy candidate requires policy review before promotion.",
+            "field": "promotion_decision",
+            "actual": "policy_review",
+            "expected": "promote",
+            "fix": none_fix,
+            "evolvable": False,
+        }
+    if decision == "wait":
+        return {
+            "kind": "waiting_for_signal",
+            "summary": "Waiting for more occurrences or stronger transferability/testability evidence.",
+            "field": "promotion_decision",
+            "actual": "wait",
+            "expected": "promote",
+            "fix": {"kind": "wait", "label": "", "action": None},
+            "evolvable": False,
+        }
+    if decision == "promote" and target and target != "skill_rule":
+        return {
+            "kind": "wrong_eligible_target",
+            "summary": f"eligible_target={target} cannot enter skill evolution (needs skill_rule).",
+            "field": "eligible_target",
+            "actual": target,
+            "expected": "skill_rule",
+            "fix": none_fix,
+            "evolvable": False,
+        }
+    if decision == "promote" and target == "skill_rule":
+        if linked_reviews:
+            return {
+                "kind": "in_flight",
+                "summary": "Skill evolution review(s) created; waiting for approval and apply.",
+                "field": "",
+                "actual": "review_pending",
+                "expected": "review_applied",
+                "fix": {"kind": "open_review", "label": "Open review", "action": None},
+                "evolvable": True,
+            }
+        return {
+            "kind": "ready",
+            "summary": "Ready to enter skill evolution.",
+            "field": "",
+            "actual": "promote",
+            "expected": "promote",
+            "fix": {
+                "kind": "evolve",
+                "label": "Evolve",
+                "action": {"method": "POST", "path": f"/api/promotions/{promo_id}/evolve"},
+            },
+            "evolvable": True,
+        }
+    return {
+        "kind": "unknown",
+        "summary": f"decision={decision or 'unknown'}, eligible_target={target or 'unknown'}; cannot enter evolution.",
+        "field": "promotion_decision",
+        "actual": f"{decision}/{target}",
+        "expected": "promote/skill_rule",
+        "fix": none_fix,
+        "evolvable": False,
+    }
 
 
 def _tool_views(ctx: WebContext) -> list[dict[str, Any]]:
@@ -1588,24 +1974,97 @@ def _records_from_file(ctx: WebContext, path: Path, skill: str, record_type: str
     for record in ctx.skill_memory._read_records(path):
         fields = dict(record.get("fields", {}))
         memory_id = str(record.get("record_id", ""))
+        occurrence_count = _parse_int(fields.get("Occurrence Count"), 1)
+        linked_promo_id = _linked_promo_id(ctx, memory_id)
         records.append(
             {
                 "memory_id": memory_id,
                 "skill": skill,
                 "type": record_type,
                 "title": str(record.get("title", "")),
-                "occurrence_count": _parse_int(fields.get("Occurrence Count"), 1),
+                "occurrence_count": occurrence_count,
                 "source_file": _display_path(ctx, path),
-                "linked_promo_id": _linked_promo_id(ctx, memory_id),
+                "linked_promo_id": linked_promo_id,
                 "needs_attribution_review": str(fields.get("Needs Attribution Review", "")).lower() == "true",
                 "created_at": fields.get("Time", ""),
                 "updated_at": _mtime(path),
                 "fields": fields,
                 "details": str(record.get("details", "")),
                 "block": str(record.get("block", "")),
+                "promotion_progress": _compute_promotion_progress(fields, occurrence_count, linked_promo_id),
             }
         )
     return records
+
+
+PROMOTION_OCCURRENCE_THRESHOLD = 3
+PROMOTION_STRONG_OCCURRENCE_THRESHOLD = 2
+
+
+def _compute_promotion_progress(
+    fields: dict[str, Any],
+    occurrence_count: int,
+    linked_promo_id: str,
+) -> dict[str, Any]:
+    """Surface what gate keeps this memory from becoming a PROMO so users can
+    see e.g. "2 / 3 occurrences" without diving into the markdown record.
+
+    All values are read from fields already written by SkillMemoryManager
+    when the record was last updated — no re-evaluation is done here, so
+    this stays cheap and consistent with the persisted snapshot.
+    """
+    decision = str(fields.get("Promotion Decision", "wait") or "wait").strip().lower()
+    eligible_target = str(fields.get("Eligible Target", "none") or "none").strip().lower()
+    score_raw = str(fields.get("Promotion Score", "0") or "0").strip()
+    try:
+        promotion_score = float(score_raw)
+    except (TypeError, ValueError):
+        promotion_score = 0.0
+    reason = str(fields.get("Promotion Reason", "") or "").strip()
+    needs_review = str(fields.get("Needs Attribution Review", "")).lower() == "true"
+
+    threshold = PROMOTION_OCCURRENCE_THRESHOLD
+    occurrences_remaining = max(0, threshold - int(occurrence_count or 0))
+
+    if linked_promo_id:
+        kind = "already_promoted"
+        blocker = ""
+    elif decision == "promote":
+        kind = "ready_to_promote"
+        blocker = ""
+    elif decision == "reject":
+        kind = "rejected"
+        blocker = reason or "rejected"
+    elif decision == "policy_review":
+        kind = "policy_review_required"
+        blocker = reason or "policy review required"
+    elif needs_review or "attribution" in reason.lower():
+        kind = "attribution_review_required"
+        blocker = "Attribution confidence is low or target_skill missing."
+    elif occurrence_count < threshold:
+        kind = "needs_more_occurrences"
+        blocker = (
+            f"Need {occurrences_remaining} more occurrence(s) "
+            f"({occurrence_count}/{threshold}) before this can be promoted."
+        )
+    else:
+        kind = "waiting_signal"
+        blocker = reason or "waiting for stronger transferability/testability evidence"
+
+    return {
+        "decision": decision,
+        "eligible_target": eligible_target,
+        "promotion_score": promotion_score,
+        "reason": reason,
+        "occurrence_count": int(occurrence_count or 0),
+        "occurrence_threshold": threshold,
+        "occurrences_remaining": occurrences_remaining,
+        "linked_promo_id": linked_promo_id,
+        "next_step": {"kind": kind, "blocker": blocker},
+        "would_promote_at_next_occurrence": (
+            kind == "needs_more_occurrences" and occurrences_remaining == 1
+        ),
+    }
 
 
 def _find_memory(ctx: WebContext, memory_id: str) -> dict[str, Any] | None:

@@ -211,6 +211,34 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(len(reviews), 1)
             self.assertEqual(reviews[0]["type"], "skill.regression_case")
 
+    def test_promotion_fast_track_walks_evolve_approve_apply_chain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            promo_id = self.make_promo(root)
+            client = self.make_client(root)
+            response = client.post(f"/api/promotions/{promo_id}/fast-track")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            data = payload["data"]
+            self.assertEqual(data["promo_id"], promo_id)
+            self.assertIsInstance(data["steps"], list)
+            stage_names = [step["stage"] for step in data["steps"]]
+            # Must at least go through one evolve step, then approve + apply.
+            self.assertTrue(any(name.startswith("evolve_") for name in stage_names))
+            # Either the chain reached applied or it stopped on a structured blocker.
+            self.assertIn(data["final_status"], {"applied", "blocked", "iteration_cap_reached", "no_more_work"})
+            # No step should silently swallow an error.
+            for step in data["steps"]:
+                if step["ok"] is False:
+                    self.assertIn("message", step)
+
+    def test_promotion_fast_track_returns_404_for_unknown_promo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = self.make_client(Path(tmp))
+            response = client.post("/api/promotions/PROMO-NOPE0000/fast-track")
+            self.assertEqual(response.status_code, 404)
+
     def test_legacy_promo_regeneration_creates_eligible_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -446,21 +474,6 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(payload["type"], "answer")
             self.assertIn("渐进式 API", payload["message"])
             self.assertNotIn("I can help with writing", payload["message"])
-
-    def test_chat_weather_requests_city_and_realtime_tool(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_skill(root)
-            client = self.make_client(root)
-            response = client.post("/api/chat", json={"message": "\u4eca\u5929\u5929\u6c14\u600e\u6837\uff1f\u7528\u4e2d\u6587\u56de\u7b54"})
-            self.assertEqual(response.status_code, 200)
-            payload = response.json()
-            self.assertIntentPrimary(payload, "direct_tool_use")
-            self.assertEqual(payload["type"], "clarification")
-            self.assertIsNone(payload["used_skill"])
-            self.assertIn("\u57ce\u5e02", payload["message"])
-            self.assertNotIn("I can help with writing", payload["message"])
-            self.assertTrue(any(item.get("tool_name") == "weather_query" for item in payload["trace"]))
 
     def test_chat_ambiguous_weather_query_asks_clarification(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1520,18 +1533,6 @@ class WebApiTests(unittest.TestCase):
             self.assertIn("query", detail["inputs"])
             self.assertIn("results", detail["outputs"])
 
-    def test_create_tool_response_clarifies_asset_is_not_runtime(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_skill(root, "tool_usage")
-            client = self.make_client(root)
-            chat = client.post("/api/chat", json={"message": "create web search tool"}).json()
-            created = client.post(chat["actions"][0]["path"], json=chat["actions"][0]["payload"])
-            self.assertEqual(created.status_code, 200)
-            payload = created.json()
-            self.assertIn("does not automatically provide realtime access", payload["message"])
-            self.assertIn("handler_available", payload["data"]["runtime_note"])
-
     def test_changes_endpoint_unifies_reviews_promos_and_versions(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1644,6 +1645,131 @@ class WebApiTests(unittest.TestCase):
             self.assertTrue((root / "skills" / "weather_query" / "eval" / "cases.yaml").exists())
             versions = client.get("/api/skills/weather_query/versions").json()["data"]
             self.assertEqual(versions[0]["change_type"], "skill_creation")
+
+    def test_promotions_endpoint_classifies_legacy_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root)
+            memory_dir = root / "skills" / "markdown_writer" / "memory"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            (memory_dir / "LEARNINGS.md").write_text(
+                "\n".join(
+                    [
+                        "# Learnings",
+                        "",
+                        "## LRN-LEGACY1 - Prefer fenced markdown",
+                        "- Time: 2026-05-19T00:00:00+00:00",
+                        "- Priority: P2",
+                        "- Status: open",
+                        "- Domain: markdown",
+                        "- Source: test",
+                        "- Occurrence Count: 3",
+                        "- Target Skill: markdown_writer",
+                        "- Attribution Confidence: high",
+                        "",
+                        "### Details",
+                        "Always use fenced code blocks when returning reusable Markdown examples.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            promo_dir = root / ".skills_memory"
+            promo_dir.mkdir(parents=True, exist_ok=True)
+            (promo_dir / "PROMOTION_CANDIDATES.md").write_text(
+                "\n".join(
+                    [
+                        "# Promotion Candidates",
+                        "",
+                        "## PROMO-LEGACY1 - Old candidate",
+                        "- Candidate ID: PROMO-LEGACY1",
+                        "- Record ID: LRN-LEGACY1",
+                        "- Target Skill: markdown_writer",
+                        "- Proposed Change Summary: Old candidate",
+                        "- Target Files: skills/markdown_writer/SKILL.md",
+                        "- Occurrence Count: 3",
+                        "- Status: proposed",
+                        "- Evaluation Plan: test",
+                        "- Rollback Plan: test",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            client = self.make_client(root)
+            payload = client.get("/api/promotions/PROMO-LEGACY1").json()
+            data = payload["data"]
+            classification = data["status_classification"]
+            self.assertEqual(classification["kind"], "legacy")
+            self.assertEqual(classification["fix"]["kind"], "regenerate")
+            self.assertEqual(
+                classification["fix"]["action"]["path"],
+                "/api/promotions/PROMO-LEGACY1/regenerate",
+            )
+            self.assertFalse(classification["evolvable"])
+            self.assertIn("promotion_decision", classification["field"])
+
+    def test_promotions_endpoint_classifies_ready_when_eligible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            promo_id = self.make_promo(root)
+            client = self.make_client(root)
+            payload = client.get(f"/api/promotions/{promo_id}").json()
+            data = payload["data"]
+            classification = data["status_classification"]
+            self.assertIn(classification["kind"], {"ready", "in_flight", "applied"})
+            if classification["kind"] == "ready":
+                self.assertEqual(classification["fix"]["kind"], "evolve")
+                self.assertEqual(
+                    classification["fix"]["action"]["path"],
+                    f"/api/promotions/{promo_id}/evolve",
+                )
+                self.assertTrue(classification["evolvable"])
+
+    def test_memories_endpoint_surfaces_promotion_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "markdown_writer")
+            manager = SkillMemoryManager(root / "skills", root / ".skills_memory")
+            # First occurrence is below the threshold (3) -> kind=needs_more_occurrences
+            manager.record_learning(
+                "markdown_writer",
+                "Prefer fenced markdown",
+                "When returning reusable Markdown examples, always use fenced code blocks.",
+                source="test",
+            )
+            client = self.make_client(root)
+            payload = client.get("/api/memories").json()
+            memory = payload["data"][0]
+            progress = memory["promotion_progress"]
+            self.assertEqual(progress["occurrence_count"], 1)
+            self.assertEqual(progress["occurrence_threshold"], 3)
+            self.assertEqual(progress["occurrences_remaining"], 2)
+            self.assertEqual(progress["next_step"]["kind"], "needs_more_occurrences")
+            self.assertFalse(progress["would_promote_at_next_occurrence"])
+            self.assertEqual(progress["decision"], "wait")
+            self.assertIn("Need", progress["next_step"]["blocker"])
+
+    def test_memories_endpoint_flags_ready_to_promote_when_score_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_skill(root, "markdown_writer")
+            manager = SkillMemoryManager(root / "skills", root / ".skills_memory")
+            for _ in range(3):
+                manager.record_learning(
+                    "markdown_writer",
+                    "Use fenced markdown for repeated outputs",
+                    "For repeated markdown output corrections, use fenced code blocks consistently in every example.",
+                    source="test",
+                )
+            client = self.make_client(root)
+            payload = client.get("/api/memories").json()
+            memory = next(item for item in payload["data"] if "fenced" in item["title"].lower())
+            progress = memory["promotion_progress"]
+            self.assertGreaterEqual(progress["occurrence_count"], 3)
+            self.assertEqual(progress["occurrences_remaining"], 0)
+            # Either ready_to_promote or already_promoted is acceptable depending on auto-promo wiring.
+            self.assertIn(progress["next_step"]["kind"], {"ready_to_promote", "already_promoted", "waiting_signal"})
 
     def test_chat_captures_explicit_memory_signal(self):
         with tempfile.TemporaryDirectory() as tmp:

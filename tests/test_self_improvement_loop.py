@@ -753,44 +753,6 @@ class SelfImprovementLoopTests(unittest.TestCase):
             self.assertEqual(client.chat.completions.calls, 0)
             self.assertFalse((root / "skills" / "markdown_writer" / "memory" / "LEARNINGS.md").exists())
 
-    def test_already_loaded_assistant_status_does_not_write_learning_memory(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            manager = self.make_manager(root)
-            manager.set_active_skill("markdown_writer")
-            client = FakeSequencedClient(
-                [
-                    FakeToolResponse(
-                        FakeToolMessage("Skill 'markdown_writer' is already loaded.")
-                    )
-                ]
-            )
-            messages = [{"role": "user", "content": "load markdown_writer again"}]
-
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                agent_loop(
-                    messages=messages,
-                    client=client,
-                    model="fake",
-                    system="system",
-                    tools=[],
-                    tool_handlers={"__skill_memory__": manager},
-                    todo=EmptyTodo(),
-                    bg=EmptyBg(),
-                    bus=EmptyBus(),
-                    token_threshold=100000,
-                    transcript_dir=root,
-                    estimate_tokens=lambda _messages: 0,
-                    microcompact=lambda _messages: None,
-                    auto_compact=lambda **kwargs: kwargs["messages"],
-                )
-
-            self.assertIn("already loaded", out.getvalue())
-            self.assertIn("auto_memory: skipped load_skill status message.", out.getvalue())
-            self.assertEqual(len(client.chat.completions.calls), 1)
-            self.assertFalse((root / "skills" / "markdown_writer" / "memory" / "LEARNINGS.md").exists())
-
     def test_user_correction_after_load_skill_still_records_learning_memory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

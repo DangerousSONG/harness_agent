@@ -32,6 +32,20 @@ from .skill_evolution_registry import (
     format_skill_versions,
 )
 from .skill_evolution_flow import SkillEvolutionFlowResult, evolve_skill_from_promotion
+from .evolution_stores import (
+    ALLOWED_EDIT_OPS,
+    ALLOWED_EDIT_SECTION,
+    EvolutionOpportunity,
+    EvolutionStores,
+    PromotionBatch,
+    RejectedEdit,
+    SkillEditProposal,
+    ValidationResult,
+    apply_edit_ops_to_text,
+    validate_edit_ops,
+)
+from .evolution_scout import EvolutionScout, ScanResult
+from .skill_optimizer import OptimizerResult, SkillOptimizer, ValidationGate
 
 __all__ = [
     "LocalBackend",
@@ -62,4 +76,19 @@ __all__ = [
     "format_skill_versions",
     "SkillEvolutionFlowResult",
     "evolve_skill_from_promotion",
+    "ALLOWED_EDIT_OPS",
+    "ALLOWED_EDIT_SECTION",
+    "EvolutionOpportunity",
+    "EvolutionScout",
+    "EvolutionStores",
+    "OptimizerResult",
+    "PromotionBatch",
+    "RejectedEdit",
+    "ScanResult",
+    "SkillEditProposal",
+    "SkillOptimizer",
+    "ValidationGate",
+    "ValidationResult",
+    "apply_edit_ops_to_text",
+    "validate_edit_ops",
 ]

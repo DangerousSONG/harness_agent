@@ -27,7 +27,7 @@ export default function App() {
   const [page, setPageState] = useState(initialRoute.page);
   const [assetTab, setAssetTab] = useState(initialRoute.assetTab || "skills");
   const [changesTab, setChangesTabState] = useState(initialRoute.changesTab || "proposed");
-  const [governanceTab, setGovernanceTabState] = useState(initialRoute.governanceTab || "reviews");
+  const [governanceTab, setGovernanceTabState] = useState(initialRoute.governanceTab || "promotions");
   const [dashboard, setDashboard] = useState(null);
   const [reviews, setReviews] = useState([]);
   const [promotions, setPromotions] = useState([]);
@@ -147,7 +147,7 @@ export default function App() {
       setPageState(next.page);
       setAssetTab(next.assetTab || "skills");
       setChangesTabState(next.changesTab || "proposed");
-      setGovernanceTabState(next.governanceTab || "reviews");
+      setGovernanceTabState(next.governanceTab || "promotions");
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -590,6 +590,34 @@ export default function App() {
       appendAgentResult(payload.message || `Evolution flow updated for ${promoId}.`);
       setSelectedPromoId(promoId);
         navigate("assets-library", { assetTab: "workflows" });
+      await refreshAfterOperation(promoId);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      finishToolCall(toolId, "failed");
+      appendAgentResult(message);
+      setToast(message);
+    } finally {
+      setBusyPromoId("");
+    }
+  }
+
+  async function fastTrackPromotion(promoId) {
+    if (!promoId) return;
+    setBusyPromoId(promoId);
+    const toolId = appendToolCall(`POST /api/promotions/${promoId}/fast-track`);
+    try {
+      const payload = await api.fastTrackPromotion(promoId);
+      finishToolCall(toolId, "completed");
+      const final = payload?.data?.final_status || "pending";
+      const lastStep = (payload?.data?.steps || []).slice(-1)[0] || {};
+      if (final === "applied") {
+        setToast(`Fast-track complete: ${promoId} applied.`);
+        appendAgentResult(`Fast-track complete: ${promoId} applied.`);
+      } else {
+        setToast(`Fast-track stopped at ${lastStep.stage || "unknown"} (${final}).`);
+        appendAgentResult(`Fast-track stopped at ${lastStep.stage || "unknown"} (${final}). ${lastStep.message || ""}`.trim());
+      }
+      setSelectedPromoId(promoId);
       await refreshAfterOperation(promoId);
     } catch (error) {
       const message = getErrorMessage(error);
@@ -1250,6 +1278,19 @@ export default function App() {
             onCreateRollback={createRollbackReview}
             busyVersionKey={busyVersionKey}
             changes={changes}
+            promotions={promotions}
+            busyPromoId={busyPromoId}
+            onViewPromotion={(promoId) => {
+              setSelectedPromoId(promoId);
+              viewPromotion(promoId);
+            }}
+            onEvolvePromotion={evolvePromotion}
+            onRegeneratePromotion={regeneratePromotion}
+            onFastTrackPromotion={fastTrackPromotion}
+            selectedPromoId={selectedPromoId}
+            currentPromotion={currentPromotion}
+            evolutionState={evolutionState}
+            onContinueEvolution={continueEvolution}
           />
         ) : null}
         {page === "settings" ? <SettingsPage dashboard={dashboard} /> : null}
@@ -1334,6 +1375,7 @@ function routeFromLocation() {
     "/assets/workflows": { page: "assets-library", assetTab: "workflows" },
     "/assets/memories": { page: "assets-library", assetTab: "memories" },
     "/assets/eval-cases": { page: "assets-library", assetTab: "eval-cases" },
+    "/promotions": { page: "assets-governance", governanceTab: "promotions" },
     "/reviews": { page: "assets-governance", governanceTab: "reviews" },
     "/versions": { page: "assets-governance", governanceTab: "versions" },
     "/changes": { page: "assets-changes", changesTab: "proposed" },
@@ -1389,7 +1431,7 @@ function normalizeChangesTab(tab) {
 }
 
 function normalizeGovernanceTab(tab) {
-  return ["reviews", "versions", "rollbacks", "safety-checks"].includes(tab) ? tab : "reviews";
+  return ["promotions", "reviews", "versions", "rollbacks", "safety-checks", "side-channel"].includes(tab) ? tab : "promotions";
 }
 
 function makeId() {

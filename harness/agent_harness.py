@@ -58,11 +58,14 @@ from tools import (
 )
 from runtime import (
     EvolutionGate,
+    EvolutionScout,
+    EvolutionStores,
     LocalBackend,
     PromotionBrowser,
     SkillEvolutionRegistry,
     SkillLoader,
     SkillMemoryManager,
+    SkillOptimizer,
     classify_and_record_learning_signal,
     classify_learning_signal,
     evolve_skill_from_promotion,
@@ -147,6 +150,47 @@ PROMOTIONS = PromotionBrowser(
     global_memory_dir=GLOBAL_SKILL_MEMORY_DIR,
     project_root=PROJECT_ROOT,
 )
+EVOLUTION_STORES = EvolutionStores(PROJECT_ROOT)
+
+
+def _build_evolution_modules():
+    from runtime.evolution_llm import (
+        LLMBulletWriter,
+        LLMOpportunityEnricher,
+        LLMValidationGate,
+        llm_enabled,
+    )
+
+    if llm_enabled():
+        scout = EvolutionScout(
+            project_root=PROJECT_ROOT,
+            stores=EVOLUTION_STORES,
+            promotions=PROMOTIONS,
+            llm_enricher=LLMOpportunityEnricher(),
+        )
+        optimizer = SkillOptimizer(
+            project_root=PROJECT_ROOT,
+            stores=EVOLUTION_STORES,
+            review_store=BACKEND.review_store,
+            validation_gate=LLMValidationGate(),
+            bullet_writer=LLMBulletWriter(),
+        )
+        print("[SafeHarness] evolution: LLM enrichment ENABLED")
+        return scout, optimizer
+    scout = EvolutionScout(
+        project_root=PROJECT_ROOT,
+        stores=EVOLUTION_STORES,
+        promotions=PROMOTIONS,
+    )
+    optimizer = SkillOptimizer(
+        project_root=PROJECT_ROOT,
+        stores=EVOLUTION_STORES,
+        review_store=BACKEND.review_store,
+    )
+    return scout, optimizer
+
+
+EVOLUTION_SCOUT, SKILL_OPTIMIZER = _build_evolution_modules()
 TASK_MGR = TaskManager(BACKEND.task_store)
 BG = BackgroundManager(BACKEND.job_queue)
 BUS = MessageBus(BACKEND.message_store)
@@ -389,6 +433,103 @@ def rollback_skill(skill: str, version: str) -> str:
     )
 
 
+def evolution_scan() -> str:
+    result = EVOLUTION_SCOUT.scan()
+    return result.summary or "No new signals."
+
+
+def evolution_opportunities() -> str:
+    opportunities = sorted(
+        EVOLUTION_STORES.opportunities.list(),
+        key=lambda opp: opp.get("evolution_score", 0.0),
+        reverse=True,
+    )
+    if not opportunities:
+        return "No opportunities. Run /evolution-scan first."
+    lines = ["Evolution Opportunities:"]
+    for opp in opportunities:
+        lines.append(
+            f"{opp['opportunity_id']} score={opp.get('evolution_score', 0):.2f} "
+            f"decision={opp.get('decision')} skill={opp.get('target_skill')} "
+            f"signals={len(opp.get('signal_ids', []))} "
+            f"summary={opp.get('summary', '')[:120]}"
+        )
+    return "\n".join(lines)
+
+
+def evolution_opportunity_detail(opportunity_id: str) -> str:
+    opp = EVOLUTION_STORES.opportunities.get(opportunity_id)
+    if not opp:
+        return f"Unknown opportunity_id: {opportunity_id}"
+    return json.dumps(opp, indent=2, ensure_ascii=False)
+
+
+def promotion_batches() -> str:
+    batches = EVOLUTION_STORES.batches.list()
+    if not batches:
+        return "No promotion batches."
+    return "\n".join(
+        f"{b['batch_id']} skill={b['target_skill']} opportunities={len(b['opportunity_ids'])} "
+        f"priority={b['priority']} risk={b['risk_level']}"
+        for b in batches
+    )
+
+
+def promotion_batch_detail(batch_id: str) -> str:
+    batch = EVOLUTION_STORES.batches.get(batch_id)
+    if not batch:
+        return f"Unknown batch_id: {batch_id}"
+    return json.dumps(batch, indent=2, ensure_ascii=False)
+
+
+def promotion_batch_create(opportunity_ids: list[str]) -> str:
+    try:
+        batch = EVOLUTION_SCOUT.create_batch(opportunity_ids)
+    except ValueError as exc:
+        return f"Error: {exc}"
+    return f"Created batch {batch['batch_id']} (skill={batch['target_skill']})."
+
+
+def skill_optimize(batch_id: str) -> str:
+    result = SKILL_OPTIMIZER.propose(batch_id=batch_id)
+    return result.message
+
+
+def skill_edits() -> str:
+    edits = EVOLUTION_STORES.skill_edits.list()
+    if not edits:
+        return "No skill edits."
+    return "\n".join(
+        f"{e['edit_id']} skill={e['target_skill']} status={e.get('status')} "
+        f"ops={len(e.get('edit_ops', []))}"
+        for e in edits
+    )
+
+
+def skill_edit_detail(edit_id: str) -> str:
+    edit = EVOLUTION_STORES.skill_edits.get(edit_id)
+    if not edit:
+        return f"Unknown edit_id: {edit_id}"
+    return json.dumps(edit, indent=2, ensure_ascii=False)
+
+
+def skill_edit_validate(edit_id: str) -> str:
+    result = SKILL_OPTIMIZER.validate(edit_id)
+    if not result.ok:
+        return result.message
+    submit = SKILL_OPTIMIZER.submit_review(edit_id)
+    return submit.message
+
+
+def rejected_edits() -> str:
+    items = EVOLUTION_STORES.rejected_edits.list()
+    if not items:
+        return "No rejected edits."
+    return "\n".join(
+        f"{r['edit_id']} reason={r['reject_reason']}" for r in items
+    )
+
+
 # === SECTION: repl ===
 if __name__ == "__main__":
     history = []
@@ -490,6 +631,41 @@ if __name__ == "__main__":
                 print("Usage: /rollback-skill <skill> <version>")
             else:
                 print(rollback_skill(parts[1], parts[2]))
+            continue
+        if query.strip() == "/evolution-scan":
+            print(evolution_scan())
+            continue
+        if query.strip() == "/evolution-opportunities":
+            print(evolution_opportunities())
+            continue
+        if query.strip().startswith("/evolution-opportunity "):
+            print(evolution_opportunity_detail(query.strip().split(maxsplit=1)[1]))
+            continue
+        if query.strip() == "/promotion-batches":
+            print(promotion_batches())
+            continue
+        if query.strip().startswith("/promotion-batch-create "):
+            tail = query.strip().split(maxsplit=1)[1]
+            opportunity_ids = [chunk for chunk in tail.split() if chunk]
+            print(promotion_batch_create(opportunity_ids))
+            continue
+        if query.strip().startswith("/promotion-batch "):
+            print(promotion_batch_detail(query.strip().split(maxsplit=1)[1]))
+            continue
+        if query.strip().startswith("/skill-optimize "):
+            print(skill_optimize(query.strip().split(maxsplit=1)[1]))
+            continue
+        if query.strip() == "/skill-edits":
+            print(skill_edits())
+            continue
+        if query.strip().startswith("/skill-edit-validate "):
+            print(skill_edit_validate(query.strip().split(maxsplit=1)[1]))
+            continue
+        if query.strip().startswith("/skill-edit "):
+            print(skill_edit_detail(query.strip().split(maxsplit=1)[1]))
+            continue
+        if query.strip() == "/rejected-edits":
+            print(rejected_edits())
             continue
         history.append({"role": "user", "content": query})
         agent_loop(

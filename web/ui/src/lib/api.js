@@ -49,9 +49,35 @@ export const api = {
   promotion: (id) => request(`/api/promotions/${encodeURIComponent(id)}`),
   evolvePromotion: (id) =>
     request(`/api/promotions/${encodeURIComponent(id)}/evolve`, { method: "POST" }),
+  fastTrackPromotion: (id) =>
+    request(`/api/promotions/${encodeURIComponent(id)}/fast-track`, { method: "POST" }),
   regeneratePromotion: (id) =>
     request(`/api/promotions/${encodeURIComponent(id)}/regenerate`, { method: "POST" }),
   evolutionState: (id) => request(`/api/evolution/${encodeURIComponent(id)}/state`),
+  evolutionScoutScan: () => request("/api/evolution/scout/scan", { method: "POST" }),
+  evolutionScoutSignals: () => request("/api/evolution/scout/signals"),
+  evolutionScoutOpportunities: () => request("/api/evolution/scout/opportunities"),
+  evolutionScoutOpportunity: (id) =>
+    request(`/api/evolution/scout/opportunities/${encodeURIComponent(id)}`),
+  evolutionScoutBatches: () => request("/api/evolution/scout/batches"),
+  evolutionScoutBatchCreate: (opportunityIds) =>
+    request("/api/evolution/scout/batches", {
+      method: "POST",
+      body: JSON.stringify({ opportunity_ids: opportunityIds || [] }),
+    }),
+  evolutionOptimizerPropose: (body) =>
+    request("/api/evolution/optimizer/propose", {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }),
+  evolutionOptimizerEdits: () => request("/api/evolution/optimizer/edits"),
+  evolutionOptimizerEdit: (id) =>
+    request(`/api/evolution/optimizer/edits/${encodeURIComponent(id)}`),
+  evolutionOptimizerValidate: (id) =>
+    request(`/api/evolution/optimizer/edits/${encodeURIComponent(id)}/validate`, {
+      method: "POST",
+    }),
+  evolutionOptimizerRejected: () => request("/api/evolution/optimizer/rejected"),
   assets: () => request("/api/assets"),
   skills: () => request("/api/skills"),
   skill: (name) => request(`/api/skills/${encodeURIComponent(name)}`),
