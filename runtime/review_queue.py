@@ -164,6 +164,8 @@ class ReviewQueue:
             message = self._apply_regression_case(item)
         elif item.type == "skill.promotion":
             message = self._apply_skill_promotion(item)
+        elif item.type == "skill.bounded_edit":
+            message = self._apply_skill_bounded_edit(item)
         elif item.type == "skill.creation":
             message = self._apply_skill_creation(item)
         elif item.type == "tool.update":
@@ -191,6 +193,8 @@ class ReviewQueue:
         tool_name = item.tool_name or item.metadata.get("tool_name", "")
         if item.type == "skill.promotion" and item.target_files:
             return self._diff_for_skill_promotion(item)
+        if item.type == "skill.bounded_edit" and item.target_files:
+            return self._diff_for_skill_bounded_edit(item)
         if item.type in {"skill.creation", "tool.update"} and item.target_files:
             return self._diff_for_proposed_files(item)
         if item.type == "skill.regression_case" and item.target_files:
@@ -470,6 +474,65 @@ class ReviewQueue:
             raise
         return (
             f"Applied skill promotion {promo_id} to {target_file}; "
+            f"recorded skill version {version_record['version']}."
+        )
+
+    def _diff_for_skill_bounded_edit(self, item: ReviewItem) -> str:
+        from .evolution_stores import apply_edit_ops_to_text, validate_edit_ops
+
+        target_file = item.target_files[0]
+        edit_ops = item.metadata.get("edit_ops") or []
+        ok, reason = validate_edit_ops(edit_ops)
+        if not ok:
+            return f"# Bounded edit invalid: {reason}\n"
+        current = self._read_target(target_file)
+        proposed = apply_edit_ops_to_text(current, edit_ops)
+        return "".join(
+            difflib.unified_diff(
+                current.splitlines(keepends=True),
+                proposed.splitlines(keepends=True),
+                fromfile=target_file,
+                tofile=f"{target_file} (proposed)",
+            )
+        ) or f"# No diff for {target_file}\n"
+
+    def _apply_skill_bounded_edit(self, item: ReviewItem) -> str:
+        from .evolution_stores import apply_edit_ops_to_text, validate_edit_ops
+
+        if not item.target_files:
+            raise ValueError("Bounded edit review has no target file.")
+        expected_target = f"skills/{item.target_skill}/SKILL.md"
+        if item.target_files[0].replace("\\", "/") != expected_target:
+            raise ValueError(f"Bounded edit target must be {expected_target}.")
+        edit_ops = item.metadata.get("edit_ops") or []
+        ok, reason = validate_edit_ops(edit_ops)
+        if not ok:
+            raise ValueError(f"Refusing to apply invalid bounded edit: {reason}")
+        target_file = item.target_files[0]
+        base_content = self._read_target(target_file)
+        proposed = apply_edit_ops_to_text(base_content, edit_ops)
+        if proposed == base_content:
+            return f"Applied bounded edit; no SKILL.md change was needed for {target_file}."
+        self._write_target(target_file, proposed)
+        try:
+            version_record = self.evolution_registry.record_memory_promotion(
+                skill=item.target_skill,
+                skill_review=item.to_dict(),
+                target_file=target_file,
+                base_content=base_content,
+                new_content=proposed,
+                eval_result={
+                    "source_edit_id": item.metadata.get("source_edit_id", item.candidate_id),
+                    "source_signal_ids": item.metadata.get("source_signal_ids", []),
+                    "passed": True,
+                },
+                regression_review_ids=[],
+            )
+        except Exception:
+            self._write_target(target_file, base_content)
+            raise
+        return (
+            f"Applied bounded edit {item.candidate_id} to {target_file}; "
             f"recorded skill version {version_record['version']}."
         )
 
