@@ -2,6 +2,7 @@ import { RotateCcw } from "lucide-react";
 import { useState } from "react";
 import DiffPreview from "../components/DiffPreview";
 import EmptyState from "../components/EmptyState";
+import Paginator, { paginate } from "../components/Paginator";
 import { compact, formatDate } from "../lib/format";
 import { useTranslate } from "../lib/i18n.jsx";
 
@@ -16,7 +17,9 @@ export default function VersionsPage({
 }) {
   const t = useTranslate();
   const [tab, setTab] = useState("snapshot");
+  const [page, setPage] = useState(1);
   const selected = versions?.find((item) => versionKey(item) === selectedVersionKey);
+  const { pageItems, total, pageCount, page: safePage } = paginate(versions || [], page);
 
   return (
     <section className="workbench-section">
@@ -60,7 +63,7 @@ export default function VersionsPage({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-line bg-white">
-                    {versions.map((item) => {
+                    {pageItems.map((item) => {
                       const key = versionKey(item);
                       return (
                         <tr
@@ -82,6 +85,7 @@ export default function VersionsPage({
                   </tbody>
                 </table>
               </div>
+              <Paginator page={safePage} pageCount={pageCount} total={total} onPage={setPage} />
             </div>
 
             <aside className="section-panel flex max-h-[76vh] flex-col overflow-hidden">

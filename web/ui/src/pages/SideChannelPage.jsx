@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Activity, ChevronRight, RefreshCcw, Sparkles, ShieldAlert, ListChecks } from "lucide-react";
 import EmptyState from "../components/EmptyState";
+import Paginator, { paginate } from "../components/Paginator";
 import StatusPill from "../components/StatusPill";
 import { api, getErrorMessage } from "../lib/api";
 import { compact, formatDate } from "../lib/format";
@@ -19,6 +20,14 @@ export default function SideChannelPage() {
   const [selectedOpps, setSelectedOpps] = useState(new Set());
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState({ message: "", tone: "info" });
+  const [pages, setPages] = useState({ opportunities: 1, batches: 1, edits: 1, rejected: 1 });
+  const setSectionPage = useCallback((key, next) => {
+    setPages((prev) => ({ ...prev, [key]: next }));
+  }, []);
+  const switchSection = useCallback((next) => {
+    setSection(next);
+    setPages((prev) => ({ ...prev, [next]: 1 }));
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -198,7 +207,7 @@ export default function SideChannelPage() {
                   ? "bg-zinc-950 text-white"
                   : "text-zinc-700 hover:bg-zinc-50",
               ].join(" ")}
-              onClick={() => setSection(key)}
+              onClick={() => switchSection(key)}
             >
               {t(`side_channel.tab.${key}`)}
               {counts[key] ? (
@@ -224,6 +233,8 @@ export default function SideChannelPage() {
             onCreateBatch={createBatch}
             busy={busy}
             t={t}
+            page={pages.opportunities}
+            onPage={(n) => setSectionPage("opportunities", n)}
           />
         ) : null}
         {section === "batches" ? (
@@ -232,12 +243,28 @@ export default function SideChannelPage() {
             onOptimize={optimizeBatch}
             busy={busy}
             t={t}
+            page={pages.batches}
+            onPage={(n) => setSectionPage("batches", n)}
           />
         ) : null}
         {section === "edits" ? (
-          <EditsList edits={edits} onValidate={validateEdit} busy={busy} t={t} />
+          <EditsList
+            edits={edits}
+            onValidate={validateEdit}
+            busy={busy}
+            t={t}
+            page={pages.edits}
+            onPage={(n) => setSectionPage("edits", n)}
+          />
         ) : null}
-        {section === "rejected" ? <RejectedList items={rejected} t={t} /> : null}
+        {section === "rejected" ? (
+          <RejectedList
+            items={rejected}
+            t={t}
+            page={pages.rejected}
+            onPage={(n) => setSectionPage("rejected", n)}
+          />
+        ) : null}
       </div>
     </section>
   );
@@ -255,11 +282,12 @@ function Metric({ label, value, icon: Icon }) {
   );
 }
 
-function OpportunitiesList({ opportunities, signalsById, selected, onToggle, onCreateBatch, busy, t }) {
+function OpportunitiesList({ opportunities, signalsById, selected, onToggle, onCreateBatch, busy, t, page, onPage }) {
   if (!opportunities.length) {
     return <EmptyState title={t("side_channel.empty.opportunities")} />;
   }
   const selectedSkill = opportunities.find((opp) => selected.has(opp.opportunity_id))?.target_skill || "";
+  const { pageItems, total, pageCount, page: safePage } = paginate(opportunities, page);
   return (
     <div className="space-y-3">
       {selected.size ? (
@@ -277,7 +305,7 @@ function OpportunitiesList({ opportunities, signalsById, selected, onToggle, onC
           </button>
         </div>
       ) : null}
-      {opportunities.map((opp) => {
+      {pageItems.map((opp) => {
         const isRejected = opp.decision === "reject";
         const lockedByOtherSkill = Boolean(selectedSkill) && opp.target_skill !== selectedSkill;
         const isDisabled = isRejected || lockedByOtherSkill;
@@ -370,17 +398,19 @@ function OpportunitiesList({ opportunities, signalsById, selected, onToggle, onC
         </article>
       );
       })}
+      <Paginator page={safePage} pageCount={pageCount} total={total} onPage={onPage} />
     </div>
   );
 }
 
-function BatchesList({ batches, onOptimize, busy, t }) {
+function BatchesList({ batches, onOptimize, busy, t, page, onPage }) {
   if (!batches.length) {
     return <EmptyState title={t("side_channel.empty.batches")} />;
   }
+  const { pageItems, total, pageCount, page: safePage } = paginate(batches, page);
   return (
     <div className="space-y-3">
-      {batches.map((batch) => (
+      {pageItems.map((batch) => (
         <article key={batch.batch_id} className="section-panel p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
@@ -406,17 +436,19 @@ function BatchesList({ batches, onOptimize, busy, t }) {
           </div>
         </article>
       ))}
+      <Paginator page={safePage} pageCount={pageCount} total={total} onPage={onPage} />
     </div>
   );
 }
 
-function EditsList({ edits, onValidate, busy, t }) {
+function EditsList({ edits, onValidate, busy, t, page, onPage }) {
   if (!edits.length) {
     return <EmptyState title={t("side_channel.empty.edits")} />;
   }
+  const { pageItems, total, pageCount, page: safePage } = paginate(edits, page);
   return (
     <div className="space-y-3">
-      {edits.map((edit) => (
+      {pageItems.map((edit) => (
         <article key={edit.edit_id} className="section-panel p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
@@ -457,17 +489,19 @@ function EditsList({ edits, onValidate, busy, t }) {
           </div>
         </article>
       ))}
+      <Paginator page={safePage} pageCount={pageCount} total={total} onPage={onPage} />
     </div>
   );
 }
 
-function RejectedList({ items, t }) {
+function RejectedList({ items, t, page, onPage }) {
   if (!items.length) {
     return <EmptyState title={t("side_channel.empty.rejected")} />;
   }
+  const { pageItems, total, pageCount, page: safePage } = paginate(items, page);
   return (
     <div className="space-y-3">
-      {items.map((item) => (
+      {pageItems.map((item) => (
         <article key={item.edit_id} className="section-panel p-4">
           <div className="flex flex-wrap items-center gap-2">
             <span className="mono-badge">{item.edit_id}</span>
@@ -476,6 +510,7 @@ function RejectedList({ items, t }) {
           </div>
         </article>
       ))}
+      <Paginator page={safePage} pageCount={pageCount} total={total} onPage={onPage} />
     </div>
   );
 }

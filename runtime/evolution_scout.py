@@ -143,29 +143,40 @@ class EvolutionScout:
         all_signals = self.stores.signals.list()
         opportunities = self._cluster_into_opportunities(all_signals)
 
-        existing_opp_keys = {
-            (opp.get("target_skill", ""), tuple(sorted(opp.get("signal_ids", []))))
-            for opp in self.stores.opportunities.list()
-        }
+        existing_opp_by_key: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
+        for opp in self.stores.opportunities.list():
+            key = (opp.get("target_skill", ""), tuple(sorted(opp.get("signal_ids", []))))
+            existing_opp_by_key[key] = opp
+
         new_opportunities: list[str] = []
+        refreshed_opportunities = 0
         for opp in opportunities:
             key = (opp.target_skill, tuple(sorted(opp.signal_ids)))
-            if key in existing_opp_keys:
-                continue
-            stored = self.stores.opportunities.save(opp)
-            new_opportunities.append(stored["opportunity_id"])
-            existing_opp_keys.add(key)
+            existing = existing_opp_by_key.get(key)
+            if existing is not None:
+                # Refresh narrative + scores so users get up-to-date reasoning
+                # without losing the stable opportunity_id (used by Batch links).
+                opp.opportunity_id = existing["opportunity_id"]
+                if existing.get("created_at"):
+                    opp.created_at = existing["created_at"]
+                self.stores.opportunities.save(opp)
+                refreshed_opportunities += 1
+            else:
+                stored = self.stores.opportunities.save(opp)
+                new_opportunities.append(stored["opportunity_id"])
 
-        summary = (
-            f"scanned: signals_new={len(new_signals)} "
-            f"opportunities_new={len(new_opportunities)} "
-            f"unsafe_skipped={skipped}"
-        )
+        summary_parts = [
+            f"scanned: signals_new={len(new_signals)}",
+            f"opportunities_new={len(new_opportunities)}",
+        ]
+        if refreshed_opportunities:
+            summary_parts.append(f"opportunities_refreshed={refreshed_opportunities}")
+        summary_parts.append(f"unsafe_skipped={skipped}")
         return ScanResult(
             new_signal_ids=[s["signal_id"] for s in new_signals],
             new_opportunity_ids=new_opportunities,
             skipped_signal_count=skipped,
-            summary=summary,
+            summary=" ".join(summary_parts),
         )
 
     def create_batch(
