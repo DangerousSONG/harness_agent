@@ -6,7 +6,6 @@ import ReviewModal from "./components/ReviewModal";
 import { api, getErrorMessage } from "./lib/api";
 import { formatDate } from "./lib/format";
 import AssetsPage from "./pages/AssetsPage";
-import ChangesPage from "./pages/ChangesPage";
 import ChatPage from "./pages/ChatPage";
 import GovernancePage from "./pages/GovernancePage";
 import SettingsPage from "./pages/SettingsPage";
@@ -26,7 +25,6 @@ export default function App() {
   const initialRoute = routeFromLocation();
   const [page, setPageState] = useState(initialRoute.page);
   const [assetTab, setAssetTab] = useState(initialRoute.assetTab || "skills");
-  const [changesTab, setChangesTabState] = useState(initialRoute.changesTab || "proposed");
   const [governanceTab, setGovernanceTabState] = useState(initialRoute.governanceTab || "promotions");
   const [dashboard, setDashboard] = useState(null);
   const [reviews, setReviews] = useState([]);
@@ -58,23 +56,16 @@ export default function App() {
   function navigate(nextPage, options = {}) {
     const normalized = normalizePage(nextPage, options);
     if (normalized.assetTab) setAssetTab(normalized.assetTab);
-    if (normalized.changesTab) setChangesTabState(normalized.changesTab);
     if (normalized.governanceTab) setGovernanceTabState(normalized.governanceTab);
     setPageState(normalized.page);
     updateUrl(normalized.page, {
       assetTab: normalized.assetTab || assetTab,
-      changesTab: normalized.changesTab || changesTab,
       governanceTab: normalized.governanceTab || governanceTab,
     });
   }
 
   function setPage(nextPage) {
     navigate(nextPage);
-  }
-
-  function setChangesTab(nextTab) {
-    setChangesTabState(nextTab);
-    updateUrl("assets-changes", { changesTab: nextTab });
   }
 
   function setGovernanceTab(nextTab) {
@@ -146,7 +137,6 @@ export default function App() {
       const next = routeFromLocation();
       setPageState(next.page);
       setAssetTab(next.assetTab || "skills");
-      setChangesTabState(next.changesTab || "proposed");
       setGovernanceTabState(next.governanceTab || "promotions");
     };
     window.addEventListener("popstate", onPopState);
@@ -1240,15 +1230,6 @@ export default function App() {
             onChatAction={handleChatAction}
           />
         ) : null}
-        {page === "assets-changes" ? (
-          <ChangesPage
-            changes={changes}
-            onOpenReview={openReview}
-            onOpenVersions={() => setPage("versions")}
-            activeTab={changesTab}
-            onTabChange={setChangesTab}
-          />
-        ) : null}
         {page === "assets-library" ? (
           <AssetsPage
             skills={skills}
@@ -1367,7 +1348,7 @@ function routeFromLocation() {
     "/chat": { page: "chat" },
     "/workspace": { page: "workspace" },
     "/assets/library": { page: "assets-library", assetTab: normalizeLibraryTab(tab) },
-    "/assets/changes": { page: "assets-changes", changesTab: normalizeChangesTab(tab) },
+    "/assets/changes": { page: "assets-governance", governanceTab: "reviews" },
     "/assets/governance": { page: "assets-governance", governanceTab: normalizeGovernanceTab(tab) },
     "/settings": { page: "settings" },
     "/assets/skills": { page: "assets-library", assetTab: "skills" },
@@ -1378,7 +1359,7 @@ function routeFromLocation() {
     "/promotions": { page: "assets-governance", governanceTab: "promotions" },
     "/reviews": { page: "assets-governance", governanceTab: "reviews" },
     "/versions": { page: "assets-governance", governanceTab: "versions" },
-    "/changes": { page: "assets-changes", changesTab: "proposed" },
+    "/changes": { page: "assets-governance", governanceTab: "reviews" },
     "/assets": { page: "assets-library", assetTab: "skills" },
     "/": { page: "chat" },
   };
@@ -1390,7 +1371,7 @@ function normalizePage(page, options = {}) {
     return { page: "assets-library", assetTab: normalizeLibraryTab(options.assetTab) };
   }
   if (page === "changes" || page === "assets-changes") {
-    return { page: "assets-changes", changesTab: normalizeChangesTab(options.changesTab) };
+    return { page: "assets-governance", governanceTab: "reviews" };
   }
   if (page === "reviews") return { page: "assets-governance", governanceTab: "reviews" };
   if (page === "versions") return { page: "assets-governance", governanceTab: "versions" };
@@ -1416,7 +1397,6 @@ function routeForPage(page, state = {}) {
   if (page === "workspace") return "/workspace";
   if (page === "settings") return "/settings";
   if (page === "assets-library") return `/assets/library?tab=${normalizeLibraryTab(state.assetTab)}`;
-  if (page === "assets-changes") return `/assets/changes?tab=${normalizeChangesTab(state.changesTab)}`;
   if (page === "assets-governance") return `/assets/governance?tab=${normalizeGovernanceTab(state.governanceTab)}`;
   return "/chat";
 }
@@ -1426,12 +1406,9 @@ function normalizeLibraryTab(tab) {
   return ["skills", "tools", "workflows", "memories", "eval-cases"].includes(normalized) ? normalized : "skills";
 }
 
-function normalizeChangesTab(tab) {
-  return ["proposed", "review-required", "applied", "failed", "archived"].includes(tab) ? tab : "proposed";
-}
 
 function normalizeGovernanceTab(tab) {
-  return ["promotions", "reviews", "versions", "rollbacks", "safety-checks", "side-channel"].includes(tab) ? tab : "promotions";
+  return ["promotions", "reviews", "versions", "side-channel"].includes(tab) ? tab : "promotions";
 }
 
 function makeId() {
