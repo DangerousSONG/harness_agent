@@ -27,7 +27,7 @@ export default function App() {
   const [page, setPageState] = useState(initialRoute.page);
   const [assetTab, setAssetTab] = useState(initialRoute.assetTab || "skills");
   const [changesTab, setChangesTabState] = useState(initialRoute.changesTab || "proposed");
-  const [governanceTab, setGovernanceTabState] = useState(initialRoute.governanceTab || "reviews");
+  const [governanceTab, setGovernanceTabState] = useState(initialRoute.governanceTab || "promotions");
   const [dashboard, setDashboard] = useState(null);
   const [reviews, setReviews] = useState([]);
   const [promotions, setPromotions] = useState([]);
@@ -147,7 +147,7 @@ export default function App() {
       setPageState(next.page);
       setAssetTab(next.assetTab || "skills");
       setChangesTabState(next.changesTab || "proposed");
-      setGovernanceTabState(next.governanceTab || "reviews");
+      setGovernanceTabState(next.governanceTab || "promotions");
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -1250,6 +1250,14 @@ export default function App() {
             onCreateRollback={createRollbackReview}
             busyVersionKey={busyVersionKey}
             changes={changes}
+            promotions={promotions}
+            busyPromoId={busyPromoId}
+            onViewPromotion={(promoId) => {
+              setSelectedPromoId(promoId);
+              viewPromotion(promoId);
+            }}
+            onEvolvePromotion={evolvePromotion}
+            onRegeneratePromotion={regeneratePromotion}
           />
         ) : null}
         {page === "settings" ? <SettingsPage dashboard={dashboard} /> : null}
@@ -1334,6 +1342,7 @@ function routeFromLocation() {
     "/assets/workflows": { page: "assets-library", assetTab: "workflows" },
     "/assets/memories": { page: "assets-library", assetTab: "memories" },
     "/assets/eval-cases": { page: "assets-library", assetTab: "eval-cases" },
+    "/promotions": { page: "assets-governance", governanceTab: "promotions" },
     "/reviews": { page: "assets-governance", governanceTab: "reviews" },
     "/versions": { page: "assets-governance", governanceTab: "versions" },
     "/changes": { page: "assets-changes", changesTab: "proposed" },
@@ -1389,7 +1398,7 @@ function normalizeChangesTab(tab) {
 }
 
 function normalizeGovernanceTab(tab) {
-  return ["reviews", "versions", "rollbacks", "safety-checks"].includes(tab) ? tab : "reviews";
+  return ["promotions", "reviews", "versions", "rollbacks", "safety-checks"].includes(tab) ? tab : "promotions";
 }
 
 function makeId() {
