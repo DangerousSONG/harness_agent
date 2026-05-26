@@ -15,7 +15,20 @@ Harness Agent 是一个本地优先的 **SafeHarness + Self-Evolving Skills** �
 → Skill Version
 ```
 
-七个核心角色：
+旁路（不替代主链路，仅做批量发现 + 受约束补丁）：
+
+```text
+Memory / PROMO
+→ EvolutionScout（只读扫描）
+→ EvolutionOpportunity / PromotionBatch
+→ SkillOptimizer（生成 bounded SkillEditProposal）
+→ ValidationGate（失败进 rejected_edits）
+→ ReviewQueue: skill.bounded_edit
+→ Approve / Apply
+→ Skill Version
+```
+
+主链路七个核心角色：
 
 1. SafeHarness 负责拦截高风险动作。
 2. ReviewQueue 负责人审。
@@ -24,6 +37,11 @@ Harness Agent 是一个本地优先的 **SafeHarness + Self-Evolving Skills** �
 5. `/evolve-skill` 负责推进流程。
 6. Regression Gate 防止退化。
 7. Skill Evolution Registry 负责版本追溯。
+
+旁路两个辅助模块（不替代主链路，不绕过 ReviewQueue）：
+
+8. **EvolutionScout** 离线扫描 memory + PROMO，判断“该不该进化、先优化谁、哪些 PROMO 应该合批”。只读，不创建 review。
+9. **SkillOptimizer** 接 Scout 的 batch / opportunity，生成 bounded edit 提案（仅 `add/replace/delete`，仅作用于 `## Memory-derived rules`）。受约束写，必须经 ValidationGate 才能创建 `skill.bounded_edit` review；不能直接 apply。
 
 核心原则：
 
@@ -41,6 +59,8 @@ Harness Agent 是一个本地优先的 **SafeHarness + Self-Evolving Skills** �
 - **`/evolve-skill` 流程向导**：根据当前状态创建或复用下一步 review，只提示下一步，不绕过审批。
 - **Regression Gate 防退化**：没有 regression coverage 时，不允许 apply `SKILL.md` patch。
 - **Skill Evolution Registry 版本追溯**：`skill.promotion` apply 成功后会生成 `.skills_versions/<skill>/` 版本记录。
+- **Side-Channel Evolution Pipeline**：`EvolutionScout` 离线扫描 memory + PROMO 形成 `LearningSignal` 与 `EvolutionOpportunity`；`SkillOptimizer` 生成受约束的 bounded edit 提案（仅 `add/replace/delete`，仅作用于 `## Memory-derived rules`），失败进入 `rejected_edits`，成功仅创建 `skill.bounded_edit` 审批，不绕过 ReviewQueue。
+- **Web Workbench**：`web/server.py` 提供 FastAPI 资产 / 审批 / 进化只读和操作端点，`web/ui/` 为 React + Vite 工作台（Self-Evolution / Reviews / Versions / Settings 等），与 CLI 共享同一套审批和版本数据。
 - **Runtime Backend 抽象**：默认使用 `LocalBackend`，并保留 `TaskStore`、`MessageStore`、`JobQueue`、`AgentRunner`、`ReviewStore` 等接口。
 
 ## 系统主流程
@@ -166,6 +186,17 @@ python .\harness\agent_harness.py
 | `/skill-versions <skill>` | List recorded versions for a skill. |
 | `/skill-version <skill> <version>` | Show one skill-version record. |
 | `/rollback-skill <skill> <version>` | Create a rollback review without directly modifying files. |
+| `/evolution-scan` | Scout 扫描 memory + PROMO，生成新的 LearningSignal 与 EvolutionOpportunity。只读，不修改 `SKILL.md`。 |
+| `/evolution-opportunities` | 列出当前 opportunity，按 `evolution_score` 降序。 |
+| `/evolution-opportunity <opp_id>` | 查看 opportunity 详情：证据、决策、`should_improve` / `must_not_regress`。 |
+| `/promotion-batches` | 列出 promotion batch。 |
+| `/promotion-batch <batch_id>` | 查看单个 batch 详情。 |
+| `/promotion-batch-create <opp_id...>` | 把多个 opportunity 合并为一个 batch（必须同 skill）。 |
+| `/skill-optimize <batch_id>` | Optimizer 基于 batch 生成 bounded `SkillEditProposal`，不修改 `SKILL.md`。 |
+| `/skill-edits` | 列出所有 SkillEditProposal。 |
+| `/skill-edit <edit_id>` | 查看 edit 详情和 `edit_ops`。 |
+| `/skill-edit-validate <edit_id>` | 运行 ValidationGate，通过则创建 `skill.bounded_edit` review。失败则归入 `rejected_edits/`，不创建 review。 |
+| `/rejected-edits` | 列出被拒绝的 edit 与 reject_reason。 |
 | `/compact` | Manually compact the current context. |
 | `/tasks` | Show local tasks. |
 | `/team` | Show teammate status. |
@@ -418,6 +449,80 @@ memory → PROMO → regression REV → skill patch REV → approve → apply �
 
 Skill Evolution Registry 是版本登记模块，不是一个 Skill。它不参与 runtime skill loading；active runtime skill 仍然是 `skills/<skill>/SKILL.md`。
 
+## Side-Channel Evolution Pipeline
+
+主链路（Skill Memory → PROMO → `/evolve-skill`）保持不变。旁路新增两个只读 / 受约束写入的模块，专门处理“该不该进化、先优化谁、如何小步安全地改 skill”这类批量判断。
+
+```text
+memory + ERR + LRN + PROMO
+   ↓               (read-only)
+EvolutionScout.scan
+   ↓
+LearningSignal   ──┐
+                  └→ EvolutionOpportunity ──→ PromotionBatch
+                                                  ↓
+                                          SkillOptimizer.propose
+                                                  ↓
+                                          SkillEditProposal
+                                          (edit_ops on
+                                           "## Memory-derived rules")
+                                                  ↓
+                                         ValidationGate
+                                          ┌───────┴───────┐
+                                       reject           pass
+                                          │               │
+                                .evolution/rejected   ReviewQueue
+                                  _edits/             skill.bounded_edit
+                                                          ↓
+                                                /approve  +  /apply
+                                                          ↓
+                                                  skills/<skill>/SKILL.md
+                                                          ↓
+                                              Skill Evolution Registry
+```
+
+模块边界：
+
+- **Scout 只读**：扫描 `.skills_memory/`、`skills/*/memory/`、`PROMOTION_CANDIDATES.md`。Scout 不写 `SKILL.md`，不写 `eval/cases.yaml`，不创建 review，不修改 evaluator / scorer / regression gate。它只在 `.evolution/` 下落地 signal、opportunity、batch。
+- **Optimizer 受约束写**：只能在 `.evolution/skill_edits/` 中草拟 bounded edit；`edit_ops` 仅允许 `add / replace / delete`，`target_section` 必须为 `## Memory-derived rules`，单次最多 5 个 op，每个 op 文本不超过 500 字符。Optimizer 对象本身没有 `apply / write_skill` 方法。
+- **ValidationGate**：MVP 为 deterministic 评分（读取目标 `SKILL.md` + `eval/cases.yaml`），接口预留给后续 LLM 评测器。失败的 edit 进入 `.evolution/rejected_edits/`，**不会**创建 review。
+- **审批仍走 ReviewQueue**：验证通过的 edit 创建 `skill.bounded_edit` 类型 review，由人审查 diff，`/approve` 之后再 `/apply`。`apply` 时会重新校验 `edit_ops` 合法性、写文件，并登记新版本到 `.skills_versions/`。
+
+落盘目录：
+
+```text
+.evolution/
+├─ signals/                # SIG-xxxxxxxx.json
+├─ opportunities/          # OPP-xxxxxxxx.json
+├─ batches/                # BATCH-xxxxxxxx.json
+├─ skill_edits/            # EDIT-xxxxxxxx.json
+├─ validation_results/     # VAL-xxxxxxxx.json
+└─ rejected_edits/         # EDIT-xxxxxxxx.json（被拒绝后归档）
+```
+
+所有判断和补丁都必须可追溯到原始 memory / error / learning / PROMO：
+
+- 每个 `LearningSignal` 都带 `source_path` + `source_ref`。
+- 每个 `EvolutionOpportunity` 都带 `signal_ids`。
+- 每个 `PromotionBatch` 都带 `opportunity_ids` 和 `promo_ids`。
+- 每个 `SkillEditProposal` 都带 `source_batch_id`、`source_opportunity_ids`、`source_signal_ids`、`source_promo_ids`。
+- 创建的 `skill.bounded_edit` review 会把这些 ID 串带在 `metadata` 中，便于回溯。
+
+典型流（CLI）：
+
+```text
+/evolution-scan
+/evolution-opportunities
+/evolution-opportunity OPP-xxxxxxxx          # 看证据 + 决策原因
+/promotion-batch-create OPP-xxxxxxxx OPP-yyyyyyyy
+/skill-optimize BATCH-xxxxxxxx
+/skill-edit EDIT-xxxxxxxx                    # 看 edit_ops
+/skill-edit-validate EDIT-xxxxxxxx           # 通过则自动 submit_review，得到 REV-xxxx
+/review REV-xxxx
+/approve REV-xxxx
+/apply REV-xxxx
+```
+
 ## 完整示例：markdown_writer
 
 1. 用户多次纠正读书笔记格式：
@@ -489,6 +594,7 @@ recorded skill version v0.1.1
 - 不会在缺少 regression coverage 时 apply skill patch。
 - 不会把 `policy_candidate` 直接写入 `SKILL.md`。
 - 不会把 secret、prompt injection、bypass approval、disable safety 沉淀为长期规则。
+- Side-channel Scout 只读，Optimizer 不能直接 apply；`edit_ops` 仅 `add / replace / delete`，section 必须为 `## Memory-derived rules`；evaluator / scorer / regression gate 不能被 Scout 或 Optimizer 修改。
 - 所有 `SKILL.md` 进化必须可追溯到：
 
 ```text
@@ -514,12 +620,13 @@ memory → PROMO → regression REV → skill patch REV → approve → apply �
 ```text
 self-evolving/
 ├─ harness/      # REPL、主循环、prompt、任务、消息、后台任务和 teammate 管理
-├─ runtime/      # backend 抽象、Skill 加载、Skill memory、ReviewQueue、进化流程
+├─ runtime/      # backend 抽象、Skill 加载、Skill memory、ReviewQueue、主链路进化流程、side-channel Scout/Optimizer
 ├─ safety/       # SafeHarness 事件、决策、策略、guard 和审计
 ├─ tools/        # OpenAI tool schema 和 handler 分发
 ├─ skills/       # Skill 定义、memory 和 eval cases
+├─ web/          # FastAPI server + React/Vite 工作台 UI
 ├─ docs/         # 设计文档、变更记录和历史 notes
-└─ tests/        # self_improvement 等单元测试
+└─ tests/        # self_improvement、side-channel 进化等单元测试
 ```
 
 ## 本地目录与 .gitignore
@@ -535,6 +642,7 @@ self-evolving/
 | `.reviews/` | ReviewQueue item 和 patch preview |
 | `.skills_memory/` | 全局 memory 和 PROMO |
 | `.skills_versions/` | Skill evolution version records and snapshots |
+| `.evolution/` | Side-channel Scout / Optimizer 落盘的 signal、opportunity、batch、skill_edit、validation_result、rejected_edit |
 | `skills/*/memory/` | 单个 skill 的 memory |
 
 建议 `.gitignore` 包含：
@@ -556,6 +664,7 @@ __pycache__/
 .reviews/
 .skills_memory/
 .skills_versions/
+.evolution/
 skills/*/memory/
 ```
 
