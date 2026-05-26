@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { Eye, Rocket, RefreshCcw, Zap } from "lucide-react";
 import EmptyState from "../components/EmptyState";
+import Paginator, { paginate } from "../components/Paginator";
 import StatusPill from "../components/StatusPill";
 import { compact } from "../lib/format";
 import { useTranslate } from "../lib/i18n.jsx";
@@ -19,6 +21,8 @@ const STATUS_TONE = {
 
 export default function PromotionsPage({ promotions, busyPromoId, onView, onEvolve, onRegenerate, onFastTrack }) {
   const t = useTranslate();
+  const [page, setPage] = useState(1);
+  const { pageItems, total, pageCount, page: safePage } = paginate(promotions || [], page);
   return (
     <section className="min-h-0 flex-1 overflow-auto px-6 py-6">
       <div className="mx-auto max-w-6xl space-y-3">
@@ -29,7 +33,7 @@ export default function PromotionsPage({ promotions, busyPromoId, onView, onEvol
           <EmptyState title={t("promotions.empty")} />
         ) : (
           <div className="space-y-3">
-            {promotions.map((promo) => (
+            {pageItems.map((promo) => (
               <PromotionRow
                 key={promo.promo_id}
                 promo={promo}
@@ -41,6 +45,7 @@ export default function PromotionsPage({ promotions, busyPromoId, onView, onEvol
                 onFastTrack={onFastTrack}
               />
             ))}
+            <Paginator page={safePage} pageCount={pageCount} total={total} onPage={setPage} />
           </div>
         )}
       </div>

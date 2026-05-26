@@ -1,11 +1,15 @@
+import { useState } from "react";
 import { Eye } from "lucide-react";
 import EmptyState from "../components/EmptyState";
+import Paginator, { paginate } from "../components/Paginator";
 import StatusPill from "../components/StatusPill";
 import { compact, formatDate, titleize } from "../lib/format";
 import { useTranslate } from "../lib/i18n.jsx";
 
 export default function ReviewsPage({ reviews, actionProps, embedded = false }) {
   const t = useTranslate();
+  const [page, setPage] = useState(1);
+  const { pageItems, total, pageCount, page: safePage } = paginate(reviews || [], page);
   return (
     <section className="workbench-section">
       <div className="workbench-container">
@@ -50,7 +54,7 @@ export default function ReviewsPage({ reviews, actionProps, embedded = false }) 
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-line bg-white">
-                  {reviews.map((review) => (
+                  {pageItems.map((review) => (
                     <tr key={review.review_id} className="align-top transition hover:bg-blue-50/35">
                       <td className="px-4 py-4">
                         <span className="mono-badge">{review.review_id}</span>
@@ -104,6 +108,7 @@ export default function ReviewsPage({ reviews, actionProps, embedded = false }) 
                 </tbody>
               </table>
             </div>
+            <Paginator page={safePage} pageCount={pageCount} total={total} onPage={setPage} />
           </div>
         )}
       </div>

@@ -187,10 +187,14 @@ class EvolutionPipelineTestCase(unittest.TestCase):
 
     def test_scan_is_idempotent_no_duplicate_signals(self):
         self.scout.scan()
-        first_count = len(self.stores.signals.list())
+        first_signals = len(self.stores.signals.list())
+        first_opps = {opp["opportunity_id"] for opp in self.stores.opportunities.list()}
         self.scout.scan()
-        second_count = len(self.stores.signals.list())
-        self.assertEqual(first_count, second_count)
+        second_signals = len(self.stores.signals.list())
+        second_opps = {opp["opportunity_id"] for opp in self.stores.opportunities.list()}
+        # Re-scan must not duplicate signals or opportunities, only refresh.
+        self.assertEqual(first_signals, second_signals)
+        self.assertEqual(first_opps, second_opps)
 
     def test_low_value_self_improvement_only_signal_is_deferred(self):
         # Add a memory under self_improvement only -> Scout should defer.
