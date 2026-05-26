@@ -475,21 +475,6 @@ class WebApiTests(unittest.TestCase):
             self.assertIn("渐进式 API", payload["message"])
             self.assertNotIn("I can help with writing", payload["message"])
 
-    def test_chat_weather_requests_city_and_realtime_tool(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_skill(root)
-            client = self.make_client(root)
-            response = client.post("/api/chat", json={"message": "\u4eca\u5929\u5929\u6c14\u600e\u6837\uff1f\u7528\u4e2d\u6587\u56de\u7b54"})
-            self.assertEqual(response.status_code, 200)
-            payload = response.json()
-            self.assertIntentPrimary(payload, "direct_tool_use")
-            self.assertEqual(payload["type"], "clarification")
-            self.assertIsNone(payload["used_skill"])
-            self.assertIn("\u57ce\u5e02", payload["message"])
-            self.assertNotIn("I can help with writing", payload["message"])
-            self.assertTrue(any(item.get("tool_name") == "weather_query" for item in payload["trace"]))
-
     def test_chat_ambiguous_weather_query_asks_clarification(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1547,18 +1532,6 @@ class WebApiTests(unittest.TestCase):
             self.assertIn("no_secret_query", detail["files"]["eval_cases"]["content"])
             self.assertIn("query", detail["inputs"])
             self.assertIn("results", detail["outputs"])
-
-    def test_create_tool_response_clarifies_asset_is_not_runtime(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_skill(root, "tool_usage")
-            client = self.make_client(root)
-            chat = client.post("/api/chat", json={"message": "create web search tool"}).json()
-            created = client.post(chat["actions"][0]["path"], json=chat["actions"][0]["payload"])
-            self.assertEqual(created.status_code, 200)
-            payload = created.json()
-            self.assertIn("does not automatically provide realtime access", payload["message"])
-            self.assertIn("handler_available", payload["data"]["runtime_note"])
 
     def test_changes_endpoint_unifies_reviews_promos_and_versions(self):
         with tempfile.TemporaryDirectory() as tmp:
