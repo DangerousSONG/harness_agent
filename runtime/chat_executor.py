@@ -105,7 +105,7 @@ class Executor:
                 {"safe": False, "risk_labels": ["kb_unavailable"]},
                 task_mode, intent, asset_route, capability, risk, prefix_trace,
             )
-        bundle = store.qa_context(kb_ids)
+        bundle = store.qa_context(kb_ids, query=message)
         sources = bundle["sources"]
         if not bundle["context"].strip():
             return self.composer.compose(
@@ -132,13 +132,30 @@ class Executor:
             "Configured OPENAI_MODEL did not return a usable answer; "
             "the excerpts above are the raw context that would have been used."
         )
+        retrieval_mode = bundle.get("retrieval", "naive_concat")
+        if retrieval_mode == "bm25":
+            sources_summary = ", ".join(
+                f"{s['kb_name']}::{s['path']} (score={s.get('score', 0):.2f})"
+                for s in sources[:4]
+            ) or "no sources"
+            kb_summary = (
+                f"BM25 picked {len(sources)} chunk(s) "
+                f"({bundle['used_bytes']} bytes) from {len(kb_ids)} kb(s)"
+            )
+        else:
+            sources_summary = ", ".join(f"{s['kb_name']}::{s['path']}" for s in sources[:4]) or "no sources"
+            kb_summary = (
+                f"naive concat: {bundle['used_bytes']} bytes from "
+                f"{len(sources)} file(s) across {len(kb_ids)} kb(s)"
+            )
         kb_trace = [
             trace("kb_context", "Knowledge base context", status="completed",
                   source_count=len(sources),
-                  summary=f"loaded {bundle['used_bytes']} bytes from {len(sources)} file(s) across {len(kb_ids)} kb(s)"),
+                  retrieval=retrieval_mode,
+                  summary=kb_summary),
             trace("sources", "Sources / citations", status="completed",
                   source_count=len(sources),
-                  summary=", ".join(f"{s['kb_name']}::{s['path']}" for s in sources[:4]) or "no sources"),
+                  summary=sources_summary),
         ]
         return self.composer.compose(
             response_type="answer",
@@ -150,7 +167,12 @@ class Executor:
             capability=capability,
             risk=risk,
             traces=prefix_trace + kb_trace,
-            data={"kb_ids": kb_ids, "sources": sources, "used_bytes": bundle["used_bytes"]},
+            data={
+                "kb_ids": kb_ids,
+                "sources": sources,
+                "used_bytes": bundle["used_bytes"],
+                "retrieval": retrieval_mode,
+            },
         )
 
     def _refuse(

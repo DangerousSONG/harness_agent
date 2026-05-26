@@ -162,5 +162,44 @@ class KnowledgeBaseStoreTests(unittest.TestCase):
         self.assertEqual(paths, ["README.md", "src/lib.py"])
 
 
+    def test_re_upload_appends_files(self):
+        kb_id = self._make_kb()
+        self.store.add_files(kb_id, {"a.md": b"# a"})
+        self.store.add_files(kb_id, {"b.md": b"# b", "src/c.py": b"x=1"})
+        paths = sorted(item["path"] for item in self.store.tree(kb_id))
+        self.assertEqual(paths, ["a.md", "b.md", "src/c.py"])
+        meta = self.store.get(kb_id)
+        self.assertEqual(meta["file_count"], 3)
+
+    def test_pdf_is_classified_via_extension(self):
+        # We don't try to construct a real PDF here; pypdf parsing is
+        # exercised in pypdf's own suite. We just check the extension
+        # routes to kind="pdf" with extraction_available present.
+        kb_id = self._make_kb()
+        self.store.add_files(kb_id, {"doc.pdf": b"%PDF-1.0\nfake\n%%EOF\n"})
+        payload = self.store.read(kb_id, "doc.pdf")
+        self.assertEqual(payload["kind"], "pdf")
+        self.assertIn("extraction_available", payload)
+        self.assertIn("content", payload)
+
+    def test_read_raw_returns_bytes_and_mime(self):
+        kb_id = self._make_kb()
+        self.store.add_files(kb_id, {
+            "report.pdf": b"%PDF-1.0\nfake\n",
+            "logo.png": b"\x89PNG\r\n\x1a\n binary",
+            "main.py": b"x = 1",
+        })
+        pdf_bytes, pdf_mime = self.store.read_raw(kb_id, "report.pdf")
+        self.assertEqual(pdf_mime, "application/pdf")
+        self.assertTrue(pdf_bytes.startswith(b"%PDF"))
+        png_bytes, png_mime = self.store.read_raw(kb_id, "logo.png")
+        self.assertEqual(png_mime, "image/png")
+        py_bytes, py_mime = self.store.read_raw(kb_id, "main.py")
+        self.assertEqual(py_mime, "application/octet-stream")
+        self.assertEqual(py_bytes, b"x = 1")
+        with self.assertRaises(FileNotFoundError):
+            self.store.read_raw(kb_id, "../etc/passwd")
+
+
 if __name__ == "__main__":
     unittest.main()

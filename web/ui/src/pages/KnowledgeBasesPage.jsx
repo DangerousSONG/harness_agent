@@ -42,7 +42,7 @@ export default function KnowledgeBasesPage() {
       setBusy(true);
       try {
         await api.knowledgeBaseDelete(kb.kb_id);
-        setStatus({ message: t("kb.deleted", { name: kb.name }), tone: "success" });
+        setStatus({ message: "", tone: "info" });
         await refresh();
       } catch (error) {
         setStatus({ message: getErrorMessage(error), tone: "error" });
@@ -74,20 +74,13 @@ export default function KnowledgeBasesPage() {
             </button>
             <button className="primary-button" onClick={() => setOpenModal(true)} disabled={busy}>
               <Plus className="h-4 w-4" />
-              {t("kb.action.new")}
+              {t("kb.action.new_short")}
             </button>
           </div>
         </header>
 
-        {status.message ? (
-          <div
-            className={[
-              "rounded-lg border px-3 py-2 text-sm",
-              status.tone === "error"
-                ? "border-rose-200 bg-rose-50/60 text-rose-700"
-                : "border-emerald-200 bg-emerald-50/60 text-emerald-700",
-            ].join(" ")}
-          >
+        {status.message && status.tone === "error" ? (
+          <div className="rounded-lg border border-rose-200 bg-rose-50/60 px-3 py-2 text-sm text-rose-700">
             {status.message}
           </div>
         ) : null}
@@ -159,9 +152,9 @@ export default function KnowledgeBasesPage() {
       {openModal ? (
         <NewKbModal
           onClose={() => setOpenModal(false)}
-          onDone={async (kb) => {
+          onDone={async () => {
             setOpenModal(false);
-            setStatus({ message: t("kb.created", { name: kb.name }), tone: "success" });
+            setStatus({ message: "", tone: "info" });
             await refresh();
           }}
         />

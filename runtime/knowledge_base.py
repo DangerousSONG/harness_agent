@@ -34,6 +34,15 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from .kb_index import (
+    BM25Search,
+    DEFAULT_TOP_K,
+    build_index as build_bm25_index,
+    chunk_text,
+    deserialize_index,
+    serialize_index,
+)
+
 
 MAX_FILE_BYTES = 2 * 1024 * 1024          # 2 MB per file
 MAX_TOTAL_BYTES = 100 * 1024 * 1024        # 100 MB per KB
@@ -187,7 +196,8 @@ class KnowledgeBaseStore:
         meta["truncated"] = truncated
         meta["updated_at"] = utc_now()
         self._write_meta(kb_dir, meta)
-        return meta
+        self._rebuild_index(kb_dir)
+        return self._read_meta(kb_dir) or meta
 
     # ---- github tarball import ---------------------------------------
 
@@ -264,6 +274,16 @@ class KnowledgeBaseStore:
             raise FileNotFoundError(f"file not found in kb: {relative_path}")
         kind = _classify_kind(target)
         size = target.stat().st_size
+        if kind == "pdf":
+            extracted = _extract_pdf_text(target.read_bytes())
+            return {
+                "path": relative_path,
+                "kind": "pdf",
+                "size": size,
+                "content": extracted,
+                "truncated": False,
+                "extraction_available": bool(extracted),
+            }
         if kind == "binary":
             return {
                 "path": relative_path,
@@ -299,17 +319,76 @@ class KnowledgeBaseStore:
             "truncated": truncated,
         }
 
+    def read_raw(self, kb_id: str, relative_path: str) -> tuple[bytes, str]:
+        """Return raw bytes + suggested content-type. Used for PDF iframe."""
+        kb_dir = self._require_kb_dir(kb_id)
+        files_root = kb_dir / "files"
+        target = self._safe_path(files_root, relative_path)
+        if target is None or not target.exists() or not target.is_file():
+            raise FileNotFoundError(f"file not found in kb: {relative_path}")
+        suffix = target.suffix.lower()
+        mime = {
+            ".pdf": "application/pdf",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".svg": "image/svg+xml",
+        }.get(suffix, "application/octet-stream")
+        return target.read_bytes(), mime
+
     # ---- Q&A context provider ----------------------------------------
 
-    def qa_context(self, kb_ids: list[str], *, byte_budget: int = MAX_QA_CONTEXT_BYTES) -> dict[str, Any]:
-        """Concatenate text files from selected KBs into a single payload
-        capped at ``byte_budget`` bytes. Returns the payload plus a list
-        of files actually consulted so callers can show provenance.
+    def qa_context(
+        self,
+        kb_ids: list[str],
+        *,
+        query: str = "",
+        byte_budget: int = MAX_QA_CONTEXT_BYTES,
+        top_k: int = DEFAULT_TOP_K,
+    ) -> dict[str, Any]:
+        """Pick chunks from the selected KBs to feed into chat Q&A.
+
+        Mode A — BM25 (preferred): when ``query`` is non-empty AND any
+        selected KB has an ``index.json``, score all chunks across those
+        KBs and return the top-k under the byte budget. Each source
+        carries its BM25 score and matched query terms for the trace.
+
+        Mode B — naive concat (fallback): used when no query is provided
+        or no KB is indexed (e.g. KBs created before indexing shipped).
         """
+        kb_ids = kb_ids[:3]
+        if query and query.strip():
+            bm25 = self._search_across(kb_ids, query.strip(), top_k=top_k)
+            if bm25 is not None and bm25["sources"]:
+                bm25.update({"byte_budget": byte_budget, "retrieval": "bm25"})
+                # Trim by byte budget while preserving rank order.
+                kept: list[dict[str, Any]] = []
+                kept_chunks: list[str] = []
+                used = 0
+                for source in bm25["sources"]:
+                    text = source.pop("text", "")
+                    header = f"\n\n--- {source['kb_name']}::{source['path']}  (score={source['score']:.2f}) ---\n"
+                    remaining = byte_budget - used
+                    if remaining <= 0:
+                        break
+                    excerpt = text[: max(0, remaining - len(header))]
+                    if not excerpt.strip():
+                        continue
+                    kept_chunks.append(header + excerpt)
+                    used += len(header) + len(excerpt)
+                    kept.append(source)
+                bm25["context"] = "".join(kept_chunks)
+                bm25["sources"] = kept
+                bm25["used_bytes"] = used
+                return bm25
+
+        # Naive concat fallback
         chunks: list[str] = []
         sources: list[dict[str, Any]] = []
         used = 0
-        for kb_id in kb_ids[:3]:  # hard cap of 3 KBs at the boundary
+        for kb_id in kb_ids:
             meta = self.get(kb_id)
             if meta is None:
                 continue
@@ -323,6 +402,8 @@ class KnowledgeBaseStore:
                 except FileNotFoundError:
                     continue
                 if payload["kind"] == "binary":
+                    continue
+                if payload["kind"] == "pdf" and not payload.get("content"):
                     continue
                 remaining = byte_budget - used
                 excerpt = payload["content"][: max(0, remaining)]
@@ -344,7 +425,84 @@ class KnowledgeBaseStore:
             "sources": sources,
             "byte_budget": byte_budget,
             "used_bytes": used,
+            "retrieval": "naive_concat",
         }
+
+    def _search_across(self, kb_ids: list[str], query: str, *, top_k: int) -> dict[str, Any] | None:
+        """Run BM25 over all indexed KBs in ``kb_ids`` and merge top-k.
+        Returns None if none of the KBs have an index yet."""
+        candidates: list[dict[str, Any]] = []
+        any_indexed = False
+        for kb_id in kb_ids:
+            kb_dir = self._kb_dir(kb_id)
+            if kb_dir is None:
+                continue
+            index = self._load_index(kb_dir)
+            if index is None:
+                continue
+            any_indexed = True
+            meta = self._read_meta(kb_dir) or {"name": kb_id}
+            search = BM25Search(index)
+            hits = search.query(query, top_k=top_k)
+            for hit in hits:
+                candidates.append({
+                    "kb_id": kb_id,
+                    "kb_name": meta.get("name", kb_id),
+                    "path": hit["path"],
+                    "start": hit["start"],
+                    "end": hit["end"],
+                    "score": hit["score"],
+                    "matched_terms": hit["matched_terms"],
+                    "text": hit["text"],
+                })
+        if not any_indexed:
+            return None
+        ranked = sorted(candidates, key=lambda c: -c["score"])[:top_k]
+        return {"sources": ranked}
+
+    def _rebuild_index(self, kb_dir: Path) -> None:
+        files_root = kb_dir / "files"
+        records: list[dict[str, Any]] = []
+        if files_root.exists():
+            for path in sorted(files_root.rglob("*")):
+                if not path.is_file():
+                    continue
+                kind = _classify_kind(path)
+                if kind == "binary":
+                    continue
+                relative = path.relative_to(files_root).as_posix()
+                try:
+                    if kind == "pdf":
+                        text = _extract_pdf_text(path.read_bytes())
+                    else:
+                        text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                if not text or not text.strip():
+                    continue
+                for piece in chunk_text(text):
+                    records.append({
+                        "path": relative,
+                        "start": piece["start"],
+                        "end": piece["end"],
+                        "text": piece["text"],
+                    })
+        index_payload = build_bm25_index(records)
+        meta = self._read_meta(kb_dir) or {}
+        meta["chunk_count"] = len(index_payload.get("chunks", []))
+        meta["indexed_at"] = index_payload.get("indexed_at", utc_now())
+        meta["retrieval"] = "bm25" if records else "empty"
+        self._write_meta(kb_dir, meta)
+        (kb_dir / "index.json").write_text(serialize_index(index_payload), encoding="utf-8")
+
+    def _load_index(self, kb_dir: Path) -> dict[str, Any] | None:
+        path = kb_dir / "index.json"
+        if not path.exists():
+            return None
+        try:
+            return deserialize_index(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
 
     # ---- internals ----------------------------------------------------
 
@@ -433,6 +591,8 @@ class KnowledgeBaseStore:
 def _classify_kind(path: Path) -> str:
     suffix = path.suffix.lower()
     name = path.name.lower()
+    if suffix == ".pdf":
+        return "pdf"
     if suffix in CODE_LIKE_EXTENSIONS:
         return "code"
     if suffix in TEXT_EXTENSIONS or name in {"makefile", "dockerfile", "readme", "license", "license.txt"}:
@@ -453,6 +613,35 @@ def _classify_kind(path: Path) -> str:
         except UnicodeDecodeError:
             return "binary"
     return "binary"
+
+
+def _extract_pdf_text(data: bytes) -> str:
+    """Extract text from a PDF. Returns empty string on any failure so
+    callers degrade gracefully (file still shows as PDF in the viewer
+    via the raw endpoint; chat Q&A just skips it). We swallow ANY
+    exception, not just ImportError, because pypdf's optional
+    cryptography backend can panic at import time on some platforms."""
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except BaseException:
+        # pypdf's optional cryptography backend can panic at import time
+        # (PyO3 PanicException inherits from BaseException, not Exception).
+        return ""
+    try:
+        reader = PdfReader(io.BytesIO(data))
+    except BaseException:
+        return ""
+    chunks: list[str] = []
+    for page in getattr(reader, "pages", []):
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            text = ""
+        if text:
+            chunks.append(text)
+        if sum(len(c) for c in chunks) > 200_000:
+            break
+    return "\n\n".join(chunks)
 
 
 def normalize_kb_id(value: str) -> str:
