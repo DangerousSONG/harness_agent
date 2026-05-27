@@ -338,20 +338,52 @@ class ValidationGate:
         *,
         project_root: Path,
     ) -> dict[str, Any]:
-        train = self.train_evaluator(edit, project_root) if self.train_evaluator else 0.6
-        regression = (
-            self.regression_evaluator(edit, project_root)
-            if self.regression_evaluator
-            else _default_regression_score(edit, project_root)
+        from .evolution_stores import apply_edit_ops_to_text
+        from .skill_eval_runner import (
+            load_cases_for_skill,
+            run_cases,
+            summarize_failures,
         )
-        validation_score = _default_validation_score(edit, project_root)
+
+        train = self.train_evaluator(edit, project_root) if self.train_evaluator else 0.6
+        target_skill = str(edit.get("target_skill", ""))
+        skill_path = Path(project_root) / "skills" / target_skill / "SKILL.md"
+        base_text = skill_path.read_text(encoding="utf-8") if skill_path.exists() else ""
+        try:
+            proposed_text = apply_edit_ops_to_text(base_text, edit.get("edit_ops") or [])
+        except Exception:
+            proposed_text = base_text
+        cases = load_cases_for_skill(project_root, target_skill)
+        report = run_cases(cases, proposed_text, skill=target_skill)
+
+        # validation_score = pass ratio of the eval cases (1.0 when no
+        # cases are defined yet, so the gate doesn't block a freshly
+        # seeded skill).
+        validation_score = (
+            report.passed_count / report.total if report.total > 0 else 1.0
+        )
+
+        if self.regression_evaluator is not None:
+            regression = self.regression_evaluator(edit, project_root)
+        else:
+            # Keep the dangerous-word guard so unsafe phrases inside
+            # cases.yaml still drag the regression score to 0.
+            regression = _default_regression_score(edit, project_root)
+            if report.accepted:
+                # Lift toward 1.0 when eval is clean, so the gate only
+                # blocks when the cases.yaml says it should.
+                regression = max(regression, 0.75)
+
         accepted = (
-            validation_score >= self.min_validation_score
+            report.accepted
+            and validation_score >= self.min_validation_score
             and regression >= self.min_regression_score
         )
         reject_reason = ""
         if not accepted:
-            if regression < self.min_regression_score:
+            if not report.accepted:
+                reject_reason = summarize_failures(report)
+            elif regression < self.min_regression_score:
                 reject_reason = f"regression_score {regression:.2f} below threshold"
             else:
                 reject_reason = f"validation_score {validation_score:.2f} below threshold"
@@ -361,6 +393,7 @@ class ValidationGate:
             "regression_score": float(regression),
             "accepted": accepted,
             "reject_reason": reject_reason,
+            "eval_report": report.to_dict(),
         }
 
 

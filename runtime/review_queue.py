@@ -454,19 +454,30 @@ class ReviewQueue:
         rule_text = str(item.metadata.get("proposed_rule") or item.proposed_change).strip()
         base_content = self._read_target(target_file)
         proposed = self._add_memory_derived_rule(base_content, rule_text)
-        self._write_target(target_file, proposed)
-        new_content = self._read_target(target_file)
-        if new_content == base_content:
+        if proposed == base_content:
             return f"Applied skill promotion {promo_id} to {target_file}; no SKILL.md change was needed."
 
+        # Eval gate: run cases.yaml against the proposed text BEFORE
+        # touching disk. Failure refuses apply; nothing is written.
+        eval_report = self._run_eval_against(item.target_skill, proposed)
+        if not eval_report["accepted"]:
+            summary = _summarize_eval_report(eval_report)
+            raise ValueError(
+                f"Refusing to apply skill promotion {promo_id}: {summary}"
+            )
+
+        self._write_target(target_file, proposed)
         try:
             version_record = self.evolution_registry.record_memory_promotion(
                 skill=item.target_skill,
                 skill_review=item.to_dict(),
                 target_file=target_file,
                 base_content=base_content,
-                new_content=new_content,
-                eval_result=self._regression_eval_result(item.target_skill, promo_id),
+                new_content=proposed,
+                eval_result=_merge_eval_result(
+                    self._regression_eval_result(item.target_skill, promo_id),
+                    eval_report,
+                ),
                 regression_review_ids=self._regression_review_ids(promo_id),
             )
         except Exception:
@@ -513,6 +524,14 @@ class ReviewQueue:
         proposed = apply_edit_ops_to_text(base_content, edit_ops)
         if proposed == base_content:
             return f"Applied bounded edit; no SKILL.md change was needed for {target_file}."
+
+        # Eval gate (same contract as skill.promotion): run cases.yaml on
+        # the proposed text before writing. Failure refuses apply.
+        eval_report = self._run_eval_against(item.target_skill, proposed)
+        if not eval_report["accepted"]:
+            summary = _summarize_eval_report(eval_report)
+            raise ValueError(f"Refusing to apply bounded edit: {summary}")
+
         self._write_target(target_file, proposed)
         try:
             version_record = self.evolution_registry.record_memory_promotion(
@@ -521,11 +540,14 @@ class ReviewQueue:
                 target_file=target_file,
                 base_content=base_content,
                 new_content=proposed,
-                eval_result={
-                    "source_edit_id": item.metadata.get("source_edit_id", item.candidate_id),
-                    "source_signal_ids": item.metadata.get("source_signal_ids", []),
-                    "passed": True,
-                },
+                eval_result=_merge_eval_result(
+                    {
+                        "source_edit_id": item.metadata.get("source_edit_id", item.candidate_id),
+                        "source_signal_ids": item.metadata.get("source_signal_ids", []),
+                        "passed": True,
+                    },
+                    eval_report,
+                ),
                 regression_review_ids=[],
             )
         except Exception:
@@ -606,6 +628,15 @@ class ReviewQueue:
         cases = parse_regression_cases(path.read_text(encoding="utf-8"))
         return has_positive_and_negative_cases(cases, promo_id)
 
+    def _run_eval_against(self, target_skill: str, proposed_skill_md: str) -> dict[str, Any]:
+        """Run the deterministic skill_eval_runner against the proposed
+        SKILL.md text. Returns a dict ready to merge into eval_result."""
+        from .skill_eval_runner import load_cases_for_skill, run_cases
+
+        cases = load_cases_for_skill(self.workdir, target_skill)
+        report = run_cases(cases, proposed_skill_md, skill=target_skill)
+        return report.to_dict()
+
     def _regression_eval_result(self, target_skill: str, promo_id: str) -> dict[str, Any]:
         path = self.workdir / "skills" / target_skill / "eval" / "cases.yaml"
         cases = parse_regression_cases(path.read_text(encoding="utf-8")) if path.exists() else []
@@ -683,3 +714,41 @@ class ReviewQueue:
             json.dumps(item.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+
+
+def _summarize_eval_report(report: dict[str, Any]) -> str:
+    """One-line failure summary suitable for ValueError messages."""
+    failed = [o for o in report.get("outcomes", []) if not o.get("passed")]
+    if not failed:
+        return f"eval ok ({report.get('passed_count', 0)}/{report.get('total', 0)})"
+    parts: list[str] = []
+    for outcome in failed[:3]:
+        first = (outcome.get("failures") or ["unknown failure"])[0]
+        parts.append(f"{outcome.get('case_id')}: {first}")
+    suffix = ""
+    extra = len(failed) - 3
+    if extra > 0:
+        suffix = f" (+ {extra} more)"
+    return (
+        f"eval failed ({report.get('failed_count', len(failed))}/"
+        f"{report.get('total', 0)}): " + "; ".join(parts) + suffix
+    )
+
+
+def _merge_eval_result(base: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
+    """Attach the deterministic eval RunReport to the per-promotion
+    result that goes into ``.skills_versions/<skill>/<version>/eval_result.json``.
+
+    Legacy fields (``passed`` / ``positive_case_count`` / ``negative_case_count``
+    / ``regression_cases_found``) from the caller's base dict are kept as-is —
+    they describe COVERAGE (was there a positive / negative case with
+    must_include / must_not_include in cases.yaml). The new fields describe
+    what the runner OBSERVED — pass count, failures, covered_promo_ids,
+    covered_rules — and live alongside under ``eval_report``.
+    """
+    merged = dict(base or {})
+    merged["eval_report"] = report
+    merged.setdefault("passed", bool(report.get("accepted")))
+    merged.setdefault("covered_promo_ids", report.get("covered_promo_ids", []))
+    merged.setdefault("covered_rules", report.get("covered_rules", []))
+    return merged

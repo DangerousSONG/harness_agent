@@ -230,7 +230,24 @@ PROMO 存 `.skills_memory/PROMOTION_CANDIDATES.md`。
 流程向导，按状态推进 — 缺 regression → 创建 `skill.regression_case` review；有 coverage → 创建 `skill.promotion` review；已完成 → 显示版本。**全程不绕 ReviewQueue，不静默改 `SKILL.md`**。
 
 ### Regression Gate
-`skill.promotion` apply 前必须在 `skills/<skill>/eval/cases.yaml` 找到该 PROMO 的 **positive 案例**（新规则生效）+ **negative 案例**（不污染其他任务），每条 case 带 `source_promo_id` / `target_rule` 可追溯。缺失则 apply 被拒。
+
+两层把关：
+
+1. **覆盖检查** — `skill.promotion` apply 前必须在 `skills/<skill>/eval/cases.yaml` 找到该 PROMO 的 positive case（新规则生效）+ negative case（不污染其他任务）。缺失 → apply 拒绝。
+2. **Eval 运行**（`runtime/skill_eval_runner.py`）— `skill.promotion` / `skill.bounded_edit` apply **写盘之前**对 *proposed* SKILL.md 跑一次 `cases.yaml`。失败 → apply 拒绝，文件不动。通过的 `RunReport`（pass/fail、失败原因、`covered_promo_ids`、`covered_rules`）写入 `eval_result.json`。
+
+每条 case 的字段（新旧别名都接受）：
+
+| 字段 | 含义 |
+|---|---|
+| `id` | case 标识 |
+| `input` | 示例输入（信息字段，记录用） |
+| `expected_behavior`（别名 `must_include`） | 期望 *agent 输出* 包含的 token |
+| `negative_assertions`（别名 `must_not_include`） | 期望 *agent 输出* 不包含的 token |
+| `target_rule` | 本 case 守护的具体规则，必须出现在 `## Memory-derived rules` |
+| `source_promo_id` | 追溯到 PROMO |
+
+> Deterministic 模式只校验 SKILL.md 文本层面：`target_rule` 是否落到 `## Memory-derived rules`。`expected_behavior` / `negative_assertions` 描述的是 *agent 运行时输出*，文本检测无法保真复现，因此 *记录但不强制*；这部分要等 LLM evaluator 上线（runner 接口已留好）。
 
 ### Skill Evolution Registry
 `skill.promotion` apply 成功后写 `.skills_versions/<skill>/`：`versions.jsonl` + `<version>/{SKILL.md, patch.diff, eval_result.json}`。**Runtime 加载源始终是 `skills/<skill>/SKILL.md`**；`.skills_versions/` 仅用于审计与回滚（rollback 也走 review）。
