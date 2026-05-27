@@ -431,10 +431,77 @@ quarantine 桶在 ① 阶段单独处理，不经决策矩阵；它产出的 opp
 ├─ batches/                # BATCH-xxxxxxxx.json
 ├─ skill_edits/            # EDIT-xxxxxxxx.json
 ├─ validation_results/     # VAL-xxxxxxxx.json
-└─ rejected_edits/         # EDIT-xxxxxxxx.json
+├─ rejected_edits/         # EDIT-xxxxxxxx.json
+└─ scout_decisions/        # DEC-xxxxxxxx.json
 ```
 
 追溯链：`LearningSignal.source_path:source_ref` → `Opportunity.signal_ids` → `Batch.opportunity_ids + promo_ids` → `SkillEditProposal.source_*_ids` → `review.metadata.source_edit_id`。
+
+### 决策可观测（Scout decision log）
+
+每次 Scout 生成或更新 opportunity 时，`runtime/scout_decisions.py::ScoutDecisionStore` 追加一条 `DEC-xxxxxxxx`：
+
+| 字段 | 含义 |
+|---|---|
+| `decision_id` / `opportunity_id` / `scan_at` / `target_skill` | 索引与定位 |
+| `decision` / `alternative_decision` | 当前决策 + 下一最近备选（例如 `promote` vs `request_eval`） |
+| `threshold_hit` | 命中的决策表分支（如 `promote_lane: value>=0.60 ∧ risk<=0.35 ∧ testability>=0.70`） |
+| `binding_threshold` | 最紧的那条阈值（距离翻面最近的不等式） |
+| `score_components` | 完整的评分分量字典（frequency / transferability / impact / ...） |
+| `value_score` / `risk_score` / `evidence_quality` / `testability` | 四个 headline 分数 |
+| `outcome` | 当前 outcome 状态（`pending` / `optimizer_proposed` / `review_created` / `approved` / `rejected` / `applied_eval_passed` / `applied_eval_failed` / `apply_failed` / `superseded`） |
+| `outcome_history[]` | 状态机时间线，每条带 `at` + `status` + `details`（含 `edit_id` / `review_id` / `error` 等） |
+
+**append-only-on-material-change** — re-scan 时，只有 decision 变化或任一 headline 分数移动超过 `MATERIAL_DELTA=0.02` 才追加新 `DEC-`；老记录标记 `superseded`，不污染统计。
+
+**outcome 回写**：
+
+| 状态 | 触发点 |
+|---|---|
+| `pending` | Scout 生成 opportunity |
+| `optimizer_proposed` | `SkillOptimizer.propose` 成功 |
+| `review_created` | `SkillOptimizer.submit_review` 成功 |
+| `approved` / `rejected` | `ReviewQueue.approve` / `reject` |
+| `applied_eval_passed` | `ReviewQueue.apply` 成功（eval 通过） |
+| `applied_eval_failed` / `apply_failed` | apply 时 ValueError，区分 eval 失败和其他 |
+| `superseded` | 同一 opportunity 出现新决策 |
+
+通过 `review.metadata.source_opportunity_ids` 把 review 链路绑回 scout，所以无需改 ReviewQueue 的核心 API。
+
+### Decision stats（CLI / API）
+
+CLI：
+
+```text
+/scout-decisions                                       # 列出所有非 superseded 决策
+/scout-stats                                           # 整体命中率
+/scout-stats threshold=0.6                             # value_score >= 0.6 的命中率
+/scout-stats score_field=testability threshold=0.7     # testability >= 0.7 的命中率
+/scout-stats decision=promote threshold=0.6            # 限定 decision=promote
+```
+
+API：
+
+| Method | Path | 作用 |
+|---|---|---|
+| GET | `/api/evolution/scout/decisions[?opportunity_id=...][&decision=...]` | 列出决策记录（默认排除 superseded） |
+| GET | `/api/evolution/scout/decisions/stats?score_field=value_score&threshold=0.6[&decision=...]` | 命中率统计（命中 = outcome 为 `applied_eval_passed`） |
+
+返回示例：
+
+```json
+{
+  "score_field": "value_score",
+  "threshold": 0.6,
+  "decision_filter": "",
+  "total": 12,
+  "hit_count": 4,
+  "hit_rate": 0.333,
+  "outcomes": {"pending": 2, "review_created": 3, "applied_eval_passed": 4, ...},
+  "decisions": {"promote": 8, "request_eval": 4},
+  "hit_outcome": "applied_eval_passed"
+}
+```
 
 ### Side-Channel REST API
 

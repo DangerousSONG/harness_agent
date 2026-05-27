@@ -530,6 +530,46 @@ def rejected_edits() -> str:
     )
 
 
+def _scout_decision_store():
+    from runtime.scout_decisions import ScoutDecisionStore
+    return ScoutDecisionStore(PROJECT_ROOT)
+
+
+def scout_decisions() -> str:
+    records = _scout_decision_store().list()
+    records = [r for r in records if r.outcome != "superseded"]
+    if not records:
+        return "No scout decisions yet. Run /evolution-scan first."
+    lines = ["Scout decisions:"]
+    for r in records:
+        lines.append(
+            f"{r.decision_id} opp={r.opportunity_id} skill={r.target_skill} "
+            f"decision={r.decision} value={r.value_score:.2f} risk={r.risk_score:.2f} "
+            f"test={r.testability:.2f} outcome={r.outcome}"
+        )
+    return "\n".join(lines)
+
+
+def scout_stats(args: str = "") -> str:
+    """Usage: /scout-stats [score_field=value_score] [threshold=0.6] [decision=promote]"""
+    kwargs: dict[str, object] = {}
+    for token in args.split():
+        if "=" not in token:
+            continue
+        k, v = token.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if k == "threshold":
+            try:
+                kwargs[k] = float(v)
+            except ValueError:
+                return f"invalid threshold: {v}"
+        elif k in {"score_field", "decision"}:
+            kwargs[k] = v
+    result = _scout_decision_store().stats(**kwargs)  # type: ignore[arg-type]
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
 # === SECTION: repl ===
 if __name__ == "__main__":
     history = []
@@ -666,6 +706,15 @@ if __name__ == "__main__":
             continue
         if query.strip() == "/rejected-edits":
             print(rejected_edits())
+            continue
+        if query.strip() == "/scout-decisions":
+            print(scout_decisions())
+            continue
+        if query.strip() == "/scout-stats":
+            print(scout_stats(""))
+            continue
+        if query.strip().startswith("/scout-stats "):
+            print(scout_stats(query.strip().split(maxsplit=1)[1]))
             continue
         history.append({"role": "user", "content": query})
         agent_loop(

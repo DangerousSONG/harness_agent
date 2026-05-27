@@ -34,6 +34,7 @@ from .evolution_stores import (
     LearningSignal,
 )
 from .promotion_browser import PromotionBrowser
+from .scout_decisions import ScoutDecisionStore
 
 
 # ---------------------------------------------------------------------------
@@ -184,11 +185,13 @@ class EvolutionScout:
         stores: EvolutionStores,
         promotions: PromotionBrowser,
         llm_enricher: Any = None,
+        decision_store: ScoutDecisionStore | None = None,
     ):
         self.project_root = Path(project_root)
         self.stores = stores
         self.promotions = promotions
         self.llm_enricher = llm_enricher
+        self.decision_store = decision_store or ScoutDecisionStore(self.project_root)
 
     # ---- scan -----------------------------------------------------------
 
@@ -257,6 +260,15 @@ class EvolutionScout:
             else:
                 stored = self.stores.opportunities.save(opp)
                 new_opp_ids.append(stored["opportunity_id"])
+            # Decision log AFTER the opportunity_id is finalised. The
+            # store decides whether to append (material change) or
+            # idempotently no-op.
+            payload = getattr(opp, "_decision_payload", None)
+            if payload:
+                self.decision_store.record_decision(
+                    opportunity_id=opp.opportunity_id,
+                    **payload,
+                )
 
         parts = [
             f"scanned: signals_new={len(new_signals)}",
@@ -409,7 +421,7 @@ class EvolutionScout:
     ) -> EvolutionOpportunity:
         skills = sorted({m["observed_skill"] for m in members})
         target_skill = skills[0] if skills else "self_improvement"
-        return EvolutionOpportunity.new(
+        opp = EvolutionOpportunity.new(
             signal_ids=[m["signal_id"] for m in members],
             target_skill=target_skill,
             opportunity_type="quarantine",
@@ -437,6 +449,19 @@ class EvolutionScout:
             cross_skill=len(skills) > 1,
             related_promo_ids=[],
         )
+        opp._decision_payload = {  # type: ignore[attr-defined]
+            "target_skill": target_skill,
+            "decision": "quarantine",
+            "alternative_decision": "n/a",
+            "threshold_hit": f"quarantine_lane: attack_type={attack_type}",
+            "binding_threshold": f"attack_type={attack_type}",
+            "score_components": {"attack_type_count": float(len(members))},
+            "value_score": 0.0,
+            "risk_score": 1.0,
+            "evidence_quality": 0.0,
+            "testability": 0.0,
+        }
+        return opp
 
     def _normal_opportunity(
         self,
@@ -486,7 +511,10 @@ class EvolutionScout:
         value_score = _value_score(components)
         risk_score = _risk_score(components)
 
-        decision, opp_type, priority, risk_level, confidence = _decide(
+        (
+            decision, opp_type, priority, risk_level, confidence,
+            threshold_hit, binding_threshold, alternative_decision,
+        ) = _decide_explained(
             value=value_score,
             risk=risk_score,
             evidence=evidence_quality,
@@ -514,7 +542,7 @@ class EvolutionScout:
         breakdown = _score_breakdown(decision, components, value_score, risk_score, evidence_quality)
         related_promos = sorted({m["source_ref"] for m in members if m["source_type"] == "promo"})
 
-        return EvolutionOpportunity.new(
+        opp = EvolutionOpportunity.new(
             signal_ids=[m["signal_id"] for m in members],
             target_skill=target_skill,
             opportunity_type=opp_type,
@@ -536,6 +564,20 @@ class EvolutionScout:
             cross_skill=cross_skill,
             related_promo_ids=related_promos,
         )
+        decision_payload = {
+            "target_skill": target_skill,
+            "decision": decision,
+            "alternative_decision": alternative_decision,
+            "threshold_hit": threshold_hit,
+            "binding_threshold": binding_threshold,
+            "score_components": dict(components),
+            "value_score": value_score,
+            "risk_score": risk_score,
+            "evidence_quality": evidence_quality,
+            "testability": components["testability"],
+        }
+        opp._decision_payload = decision_payload  # type: ignore[attr-defined]
+        return opp
 
     def _enrich_opportunity(
         self,
@@ -854,29 +896,114 @@ def _decide(
     target_skill: str,
     frequency_sum: int,
 ) -> tuple[str, str, str, str, str]:
+    decision, opp_type, priority, risk_level, confidence, _, _, _ = _decide_explained(
+        value=value,
+        risk=risk,
+        evidence=evidence,
+        testability=testability,
+        overfitting=overfitting,
+        has_security=has_security,
+        has_cross_cutting=has_cross_cutting,
+        target_skill=target_skill,
+        frequency_sum=frequency_sum,
+    )
+    return decision, opp_type, priority, risk_level, confidence
+
+
+def _decide_explained(
+    *,
+    value: float,
+    risk: float,
+    evidence: float,
+    testability: float,
+    overfitting: float,
+    has_security: bool,
+    has_cross_cutting: bool,
+    target_skill: str,
+    frequency_sum: int,
+) -> tuple[str, str, str, str, str, str, str, str]:
+    """Same matrix as ``_decide`` but also returns
+    ``threshold_hit`` (the rule that fired),
+    ``binding_threshold`` (the tightest inequality), and
+    ``alternative_decision`` (what would fire if the binding bound were
+    just barely missed). Used to feed ScoutDecisionStore."""
     if has_security:
-        return ("safety_review", "safety_review", "high", "high", "medium")
+        return (
+            "safety_review", "safety_review", "high", "high", "medium",
+            "security_lane: contains security_incident tag",
+            "security_incident=True",
+            "promote (if not security)",
+        )
 
     if value >= 0.60 and risk <= 0.35 and testability >= 0.70:
         priority = "high" if has_cross_cutting or value >= 0.75 else "medium"
-        return ("promote", "promote", priority, "medium", "medium")
+        binding = _tightest_promote_binding(value, risk, testability)
+        return (
+            "promote", "promote", priority, "medium", "medium",
+            "promote_lane: value>=0.60 ∧ risk<=0.35 ∧ testability>=0.70",
+            binding,
+            "request_eval",
+        )
 
     if value >= 0.55 and (testability < 0.70 or risk > 0.35):
-        return ("request_eval", "request_eval", "medium", "medium", "low")
+        binding = f"testability={testability:.2f}<0.70" if testability < 0.70 else f"risk={risk:.2f}>0.35"
+        return (
+            "request_eval", "request_eval", "medium", "medium", "low",
+            "request_eval_lane: value>=0.55 but testability or risk fails",
+            binding,
+            "promote",
+        )
 
     if value >= 0.40 and evidence < 0.50:
-        return ("defer", "defer", "low", "low", "low")
+        return (
+            "defer", "defer", "low", "low", "low",
+            "defer_lane: value>=0.40 but evidence<0.50",
+            f"evidence={evidence:.2f}<0.50",
+            "request_eval",
+        )
 
     if overfitting >= 0.5 and frequency_sum < 3:
-        return ("reject", "defer", "low", "low", "low")
+        return (
+            "reject", "defer", "low", "low", "low",
+            "reject_lane: overfitting>=0.5 ∧ frequency<3",
+            f"overfitting={overfitting:.2f}∧Σf={frequency_sum}",
+            "defer",
+        )
 
     if target_skill == "self_improvement" and not has_security:
-        return ("defer", "defer", "low", "low", "low")
+        return (
+            "defer", "defer", "low", "low", "low",
+            "defer_lane: target_skill==self_improvement",
+            "target_skill=self_improvement",
+            "promote (if attributed to a real skill)",
+        )
 
     if value >= 0.30:
-        return ("defer", "defer", "low", "low", "low")
+        return (
+            "defer", "defer", "low", "low", "low",
+            "defer_lane: value>=0.30",
+            f"value={value:.2f}∈[0.30,0.55)",
+            "request_eval",
+        )
 
-    return ("reject", "defer", "low", "low", "low")
+    return (
+        "reject", "defer", "low", "low", "low",
+        "reject_lane: value<0.30",
+        f"value={value:.2f}<0.30",
+        "defer",
+    )
+
+
+def _tightest_promote_binding(value: float, risk: float, testability: float) -> str:
+    """Return whichever of the three promote thresholds is currently
+    closest to flipping. Lets the decision log explain *why* this row
+    fired and where the marginal score sits."""
+    distances = {
+        f"value={value:.2f}>=0.60": value - 0.60,
+        f"risk={risk:.2f}<=0.35": 0.35 - risk,
+        f"testability={testability:.2f}>=0.70": testability - 0.70,
+    }
+    return min(distances.items(), key=lambda kv: kv[1])[0]
 
 
 # ---------------------------------------------------------------------------

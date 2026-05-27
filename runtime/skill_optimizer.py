@@ -59,12 +59,40 @@ class SkillOptimizer:
         review_store,
         validation_gate: "ValidationGate | None" = None,
         bullet_writer: Any = None,
+        decision_store: Any = None,
     ):
         self.project_root = Path(project_root)
         self.stores = stores
         self.review_store = review_store
         self.validation_gate = validation_gate or ValidationGate()
         self.bullet_writer = bullet_writer
+        if decision_store is None:
+            from .scout_decisions import ScoutDecisionStore
+            decision_store = ScoutDecisionStore(self.project_root)
+        self.decision_store = decision_store
+
+    def _record_scout_outcome(
+        self,
+        opportunities: list[dict[str, Any]],
+        status: str,
+        details: dict[str, Any],
+    ) -> None:
+        for opp in opportunities:
+            opp_id = opp.get("opportunity_id")
+            if not opp_id:
+                continue
+            self.decision_store.record_outcome(opp_id, status, details)
+
+    def _record_scout_outcome_by_ids(
+        self,
+        opportunity_ids: list[str],
+        status: str,
+        details: dict[str, Any],
+    ) -> None:
+        for opp_id in opportunity_ids:
+            if not opp_id:
+                continue
+            self.decision_store.record_outcome(opp_id, status, details)
 
     def propose(
         self,
@@ -167,6 +195,11 @@ class SkillOptimizer:
             required_validation_cases=required_validation,
         )
         stored = self.stores.skill_edits.save(edit)
+        self._record_scout_outcome(
+            opportunities,
+            "optimizer_proposed",
+            {"edit_id": stored["edit_id"]},
+        )
         return OptimizerResult(
             True,
             f"Created skill edit {stored['edit_id']}. No SKILL.md file was modified.",
@@ -260,6 +293,11 @@ class SkillOptimizer:
         item = self.review_store.create_review(**review_fields)
         review_id = item.get("review_id", "")
         self.stores.skill_edits.update(edit_id, status="review_created", review_id=review_id)
+        self._record_scout_outcome_by_ids(
+            edit.get("source_opportunity_ids") or [],
+            "review_created",
+            {"review_id": review_id, "edit_id": edit_id},
+        )
         return OptimizerResult(
             True,
             f"Created review {review_id} for edit {edit_id}. SKILL.md not modified.",

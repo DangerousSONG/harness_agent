@@ -149,10 +149,14 @@ class ReviewQueue:
         return item
 
     def approve(self, review_id: str) -> ReviewItem:
-        return self.set_status(review_id, "approved")
+        item = self.set_status(review_id, "approved")
+        _notify_scout_outcome(self.workdir, item, "approved")
+        return item
 
     def reject(self, review_id: str) -> ReviewItem:
-        return self.set_status(review_id, "rejected")
+        item = self.set_status(review_id, "rejected")
+        _notify_scout_outcome(self.workdir, item, "rejected")
+        return item
 
     def apply(self, review_id: str) -> tuple[ReviewItem, str]:
         item = self.get(review_id)
@@ -160,25 +164,35 @@ class ReviewQueue:
             raise ValueError(f"Unknown review_id: {review_id}")
         if item.status != "approved":
             raise ValueError(f"Review {review_id} must be approved before apply.")
-        if item.type == "skill.regression_case":
-            message = self._apply_regression_case(item)
-        elif item.type == "skill.promotion":
-            message = self._apply_skill_promotion(item)
-        elif item.type == "skill.bounded_edit":
-            message = self._apply_skill_bounded_edit(item)
-        elif item.type == "skill.creation":
-            message = self._apply_skill_creation(item)
-        elif item.type == "tool.update":
-            message = self._apply_tool_update(item)
-        elif item.type == "file.write":
-            message = self._apply_file_write(item)
-        elif self._is_load_skill_review(item):
-            message = self._apply_load_skill(item)
-        else:
-            raise ValueError(f"Apply is not supported for review type: {item.type}")
+        try:
+            if item.type == "skill.regression_case":
+                message = self._apply_regression_case(item)
+            elif item.type == "skill.promotion":
+                message = self._apply_skill_promotion(item)
+            elif item.type == "skill.bounded_edit":
+                message = self._apply_skill_bounded_edit(item)
+            elif item.type == "skill.creation":
+                message = self._apply_skill_creation(item)
+            elif item.type == "tool.update":
+                message = self._apply_tool_update(item)
+            elif item.type == "file.write":
+                message = self._apply_file_write(item)
+            elif self._is_load_skill_review(item):
+                message = self._apply_load_skill(item)
+            else:
+                raise ValueError(f"Apply is not supported for review type: {item.type}")
+        except ValueError as exc:
+            # Eval gate failure or other apply-time refusal: tag the
+            # decision log with the failure status so observability
+            # captures both successful and refused applies.
+            err = str(exc)
+            status = "applied_eval_failed" if "eval failed" in err else "apply_failed"
+            _notify_scout_outcome(self.workdir, item, status, {"error": err})
+            raise
         item.status = "applied"
         self._save(item)
         self._write_apply_audit(item, message)
+        _notify_scout_outcome(self.workdir, item, "applied_eval_passed")
         return item, message
 
     def write_patch_preview(self, item: ReviewItem) -> Path:
@@ -752,3 +766,26 @@ def _merge_eval_result(base: dict[str, Any], report: dict[str, Any]) -> dict[str
     merged.setdefault("covered_promo_ids", report.get("covered_promo_ids", []))
     merged.setdefault("covered_rules", report.get("covered_rules", []))
     return merged
+
+
+def _notify_scout_outcome(
+    workdir: Path | str,
+    item: ReviewItem,
+    status: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Best-effort decision-log update. We never let observability failures
+    block a real review apply."""
+    opportunity_ids = list(item.metadata.get("source_opportunity_ids") or [])
+    if not opportunity_ids:
+        return
+    try:
+        from .scout_decisions import ScoutDecisionStore
+        store = ScoutDecisionStore(workdir)
+        payload = {"review_id": item.review_id, "review_type": item.type}
+        if details:
+            payload.update(details)
+        for opp_id in opportunity_ids:
+            store.record_outcome(opp_id, status, payload)
+    except Exception:
+        pass

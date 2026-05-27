@@ -237,6 +237,8 @@ class WebContext:
         self.policy = load_policy()
         self.tool_registry = ToolRegistry(self.project_root)
         self.evolution_stores = EvolutionStores(self.project_root)
+        from runtime.scout_decisions import ScoutDecisionStore
+        self.scout_decisions = ScoutDecisionStore(self.project_root)
         self.evolution_scout, self.skill_optimizer = self._build_evolution_modules()
         self.knowledge_bases = KnowledgeBaseStore(self.project_root)
 
@@ -1378,6 +1380,33 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
     @app.get("/api/evolution/optimizer/rejected")
     def evolution_optimizer_rejected() -> JSONResponse:
         return ok(ctx.evolution_stores.rejected_edits.list())
+
+    @app.get("/api/evolution/scout/decisions")
+    def evolution_scout_decisions(
+        opportunity_id: str | None = None,
+        decision: str | None = None,
+        exclude_superseded: bool = True,
+    ) -> JSONResponse:
+        records = ctx.scout_decisions.list()
+        if exclude_superseded:
+            records = [r for r in records if r.outcome != "superseded"]
+        if opportunity_id:
+            records = [r for r in records if r.opportunity_id == opportunity_id]
+        if decision:
+            records = [r for r in records if r.decision == decision]
+        return ok([r.to_dict() for r in records])
+
+    @app.get("/api/evolution/scout/decisions/stats")
+    def evolution_scout_decisions_stats(
+        score_field: str = "value_score",
+        threshold: float | None = None,
+        decision: str | None = None,
+    ) -> JSONResponse:
+        return ok(ctx.scout_decisions.stats(
+            score_field=score_field,
+            threshold=threshold,
+            decision=decision,
+        ))
 
     @app.get("/api/evolution/{promo_id}/state")
     def evolution_state(promo_id: str) -> JSONResponse:
