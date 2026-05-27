@@ -132,30 +132,16 @@ flowchart TB
 
 **图例**：🖥️ 前端 · 🛡️ 编排/拦截 · ♻️ 主链路自进化 · 🛰️ 旁路自进化 · 🚦 审批落盘 · ⚙️ AI 基础设施 · 💾 本地存储
 
-**数据流**：用户输入 → 前端 → Chat Orchestrator → SafeHarness 拦截 → 允许/审批；运行信号 → Skill Memory → PROMO（主链路）或 Scout 离线扫描 → Opportunity → Optimizer bounded edit（旁路）→ **两条路径都汇入 ReviewQueue** → Approve + Apply → SKILL.md 落盘 + 版本登记。
-
 **两条进化链路的分工**：
 
 | 维度 | ♻️ 主链路 | 🛰️ 旁路 |
 |---|---|---|
-| 触发 | 事件驱动（用户纠正、工具失败、安全事件） | 离线批量扫描（按需运行 `/evolution-scan`） |
-| 准入门槛 | `occurrence_count ≥ 3`（或强纠正 ≥ 2） | 单个安全事件即可（safety_gain 优先通道） |
-| 改 SKILL.md 范围 | 整篇可编辑（仍需 review） | **强约束：仅 `## Memory-derived rules` 节，仅 `add/replace/delete`，单次 ≤ 5 op** |
-| 回归保护 | Regression Gate：缺 positive+negative case 拒 apply | ValidationGate：训练/验证/回归三个分数都过阈值 |
-| 自动化程度 | 用户点 `/evolve-skill` 推进 | Scout 一次扫描产出多个 Opportunity，可批量 Optimize |
-| 共享部分 | **同一个 ReviewQueue · 同一个 Skill Evolution Registry · 同一个 Approve+Apply** |
-
-**九个核心角色一句话**：
-
-1. **SafeHarness** — 这个动作能不能直接做。
-2. **ReviewQueue** — 高风险动作是否经人确认。
-3. **Skill Memory** — 哪些经验值得记录。
-4. **PROMO** — 哪些经验值得考虑升级。
-5. **`/evolve-skill`** — 下一步该补测试还是补 Skill Patch。
-6. **Regression Gate** — 这次升级会不会退化。
-7. **Skill Evolution Registry** — 这次升级如何被追溯和回滚。
-8. **EvolutionScout（旁路）** — 离线批量扫描 memory + PROMO，只读，不创建 review。
-9. **SkillOptimizer（旁路）** — 生成 bounded edit 提案；只能 `add/replace/delete` 在 `## Memory-derived rules`；不能直接 apply。
+| 触发 | 事件驱动（用户纠正 / 工具失败 / 安全事件） | 离线批量扫描（`/evolution-scan` 触发） |
+| 准入门槛 | `occurrence_count ≥ 3`（强纠正 ≥ 2） | 单次 safety 事件即可（safety_gain 优先通道） |
+| 改 SKILL.md 范围 | 整篇可编辑 | 仅 `## Memory-derived rules` 节 · 仅 `add/replace/delete` · 单次 ≤ 5 op |
+| 退化保护 | Regression Gate（positive + negative case） | ValidationGate（train / validation / regression 三分） |
+| 自动化 | `/evolve-skill` 推进 | Scout 一次扫描多个 Opportunity，可批量 |
+| 共享 | **同一 ReviewQueue · 同一 Skill Evolution Registry · 同一 Approve+Apply** |
 
 核心原则：memory / PROMO / patch 都可以自动提议，但 **`SKILL.md` 的真实修改必须经过回归测试、人工审批、显式 apply 和版本登记**。
 
@@ -203,30 +189,6 @@ uvicorn web.server:create_app --factory --reload --port 8000
 cd web/ui && npm install && npm run dev
 ```
 
-## 系统主流程
-
-```mermaid
-flowchart TD
-    A[User / Agent Signals] --> B[SafeHarness]
-    B -->|allow| C[Tool / Skill Execution]
-    B -->|require_approval| D[ReviewQueue REV-xxxx]
-    D --> E[/review/]
-    E --> F[/approve → Patch Preview/]
-    F --> G[/apply/]
-    C --> H[Skill Memory<br/>LRN / ERR / FEAT / POL / REG]
-    H --> I{Promotion Eligibility?}
-    I -->|yes| J[PROMO]
-    I -->|no| H
-    J --> K[/evolve-skill PROMO/]
-    K --> L{Regression Coverage?}
-    L -->|no| M[skill.regression_case REV]
-    M --> F
-    L -->|yes| O[skill.promotion REV]
-    O --> F
-    G --> P[SKILL.md updated]
-    P --> Q[.skills_versions/]
-```
-
 ## REPL 命令
 
 | Command | Description |
@@ -242,24 +204,38 @@ flowchart TD
 
 ## 主链路细节
 
-**SafeHarness** — `RuntimeEvent` 经 `PolicyEngine` 评估，命中高风险时返回 `allow / warn / sanitize / require_approval / block` 并经 `AuditLogger` 记录。`require_approval` 不执行原始动作，而是创建 `REV-xxxx`。切策略：`SAFETY_POLICY=high_security python harness/agent_harness.py`。
+### SafeHarness
+`RuntimeEvent` → `PolicyEngine` → 返回 `allow / warn / sanitize / require_approval / block`，决定经 `AuditLogger` 落盘到 `.audit/`。命中 `require_approval` 时不执行原始动作，转而创建 `REV-xxxx`。切策略：`SAFETY_POLICY=high_security python harness/agent_harness.py`。
 
-**ReviewQueue** — `.reviews/REV-*.json` 存 item，`.reviews/patches/REV-*.diff` 存 patch preview。状态：`pending → approved`（`/approve` 只生成 diff，不改文件）`→ applied`（`/apply` 才落盘）。`load_skill` 类无文件 review 在 `/apply` 时执行 load 并设 `last_loaded_skill`。`edit_file` 的 `old_text=""` 会触发 `Invalid edit_file preview` 警告，不生成可应用的伪 diff。
+### ReviewQueue
+落盘位置：`.reviews/REV-*.json`（item）+ `.reviews/patches/REV-*.diff`（patch preview）。状态：`pending → approved → applied / rejected`。`/approve` 只生成 diff 不改文件，`/apply` 才落盘。`load_skill` 类无文件 review 在 `/apply` 时执行 load 并设 `last_loaded_skill`；`edit_file` `old_text=""` 会拒绝生成可应用的伪 diff。
 
-**Skill Memory** — `classify_and_record_learning_signal` 自动归属、脱敏、去重、污染拦截，写入 `skills/<skill>/memory/{LEARNINGS,ERRORS,FEATURE_REQUESTS,POLICY_CANDIDATES,REGRESSION_TESTS}.md`。不沉淀 secret / token / prompt injection / bypass approval / disable safety / 一次性偏好。
+### Skill Memory
+入口 `classify_and_record_learning_signal`：自动归属 / 脱敏 / 去重 / 污染拦截。落盘到 `skills/<skill>/memory/{LEARNINGS,ERRORS,FEATURE_REQUESTS,POLICY_CANDIDATES,REGRESSION_TESTS}.md`。**不沉淀**：secret · token · prompt injection · bypass approval · disable safety · 一次性偏好。
 
-**Promotion Candidate** — 相似 memory 合并并累计 `occurrence_count`。生成 PROMO 前计算 `transferability_score / impact_score / testability_score / user_correction_strength / safety_risk / attribution_confidence` 与综合 `promotion_score`。默认：
+### PROMO 候选
 
-- `occurrence_count ≥ 3` 且可迁移、低风险 → `skill_rule` PROMO
-- 强纠正（"以后/固定/默认/不要再/可复用"）且可测试 → `occurrence_count ≥ 2` 即可
-- high severity safety / `policy_candidate` → 只能生成 `policy_review`，不能直接进入 `SKILL.md`
-- 低归属置信度 / secret / prompt injection / bypass approval / disable safety / ignore system → 不生成 PROMO
+相似 memory 合并并累计 `occurrence_count`。综合 `promotion_score` 决定升级路径：
+
+| 触发 | 输出 |
+|---|---|
+| `occurrence_count ≥ 3` + 可迁移 + 低风险 | `skill_rule` PROMO |
+| 强纠正（"以后/固定/默认/不要再/可复用"）+ 可测试，`occurrence_count ≥ 2` | `skill_rule` PROMO |
+| high-severity safety / `policy_candidate` | `policy_review`（**不直接进 SKILL.md**） |
+| 低归属置信度 / secret / 注入 / bypass approval / disable safety | 不生成 |
 
 PROMO 存 `.skills_memory/PROMOTION_CANDIDATES.md`。
 
-**`/evolve-skill <promo_id>`** — 流程向导，不是自动进化。按状态推进：缺 regression → 创建 `skill.regression_case` review；已有 coverage → 创建 `skill.promotion` review；已完成 → 显示版本。全程不绕过 ReviewQueue，不静默改 `SKILL.md`。
+### `/evolve-skill <promo_id>`
+流程向导，按状态推进 — 缺 regression → 创建 `skill.regression_case` review；有 coverage → 创建 `skill.promotion` review；已完成 → 显示版本。**全程不绕 ReviewQueue，不静默改 `SKILL.md`**。
 
-简洁示例：
+### Regression Gate
+`skill.promotion` apply 前必须在 `skills/<skill>/eval/cases.yaml` 找到该 PROMO 的 **positive 案例**（新规则生效）+ **negative 案例**（不污染其他任务），每条 case 带 `source_promo_id` / `target_rule` 可追溯。缺失则 apply 被拒。
+
+### Skill Evolution Registry
+`skill.promotion` apply 成功后写 `.skills_versions/<skill>/`：`versions.jsonl` + `<version>/{SKILL.md, patch.diff, eval_result.json}`。**Runtime 加载源始终是 `skills/<skill>/SKILL.md`**；`.skills_versions/` 仅用于审计与回滚（rollback 也走 review）。
+
+### 端到端示例
 
 ```text
 /promotions
@@ -272,38 +248,13 @@ PROMO 存 `.skills_memory/PROMOTION_CANDIDATES.md`。
 /skill-versions markdown_writer
 ```
 
-**Regression Gate** — 每个 `skill.promotion` apply 前必须在 `skills/<skill>/eval/cases.yaml` 找到该 PROMO 的 positive 和 negative case，缺则拒绝 apply。positive case 验证新规则生效，negative case 验证新规则不污染其他任务。每条 case 都带 `source_promo_id` 和 `target_rule` 字段以追溯。
-
-**Skill Evolution Registry** — `skill.promotion` 成功 apply 后写 `.skills_versions/<skill>/versions.jsonl` + `<version>/{SKILL.md,patch.diff,eval_result.json}`。Runtime 加载源始终是 `skills/<skill>/SKILL.md`；`.skills_versions/` 仅用于追溯和回滚（rollback 也走 review）。
-
 ## 旁路 Scout + Optimizer
 
-```text
-memory + ERR + LRN + PROMO
-   ↓                  (read-only)
-EvolutionScout.scan
-   ↓
-LearningSignal ─→ EvolutionOpportunity ─→ PromotionBatch
-                                              ↓
-                                      SkillOptimizer.propose
-                                              ↓
-                                      SkillEditProposal  (edit_ops on
-                                                          "## Memory-derived rules")
-                                              ↓
-                                          ValidationGate
-                                       reject │ pass
-                                              ↓
-                                     ReviewQueue: skill.bounded_edit
-                                              ↓
-                                       /approve + /apply
-```
+旁路是主链路的**离线批量补丁**通道。Scout 只读扫描可进化的机会；Optimizer 受约束生成 bounded edit；ValidationGate 拦截退化；通过则汇入主链路 ReviewQueue。三层硬约束：
 
-**模块边界**
-
-- Scout 只读扫描 `.skills_memory/`、`skills/*/memory/`、`PROMOTION_CANDIDATES.md`；不写 `SKILL.md`、`eval/cases.yaml`、不创建 review、不改 evaluator / scorer / regression gate。
-- Optimizer 在 `.evolution/skill_edits/` 草拟 bounded edit；`edit_ops` 仅 `add/replace/delete`，`target_section == "## Memory-derived rules"`，最多 5 个 op，每个 op ≤ 500 字符。对象本身无 `apply / write_skill`。
-- ValidationGate 失败 → `.evolution/rejected_edits/`，不创建 review；成功 → `submit_review` 创建 `skill.bounded_edit` review。
-- Apply 时 ReviewQueue 重新校验 `edit_ops`，写文件后登记版本到 `.skills_versions/`。
+- **Scout 只读** — 扫 `.skills_memory/`、`skills/*/memory/`、`PROMOTION_CANDIDATES.md`；不写 `SKILL.md` / `eval/cases.yaml`；不创建 review；不改 evaluator / scorer / regression gate
+- **Optimizer 受约束写** — 仅在 `.evolution/skill_edits/` 草拟；`edit_ops ∈ {add, replace, delete}`；`target_section == "## Memory-derived rules"`；单次 ≤ 5 op，每 op ≤ 500 字符；对象上没有 `apply` / `write_skill`
+- **ValidationGate 把守** — 失败 → `.evolution/rejected_edits/` 归档，不创建 review；通过 → `submit_review` 创建 `skill.bounded_edit` review，由人审批后 apply
 
 ### 信号采集规则（Scout）
 
@@ -320,60 +271,74 @@ LearningSignal ─→ EvolutionOpportunity ─→ PromotionBatch
 
 ### 判断规则（Scout 评分 + 决策）
 
-聚类：按 `(observed_skill, cluster_key)` 分组。`cluster_key` 优先取前 5 个 tag，缺 tag 时取 content 中频率最高的 5 个词。
+**聚类** — 信号按 `(target_skill, cluster_key)` 分组。`cluster_key` 优先取信号前 5 个 tag 拼成 `tag:...`，缺 tag 时退化为 content 中频率最高的 5 个词 `kw:...`。
 
-九维评分（`runtime/evolution_scout.py::_evolution_score`）：
+**九维评分**（记 `Σf = Σfrequency`，公式见 `runtime/evolution_scout.py::_evolution_score`）
 
-| 分量 | 计算 | 权重 |
-|---|---|---|
-| `frequency` | `min(1.0, Σfrequency / 5.0)` | +0.20 |
-| `transferability` | 多 skill ⇒ 1.0 否则 0.6 | +0.20 |
-| `impact` | `safety` 标签 ⇒ 1.0 否则 `min(1.0, 0.3 + 0.15·Σfrequency)` | +0.20 |
-| `skill_confidence` | 不含 `self_improvement` ⇒ 1.0 否则 0.5 | +0.15 |
-| `testability` | 含 PROMO ⇒ 0.8 否则 0.5 | +0.15 |
-| `safety_gain` | `safety` 标签 ⇒ 1.0 | +0.10 |
-| `regression_risk` | 含 PROMO ⇒ 0.3 否则 0.4 | −0.15 |
-| `overfitting_risk` | `Σfrequency ≤ 1` ⇒ 0.5 否则 0.2 | −0.10 |
-| `cost_increase` | 常量 0.1 | −0.10 |
-
-决策表（顺序判断，先匹配先用）：
-
-| 条件 | decision |
+| ⊕ 增益项（权重） | 取值 |
 |---|---|
-| 信号全归属 `self_improvement` 且无 `safety` | `defer` |
-| `safety_gain > 0` 且 `skill_confidence ≥ 0.5` | `promote`（high priority） |
-| `score ≥ 0.45` 且 `Σfrequency ≥ 2` | `promote` |
-| `score ≥ 0.45` 且 `Σfrequency < 2` 且无 PROMO | `request_eval` |
-| `score ≥ 0.30` | `defer` |
-| 其它 | `reject` |
+| **frequency** (+0.20) | `min(1, Σf / 5)` |
+| **transferability** (+0.20) | 跨多 skill ⇒ 1.0，否则 0.6 |
+| **impact** (+0.20) | 命中 `safety` 标签 ⇒ 1.0，否则 `min(1, 0.3 + 0.15·Σf)` |
+| **skill_confidence** (+0.15) | 信号都不归属 `self_improvement` ⇒ 1.0，否则 0.5 |
+| **testability** (+0.15) | 聚类含 PROMO 信号 ⇒ 0.8，否则 0.5 |
+| **safety_gain** (+0.10) | 命中 `safety` 标签 ⇒ 1.0，否则 0 |
 
-`must_not_regress` 始终包含 `must not relax existing safety policy` + `must not bypass ReviewQueue approval`；含 `safety` 标签时追加 `must preserve safety-gain assertions`。
+| ⊖ 风险项（权重） | 取值 |
+|---|---|
+| **regression_risk** (−0.15) | 聚类含 PROMO ⇒ 0.3，否则 0.4 |
+| **overfitting_risk** (−0.10) | `Σf ≤ 1` ⇒ 0.5，否则 0.2 |
+| **cost_increase** (−0.10) | 常量 0.1 |
 
-Batch 合并：必须同 skill；`priority` / `risk_level` 取最大档；`should_improve` / `must_not_regress` / `promo_ids` 取并集；跨 skill 抛 `ValueError`。
+`evolution_score = Σ(weight · component)`，理论范围 ≈ −0.20 … +1.10。
+
+**决策表**（自顶向下，先匹配先用）
+
+| 触发条件 | decision | priority / risk / confidence |
+|---|---|---|
+| 信号全归属 `self_improvement` 且无 `safety` 标签 | `defer` | low / low / low |
+| `safety_gain > 0` 且 `skill_confidence ≥ 0.5` | `promote` | **high** / medium / medium |
+| `score ≥ 0.45` 且 `Σf ≥ 2` | `promote` | medium / medium / medium |
+| `score ≥ 0.45` 且 `Σf < 2` 且无 PROMO | `request_eval` | medium / medium / low |
+| `score ≥ 0.30` | `defer` | low / low / low |
+| 其它 | `reject` | low / low / low |
+
+**派生字段**
+
+- `should_improve` — 从信号 tag 中提取（剔除 `error / learning / feature_request / promo`），最多 5 条
+- `must_not_regress` — 始终包含 `must not relax existing safety policy` + `must not bypass ReviewQueue approval`；含 `safety` 标签时追加 `must preserve safety-gain assertions`
+- **Batch 合并** — 必须同 skill；`priority` / `risk_level` 取并集中最大档；`should_improve` / `must_not_regress` / `promo_ids` 取并集；跨 skill 调用抛 `ValueError`
 
 ### Optimizer 受约束补丁规则
 
-`propose()` 接受 `batch_id` 或 `opportunity_id`；任何 `decision=reject` 的 opportunity 都让整次提案被拒；`signal_ids` 必须非空。
+`propose()` 接受 `batch_id` 或 `opportunity_id`；任何 `decision=reject` 的 opportunity 让整次提案被拒；`signal_ids` 必须非空。
 
-`edit_ops` 形态（`evolution_stores.validate_edit_ops`）：
+**`edit_ops` 形态**（`evolution_stores.validate_edit_ops`）
 
 - `op ∈ {add, replace, delete}`，`target_section == "## Memory-derived rules"`
-- 单次 ≤ 5 个 op，每 op `text` / `replace_text` ≤ 500 字符
-- `add` 要求 `text` 非空；`replace` 要求 `text` 和 `replace_text` 都非空；`delete` 要求 `text` 非空
+- 单次提案 ≤ 5 op；每 op `text` / `replace_text` ≤ 500 字符
+- `add` / `delete` 要求 `text` 非空；`replace` 要求 `text` 和 `replace_text` 都非空
 
-ValidationGate 默认评分：`train_score = 0.6`；`validation_score` 起 0.5，新 bullet 已存在则 −0.05，不存在则 +0.10，clamp [0,1]；`regression_score` 含禁词（`disable safety / bypass approval / ignore previous`）⇒ 0.0，`cases:` 非空 ⇒ 0.75 否则 0.6；判定阈值 `≥ 0.5`。
+**ValidationGate 默认评分**
+
+| 分项 | 计算 |
+|---|---|
+| `train_score` | 常量 0.6 |
+| `validation_score` | 起 0.5，新 bullet 已在 SKILL.md 出现 −0.05，否则 +0.10，clamp [0, 1] |
+| `regression_score` | 命中禁词（`disable safety / bypass approval / ignore previous`）⇒ 0.0；`cases:` 非空 ⇒ 0.75；否则 0.6 |
+| **判定** | `validation_score ≥ 0.5` **且** `regression_score ≥ 0.5` |
 
 ### LLM 接入（opt-in）
 
-设 `EVOLUTION_LLM_ENABLED=1` + `OPENAI_API_KEY` + `OPENAI_MODEL`，CLI / web server 启动时自动注入 LLM 增强。默认关闭走 deterministic 路径。
+设 `EVOLUTION_LLM_ENABLED=1` + `OPENAI_API_KEY` + `OPENAI_MODEL` 即开。默认关闭走 deterministic 路径。
 
-| 接入点 | LLM 做什么 | LLM 不能做什么 |
+| 接入点 | 做什么 | 仍然不能做 |
 |---|---|---|
-| `LLMOpportunityEnricher` | 丰富 `reason` / `should_improve` / `must_not_regress` | 改 `decision` / `evolution_score` / `signal_ids` / `target_skill` |
+| `LLMOpportunityEnricher` | 丰富 `reason` / `should_improve` / `must_not_regress` | 改 `decision` / `score` / `signal_ids` / `target_skill` |
 | `LLMBulletWriter` | 生成 1–3 条 bullet（≤ 240 字符/条） | 突破 `add/replace/delete`、扩 section、绕 `validate_edit_ops` |
-| `LLMValidationGate` | 给 train / validation / regression 三个分数 | 直接 apply、跳 ReviewQueue、调 `apply_edit_ops_to_text` |
+| `LLMValidationGate` | 给 train / validation / regression 三分 | 直接 apply、跳 ReviewQueue、写 `SKILL.md` |
 
-所有 LLM 输出经 `redact_secrets` + `looks_like_memory_poisoning` 清洗；命中 `ignore previous instructions / disable safety / bypass approval` 等字样 → 丢弃 → 回退 deterministic。网络 / 解析错误也自动回退。
+所有 LLM 输出经 `redact_secrets` + `looks_like_memory_poisoning` 清洗，命中污染字样 → 丢弃 → 回退 deterministic。网络 / 解析错误也自动回退，不阻塞 pipeline。
 
 ### 落盘 & 追溯
 
