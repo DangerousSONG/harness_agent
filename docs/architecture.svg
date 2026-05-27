@@ -1,0 +1,274 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1200" preserveAspectRatio="xMidYMid meet" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <linearGradient id="titleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <style>
+      .title { font-size: 26px; font-weight: 700; fill: #ffffff; }
+      .subtitle { font-size: 13px; fill: #e0e7ff; }
+      .layer-title { font-size: 15px; font-weight: 700; fill: #0f172a; }
+      .layer-sub { font-size: 11px; fill: #475569; }
+      .box-title { font-size: 13px; font-weight: 600; fill: #0f172a; }
+      .box-body { font-size: 11px; fill: #475569; }
+      .box-body-strong { font-size: 11px; font-weight: 600; fill: #0f172a; }
+      .legend-text { font-size: 12px; fill: #475569; }
+      .arrow-label { font-size: 10px; fill: #64748b; }
+    </style>
+  </defs>
+
+  <!-- =========== Title bar =========== -->
+  <rect x="0" y="0" width="1280" height="64" fill="url(#titleGrad)"/>
+  <text x="640" y="32" text-anchor="middle" class="title">Harness Agent · SafeHarness + 受控自进化 架构图</text>
+  <text x="640" y="52" text-anchor="middle" class="subtitle">运行时拦截 + 主链路自进化 + 旁路自进化 + 共享审批落盘</text>
+
+  <!-- =========== L1: Frontend =========== -->
+  <g>
+    <rect x="20" y="80" width="1240" height="156" rx="12" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+    <text x="36" y="104" class="layer-title">🖥️ 前端工作台 (Web Workbench · React + Vite)</text>
+
+    <g>
+      <rect x="40" y="116" width="230" height="104" rx="6" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="155" y="142" text-anchor="middle" class="box-title">对话 / Chat</text>
+      <text x="155" y="164" text-anchor="middle" class="box-body">自然语言入口</text>
+      <text x="155" y="180" text-anchor="middle" class="box-body">📎 知识库 0/3 picker</text>
+      <text x="155" y="196" text-anchor="middle" class="box-body">trace · review card · 内联确认</text>
+    </g>
+
+    <g>
+      <rect x="286" y="116" width="230" height="104" rx="6" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="401" y="142" text-anchor="middle" class="box-title">工作区 / Workspace</text>
+      <text x="401" y="164" text-anchor="middle" class="box-body">文件读写</text>
+      <text x="401" y="180" text-anchor="middle" class="box-body">命令运行</text>
+      <text x="401" y="196" text-anchor="middle" class="box-body">变更聚合</text>
+    </g>
+
+    <g>
+      <rect x="532" y="116" width="230" height="104" rx="6" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="647" y="142" text-anchor="middle" class="box-title">资产库 / Assets</text>
+      <text x="647" y="164" text-anchor="middle" class="box-body">Skills · Tools</text>
+      <text x="647" y="180" text-anchor="middle" class="box-body">Memories · 知识库</text>
+      <text x="647" y="196" text-anchor="middle" class="box-body">Eval cases</text>
+    </g>
+
+    <g>
+      <rect x="778" y="116" width="230" height="104" rx="6" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="893" y="142" text-anchor="middle" class="box-title">Self-Evolution 工作台</text>
+      <text x="893" y="164" text-anchor="middle" class="box-body">候选 PROMO · 审批队列</text>
+      <text x="893" y="180" text-anchor="middle" class="box-body">版本与回滚 · 旁路进化</text>
+      <text x="893" y="196" text-anchor="middle" class="box-body">高风险 / 失败 / 受审批 指标</text>
+    </g>
+
+    <g>
+      <rect x="1024" y="116" width="220" height="104" rx="6" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="1134" y="142" text-anchor="middle" class="box-title">设置 / Settings</text>
+      <text x="1134" y="164" text-anchor="middle" class="box-body">Search Provider</text>
+      <text x="1134" y="180" text-anchor="middle" class="box-body">Model Connection</text>
+      <text x="1134" y="196" text-anchor="middle" class="box-body">写入 .env 并即时生效</text>
+    </g>
+  </g>
+
+  <!-- =========== L2: Orchestrator + SafeHarness =========== -->
+  <g>
+    <rect x="20" y="252" width="1240" height="140" rx="12" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+    <text x="36" y="276" class="layer-title">🛡️ 编排与运行时拦截 (Orchestrator + SafeHarness)</text>
+
+    <g>
+      <rect x="40" y="288" width="602" height="92" rx="6" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="341" y="314" text-anchor="middle" class="box-title">Chat Orchestrator</text>
+      <text x="341" y="334" text-anchor="middle" class="box-body">意图分类（financial / web_research / kb_qa / general_chat / ...）</text>
+      <text x="341" y="350" text-anchor="middle" class="box-body">路由：tool / skill / workspace / 实时查询 / KB Q&amp;A</text>
+      <text x="341" y="366" text-anchor="middle" class="box-body">trace 标记 essential vs 调试</text>
+    </g>
+
+    <g>
+      <rect x="658" y="288" width="602" height="92" rx="6" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="959" y="314" text-anchor="middle" class="box-title">SafeHarness · PolicyEngine · AuditLogger</text>
+      <text x="959" y="334" text-anchor="middle" class="box-body">RuntimeEvent · input/tool/permission/result guard</text>
+      <text x="959" y="350" text-anchor="middle" class="box-body-strong">allow · warn · sanitize · require_approval · block</text>
+      <text x="959" y="366" text-anchor="middle" class="box-body">命中高风险 → 创建 REV-xxxx，不执行原始动作</text>
+    </g>
+  </g>
+
+  <!-- =========== L3: Two evolution loops =========== -->
+  <g>
+    <rect x="20" y="408" width="1240" height="340" rx="12" fill="#fafafa" stroke="#0f172a" stroke-width="2"/>
+    <text x="36" y="432" class="layer-title">🧬 两条自进化链路 (互补 · 都受 ReviewQueue 约束 · 都受 Regression / Validation 保护)</text>
+
+    <!-- L3A 主链路 -->
+    <g>
+      <rect x="40" y="444" width="596" height="292" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="2"/>
+      <text x="56" y="468" class="layer-title" fill="#065f46">♻️ 主链路 · 事件驱动</text>
+      <text x="56" y="484" class="layer-sub">用户纠正 / 工具失败 / 安全事件 → memory → PROMO → 评估 → 审批</text>
+
+      <g>
+        <rect x="56" y="492" width="564" height="52" rx="6" fill="#ffffff" stroke="#059669" stroke-width="1.2"/>
+        <text x="338" y="512" text-anchor="middle" class="box-title">① Skill Memory</text>
+        <text x="338" y="530" text-anchor="middle" class="box-body">LRN · ERR · FEAT · POL · REG  ·  自动去重 / 脱敏 / 污染拦截</text>
+      </g>
+      <g>
+        <rect x="56" y="552" width="564" height="52" rx="6" fill="#ffffff" stroke="#059669" stroke-width="1.2"/>
+        <text x="338" y="572" text-anchor="middle" class="box-title">② PROMO 候选</text>
+        <text x="338" y="590" text-anchor="middle" class="box-body">9 维 promotion_score · occurrence_count ≥ 3 或强纠正 ≥ 2</text>
+      </g>
+      <g>
+        <rect x="56" y="612" width="564" height="52" rx="6" fill="#ffffff" stroke="#059669" stroke-width="1.2"/>
+        <text x="338" y="632" text-anchor="middle" class="box-title">③ /evolve-skill 流程向导</text>
+        <text x="338" y="650" text-anchor="middle" class="box-body">按状态推进：先 regression review，再 skill.promotion review</text>
+      </g>
+      <g>
+        <rect x="56" y="672" width="564" height="52" rx="6" fill="#ffffff" stroke="#059669" stroke-width="1.2"/>
+        <text x="338" y="692" text-anchor="middle" class="box-title">④ Regression Gate</text>
+        <text x="338" y="710" text-anchor="middle" class="box-body">缺 positive + negative case → 拒 apply</text>
+      </g>
+    </g>
+
+    <!-- L3B 旁路 -->
+    <g>
+      <rect x="644" y="444" width="596" height="292" rx="10" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
+      <text x="660" y="468" class="layer-title" fill="#92400e">🛰️ 旁路 · 批量发现 (离线扫描)</text>
+      <text x="660" y="484" class="layer-sub">memory + PROMO 批量挑机会，受约束生成补丁，不绕审批</text>
+
+      <g>
+        <rect x="660" y="492" width="564" height="52" rx="6" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
+        <text x="942" y="512" text-anchor="middle" class="box-title">① EvolutionScout (只读)</text>
+        <text x="942" y="530" text-anchor="middle" class="box-body">扫 memory + PROMO · 不写 SKILL.md · 不创建 review</text>
+      </g>
+      <g>
+        <rect x="660" y="552" width="564" height="52" rx="6" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
+        <text x="942" y="572" text-anchor="middle" class="box-title">② Opportunity / PromotionBatch</text>
+        <text x="942" y="590" text-anchor="middle" class="box-body">9 维 evolution_score · promote / defer / request_eval / reject</text>
+      </g>
+      <g>
+        <rect x="660" y="612" width="564" height="52" rx="6" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
+        <text x="942" y="632" text-anchor="middle" class="box-title">③ SkillOptimizer (bounded edit)</text>
+        <text x="942" y="650" text-anchor="middle" class="box-body-strong">仅 add/replace/delete · 仅 ## Memory-derived rules · 单次 ≤ 5 op</text>
+      </g>
+      <g>
+        <rect x="660" y="672" width="564" height="52" rx="6" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
+        <text x="942" y="692" text-anchor="middle" class="box-title">④ ValidationGate</text>
+        <text x="942" y="710" text-anchor="middle" class="box-body">train / validation / regression 三分都过阈值 → 创建 review；否则归档 rejected_edits</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- =========== L4: Review Queue =========== -->
+  <g>
+    <rect x="20" y="764" width="1240" height="128" rx="12" fill="#fef2f2" stroke="#dc2626" stroke-width="2"/>
+    <text x="36" y="788" class="layer-title">🚦 共享审批 (ReviewQueue · 唯一落盘路径 · 主链路 / 旁路都汇入这里)</text>
+
+    <g>
+      <rect x="40" y="800" width="398" height="80" rx="6" fill="#ffffff" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="239" y="824" text-anchor="middle" class="box-title">ReviewQueue</text>
+      <text x="239" y="844" text-anchor="middle" class="box-body">pending → approved → applied / rejected</text>
+      <text x="239" y="860" text-anchor="middle" class="box-body">skill.promotion · skill.bounded_edit · skill.regression_case</text>
+    </g>
+
+    <g>
+      <rect x="454" y="800" width="398" height="80" rx="6" fill="#ffffff" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="653" y="824" text-anchor="middle" class="box-title">Apply (人工 /apply 触发)</text>
+      <text x="653" y="844" text-anchor="middle" class="box-body">写入 skills/&lt;skill&gt;/SKILL.md</text>
+      <text x="653" y="860" text-anchor="middle" class="box-body">或 skills/&lt;skill&gt;/eval/cases.yaml</text>
+    </g>
+
+    <g>
+      <rect x="868" y="800" width="376" height="80" rx="6" fill="#ffffff" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="1056" y="824" text-anchor="middle" class="box-title">Skill Evolution Registry</text>
+      <text x="1056" y="844" text-anchor="middle" class="box-body">版本快照 + patch.diff + eval_result</text>
+      <text x="1056" y="860" text-anchor="middle" class="box-body">.skills_versions/&lt;skill&gt;/versions.jsonl</text>
+    </g>
+  </g>
+
+  <!-- =========== L5: AI infra =========== -->
+  <g>
+    <rect x="20" y="908" width="1240" height="120" rx="12" fill="#fdf2f8" stroke="#db2777" stroke-width="2"/>
+    <text x="36" y="932" class="layer-title">⚙️ AI 基础设施 (LLM &amp; 外部能力 · 可配置 · 可降级)</text>
+
+    <g>
+      <rect x="40" y="944" width="293" height="72" rx="6" fill="#ffffff" stroke="#db2777" stroke-width="1.5"/>
+      <text x="186" y="966" text-anchor="middle" class="box-title">OPENAI_MODEL</text>
+      <text x="186" y="985" text-anchor="middle" class="box-body">对话 · KB Q&amp;A · 总结</text>
+      <text x="186" y="1001" text-anchor="middle" class="box-body">EVOLUTION_LLM_ENABLED → 旁路 LLM 增强</text>
+    </g>
+
+    <g>
+      <rect x="349" y="944" width="293" height="72" rx="6" fill="#ffffff" stroke="#db2777" stroke-width="1.5"/>
+      <text x="495" y="966" text-anchor="middle" class="box-title">SEARCH_PROVIDER</text>
+      <text x="495" y="985" text-anchor="middle" class="box-body">Bailian / DashScope MCP (优先)</text>
+      <text x="495" y="1001" text-anchor="middle" class="box-body">DuckDuckGo no-key fallback</text>
+    </g>
+
+    <g>
+      <rect x="658" y="944" width="293" height="72" rx="6" fill="#ffffff" stroke="#db2777" stroke-width="1.5"/>
+      <text x="804" y="966" text-anchor="middle" class="box-title">crawl4ai 抓取</text>
+      <text x="804" y="985" text-anchor="middle" class="box-body">并行 (max 3) · 拿到 2 个 usable 早停</text>
+      <text x="804" y="1001" text-anchor="middle" class="box-body">单页 12s timeout · 单 KB 上限 100 MB</text>
+    </g>
+
+    <g>
+      <rect x="967" y="944" width="277" height="72" rx="6" fill="#ffffff" stroke="#db2777" stroke-width="1.5"/>
+      <text x="1105" y="966" text-anchor="middle" class="box-title">BM25 检索 (本地)</text>
+      <text x="1105" y="985" text-anchor="middle" class="box-body">chunked · 零依赖 · CJK 2-gram</text>
+      <text x="1105" y="1001" text-anchor="middle" class="box-body">score + matched_terms 可解释</text>
+    </g>
+  </g>
+
+  <!-- =========== L6: Storage =========== -->
+  <g>
+    <rect x="20" y="1044" width="1240" height="100" rx="12" fill="#f8fafc" stroke="#475569" stroke-width="2"/>
+    <text x="36" y="1068" class="layer-title">💾 本地存储 (全部 .gitignored · 个人本地优先)</text>
+
+    <g>
+      <rect x="40" y="1080" width="190" height="52" rx="6" fill="#ffffff" stroke="#475569" stroke-width="1.2"/>
+      <text x="135" y="1100" text-anchor="middle" class="box-title">.reviews/</text>
+      <text x="135" y="1118" text-anchor="middle" class="box-body">REV-*.json · patch preview</text>
+    </g>
+    <g>
+      <rect x="246" y="1080" width="190" height="52" rx="6" fill="#ffffff" stroke="#475569" stroke-width="1.2"/>
+      <text x="341" y="1100" text-anchor="middle" class="box-title">.skills_memory/</text>
+      <text x="341" y="1118" text-anchor="middle" class="box-body">memory · PROMO 候选</text>
+    </g>
+    <g>
+      <rect x="452" y="1080" width="190" height="52" rx="6" fill="#ffffff" stroke="#475569" stroke-width="1.2"/>
+      <text x="547" y="1100" text-anchor="middle" class="box-title">.skills_versions/</text>
+      <text x="547" y="1118" text-anchor="middle" class="box-body">SKILL.md 快照 · patch.diff</text>
+    </g>
+    <g>
+      <rect x="658" y="1080" width="190" height="52" rx="6" fill="#ffffff" stroke="#475569" stroke-width="1.2"/>
+      <text x="753" y="1100" text-anchor="middle" class="box-title">.evolution/</text>
+      <text x="753" y="1118" text-anchor="middle" class="box-body">signals · opportunities · edits</text>
+    </g>
+    <g>
+      <rect x="864" y="1080" width="190" height="52" rx="6" fill="#ffffff" stroke="#475569" stroke-width="1.2"/>
+      <text x="959" y="1100" text-anchor="middle" class="box-title">.knowledge_bases/</text>
+      <text x="959" y="1118" text-anchor="middle" class="box-body">files/ · meta.json · index.json</text>
+    </g>
+    <g>
+      <rect x="1070" y="1080" width="174" height="52" rx="6" fill="#ffffff" stroke="#475569" stroke-width="1.2"/>
+      <text x="1157" y="1100" text-anchor="middle" class="box-title">.audit/</text>
+      <text x="1157" y="1118" text-anchor="middle" class="box-body">SafeHarness 决策日志</text>
+    </g>
+  </g>
+
+  <!-- =========== Connecting arrows (left margin column) =========== -->
+  <!-- Frontend -> Orchestrator -->
+  <path d="M 640 236 L 640 252" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <!-- Orchestrator -> L3 (split into two) -->
+  <path d="M 338 392 L 338 444" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 942 392 L 942 444" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <!-- L3A -> Review -->
+  <path d="M 338 736 L 338 800" stroke="#059669" stroke-width="1.8" fill="none" marker-end="url(#arrow)"/>
+  <text x="345" y="772" class="arrow-label" fill="#059669">主链路 review</text>
+  <!-- L3B -> Review -->
+  <path d="M 942 736 L 942 800" stroke="#d97706" stroke-width="1.8" fill="none" marker-end="url(#arrow)"/>
+  <text x="950" y="772" class="arrow-label" fill="#92400e">旁路 review</text>
+  <!-- Review -> Apply -> Registry (within L4 horizontal) -->
+  <path d="M 438 840 L 454 840" stroke="#dc2626" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 852 840 L 868 840" stroke="#dc2626" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <!-- SafeHarness -> Review (require_approval, lateral dashed) -->
+  <path d="M 1244 334 Q 1265 334 1265 380 L 1265 820 Q 1265 840 1245 840" stroke="#7c3aed" stroke-width="1.5" fill="none" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+  <text x="1170" y="486" class="arrow-label" fill="#7c3aed">require_approval</text>
+</svg>
