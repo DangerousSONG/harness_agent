@@ -1,17 +1,23 @@
-"""EvolutionScout: read-only signal extraction + opportunity scoring.
+"""EvolutionScout: structured four-stage judge over memory + PROMOs.
 
-Scout responsibilities (per the side-channel evolution spec):
+Pipeline:
 
-- Read-only: scans memory/errors/learnings/feature_requests/PROMO records.
-- Decides which experience is worth evolving, which skill to prioritize,
-  which PROMOs to batch.
-- Never modifies SKILL.md, ReviewQueue, regression cases, evaluator,
-  scorer, or the existing skill_memory record files. The only thing it
-  writes to disk is the side-channel JSON stores under ``.evolution/``.
+  scan()
+   ├── extract raw memory records
+   ├── ① hard filter / quarantine
+   │       attack patterns → quarantined signal (redacted, attack_type set)
+   │       defended security reports → security_incident tag, normal signal
+   ├── classify tags (9-class taxonomy, not just a coarse 'safety' flag)
+   ├── ② cluster by semantic key (across skills), then pick target_skill
+   │       from observed_skill distribution; cross-skill ⇒ high transferability
+   ├── ③ evidence_quality / value_score / risk_score per cluster
+   ├── ④ decision matrix
+   │       quarantine · safety_review · promote · request_eval · defer · reject
+   └── persist opportunities (refreshing existing on re-scan)
 
-Each opportunity must trace back to at least one signal, and each signal
-must trace back to a concrete source_path:source_ref so that the human
-reviewer can verify provenance.
+The Optimizer rejects any opportunity whose signals carry
+`quarantined=True`, so attack content can never reach SKILL.md even if
+a human accidentally clicks Optimize on a security-related row.
 """
 
 from __future__ import annotations
@@ -30,6 +36,10 @@ from .evolution_stores import (
 from .promotion_browser import PromotionBrowser
 
 
+# ---------------------------------------------------------------------------
+# Lexicons
+# ---------------------------------------------------------------------------
+
 WORD_RE = re.compile(r"[A-Za-z0-9_]+|[一-鿿]+")
 ID_HEADING_RE = re.compile(r"^##\s+([A-Z]+-[A-Z0-9]+)\s*(?:-\s*(.*))?$")
 
@@ -47,26 +57,103 @@ SKILL_MEMORY_FILES = {
     "REGRESSION_TESTS.md": "regression_test",
 }
 
-UNSAFE_HINTS = (
-    "ignore previous instructions",
-    "disable safety",
-    "bypass approval",
-    "bypass policy",
-    "system administrator",
-    "send this secret",
+# Attack patterns that MUST quarantine the signal. Each pattern triggers a
+# specific attack_type so the human reviewer knows what they're looking at.
+ATTACK_PATTERNS: dict[str, tuple[str, ...]] = {
+    "prompt_injection": (
+        "ignore previous instructions",
+        "ignore the system prompt",
+        "you are now",
+        "from now on you will act as",
+        "忽略以上指令",
+        "忽略 safeharness",
+    ),
+    "approval_bypass": (
+        "bypass approval",
+        "bypass policy",
+        "skip the review",
+        "skip approval",
+        "绕过审批",
+        "跳过审批",
+        "无需审批",
+    ),
+    "safety_disable": (
+        "disable safety",
+        "turn off safety",
+        "ignore safety",
+        "disable safeharness",
+        "关闭安全",
+        "禁用安全",
+    ),
+    "secret_exfiltration": (
+        "send this secret",
+        "exfiltrate",
+        "leak the api key",
+        "post the token to",
+        "把 api key 发",
+    ),
+}
+
+# Phrases that indicate the memory is REPORTING a defended security event
+# (not attempting one). When present alongside attack phrases, we lean
+# toward security_incident instead of full quarantine.
+DEFENDED_INCIDENT_MARKERS = (
+    "blocked", "rejected", "denied", "stopped", "prevented",
+    "require_approval", "审批拦截", "已拦截", "已被拒绝", "需要审批",
 )
 
-SAFETY_HINTS = (
-    "leak",
-    "secret",
-    "credential",
-    "approval",
-    "safety",
-    "policy",
-    "rollback",
-    "回退",
-    "审批",
+# Tag taxonomy. A signal can carry multiple tags. memory_poisoning and
+# user_correction are set programmatically, not via keywords.
+TAG_LEXICON: dict[str, tuple[str, ...]] = {
+    "security_incident": (
+        "attack", "exploit", "malicious", "credential", "secret leak",
+        "exfiltrate", "data breach", "未授权", "凭据泄漏", "凭据泄露",
+    ),
+    "governance_related": (
+        "审批", "审核", "approval", "approve", "reviewqueue", "review queue",
+        "policy gate", "审计",
+    ),
+    "policy_related": (
+        "policy", "策略", "guideline", "标准", "规范",
+    ),
+    "rollback_related": (
+        "rollback", "revert", "回滚", "回退", "撤销",
+    ),
+    "tool_failure": (
+        "traceback", "exception", "failed", "error code", "stack trace",
+        "报错", "失败", "异常",
+    ),
+    "format_preference": (
+        "markdown", "yaml", "json", "csv", "format", "structure",
+        "格式", "结构", "排版", "template", "模板",
+    ),
+    "capability_gap": (
+        "missing capability", "not supported", "cannot", "unable to",
+        "support for", "feature request", "需要支持", "增加支持",
+    ),
+}
+
+CORRECTION_PHRASES: tuple[tuple[str, float], ...] = (
+    ("以后", 0.9),
+    ("固定", 0.9),
+    ("默认", 0.8),
+    ("不要再", 0.95),
+    ("可复用", 0.7),
+    ("always", 0.9),
+    ("never", 0.9),
+    ("from now on", 0.95),
+    ("default to", 0.8),
+    ("reusable", 0.7),
+    ("must not", 0.85),
 )
+
+CROSS_CUTTING_TAGS = {"format_preference", "capability_gap", "tool_failure", "governance_related"}
+META_TAGS = {"error", "learning", "feature_request", "policy_candidate", "regression_test", "promo"}
+
+
+# ---------------------------------------------------------------------------
+# Public types
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -74,6 +161,7 @@ class ScanResult:
     new_signal_ids: list[str]
     new_opportunity_ids: list[str]
     skipped_signal_count: int = 0
+    quarantined_signal_count: int = 0
     summary: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -81,13 +169,13 @@ class ScanResult:
             "new_signal_ids": self.new_signal_ids,
             "new_opportunity_ids": self.new_opportunity_ids,
             "skipped_signal_count": self.skipped_signal_count,
+            "quarantined_signal_count": self.quarantined_signal_count,
             "summary": self.summary,
         }
 
 
 class EvolutionScout:
-    """Read-only scout. LLM enrichment is opt-in; the deterministic
-    decision/score path is always authoritative."""
+    """Read-only scout. LLM enrichment optional and never authoritative."""
 
     def __init__(
         self,
@@ -102,28 +190,28 @@ class EvolutionScout:
         self.promotions = promotions
         self.llm_enricher = llm_enricher
 
+    # ---- scan -----------------------------------------------------------
+
     def scan(self) -> ScanResult:
         existing_signals = {self._signal_key(s): s for s in self.stores.signals.list()}
         new_signals: list[dict[str, Any]] = []
-        skipped = 0
+        quarantined_count = 0
 
+        # Stage 1: extract + classify each memory record, including
+        # quarantine for attack content.
         for record in self._iter_memory_records():
-            if self._is_unsafe(record["content"]):
-                skipped += 1
-                continue
-            signal = LearningSignal.new(
-                source_type=record["source_type"],
-                source_path=record["source_path"],
-                source_ref=record["source_ref"],
-                observed_skill=record["observed_skill"],
-                content=record["content"],
-                tags=record["tags"],
-                frequency=record["frequency"],
-                severity=record["severity"],
-            )
-            key = self._signal_key(signal.to_dict())
+            extracted = self._classify_signal(record)
+            key = self._signal_key(extracted)
+            if extracted.get("quarantined"):
+                quarantined_count += 1
             if key in existing_signals:
+                signal_id = existing_signals[key]["signal_id"]
+                extracted["signal_id"] = signal_id
+                if "created_at" in existing_signals[key]:
+                    extracted["created_at"] = existing_signals[key]["created_at"]
+                self.stores.signals.save(LearningSignal(**extracted))
                 continue
+            signal = LearningSignal.new(**extracted)
             stored = self.stores.signals.save(signal)
             new_signals.append(stored)
             existing_signals[key] = stored
@@ -134,94 +222,80 @@ class EvolutionScout:
                 continue
             key = self._signal_key(promo_signal)
             if key in existing_signals:
+                signal_id = existing_signals[key]["signal_id"]
+                promo_signal["signal_id"] = signal_id
+                if "created_at" in existing_signals[key]:
+                    promo_signal["created_at"] = existing_signals[key]["created_at"]
+                self.stores.signals.save(LearningSignal(**promo_signal))
                 continue
             signal = LearningSignal.new(**promo_signal)
             stored = self.stores.signals.save(signal)
             new_signals.append(stored)
             existing_signals[key] = stored
 
+        # Stage 2: cluster all signals (quarantine bucket is segregated).
         all_signals = self.stores.signals.list()
         opportunities = self._cluster_into_opportunities(all_signals)
 
+        # Persist opportunities, refreshing existing on re-scan.
         existing_opp_by_key: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
         for opp in self.stores.opportunities.list():
-            key = (opp.get("target_skill", ""), tuple(sorted(opp.get("signal_ids", []))))
-            existing_opp_by_key[key] = opp
+            k = (opp.get("target_skill", ""), tuple(sorted(opp.get("signal_ids", []))))
+            existing_opp_by_key[k] = opp
 
-        new_opportunities: list[str] = []
-        refreshed_opportunities = 0
+        new_opp_ids: list[str] = []
+        refreshed = 0
         for opp in opportunities:
-            key = (opp.target_skill, tuple(sorted(opp.signal_ids)))
-            existing = existing_opp_by_key.get(key)
+            k = (opp.target_skill, tuple(sorted(opp.signal_ids)))
+            existing = existing_opp_by_key.get(k)
             if existing is not None:
-                # Refresh narrative + scores so users get up-to-date reasoning
-                # without losing the stable opportunity_id (used by Batch links).
                 opp.opportunity_id = existing["opportunity_id"]
                 if existing.get("created_at"):
                     opp.created_at = existing["created_at"]
                 self.stores.opportunities.save(opp)
-                refreshed_opportunities += 1
+                refreshed += 1
             else:
                 stored = self.stores.opportunities.save(opp)
-                new_opportunities.append(stored["opportunity_id"])
+                new_opp_ids.append(stored["opportunity_id"])
 
-        summary_parts = [
+        parts = [
             f"scanned: signals_new={len(new_signals)}",
-            f"opportunities_new={len(new_opportunities)}",
+            f"opportunities_new={len(new_opp_ids)}",
         ]
-        if refreshed_opportunities:
-            summary_parts.append(f"opportunities_refreshed={refreshed_opportunities}")
-        summary_parts.append(f"unsafe_skipped={skipped}")
+        if refreshed:
+            parts.append(f"opportunities_refreshed={refreshed}")
+        parts.append(f"quarantined={quarantined_count}")
         return ScanResult(
             new_signal_ids=[s["signal_id"] for s in new_signals],
-            new_opportunity_ids=new_opportunities,
-            skipped_signal_count=skipped,
-            summary=" ".join(summary_parts),
+            new_opportunity_ids=new_opp_ids,
+            skipped_signal_count=0,
+            quarantined_signal_count=quarantined_count,
+            summary=" ".join(parts),
         )
 
-    def create_batch(
-        self,
-        opportunity_ids: list[str],
-    ) -> dict[str, Any]:
-        from .evolution_stores import PromotionBatch  # local import to keep module lean
+    def create_batch(self, opportunity_ids: list[str]) -> dict[str, Any]:
+        from .evolution_stores import PromotionBatch
 
         if not opportunity_ids:
             raise ValueError("opportunity_ids is required")
-        opportunities = [
-            self.stores.opportunities.get(opp_id) for opp_id in opportunity_ids
-        ]
-        missing = [
-            opp_id for opp_id, payload in zip(opportunity_ids, opportunities)
-            if payload is None
-        ]
+        opportunities = [self.stores.opportunities.get(oid) for oid in opportunity_ids]
+        missing = [oid for oid, opp in zip(opportunity_ids, opportunities) if opp is None]
         if missing:
             raise ValueError(f"unknown opportunity_ids: {missing}")
-
         target_skills = {opp["target_skill"] for opp in opportunities}
         if len(target_skills) > 1:
-            raise ValueError(
-                f"cannot batch opportunities across skills: {sorted(target_skills)}"
-            )
-
+            raise ValueError(f"cannot batch opportunities across skills: {sorted(target_skills)}")
         target_skill = next(iter(target_skills))
         promo_ids: list[str] = []
         for opp in opportunities:
             promo_ids.extend(opp.get("related_promo_ids", []))
-
-        risk = _max_rank(
-            [opp["risk_level"] for opp in opportunities],
-            order=("low", "medium", "high"),
-        )
-        priority = _max_rank(
-            [opp["priority"] for opp in opportunities],
-            order=("low", "medium", "high"),
-        )
-        should_improve: list[str] = []
-        must_not_regress: list[str] = []
+        risk = _max_rank([opp["risk_level"] for opp in opportunities], order=("low", "medium", "high"))
+        priority = _max_rank([opp["priority"] for opp in opportunities], order=("low", "medium", "high"))
+        should = []
+        must = []
         for opp in opportunities:
-            should_improve.extend(opp.get("should_improve") or [])
-            must_not_regress.extend(opp.get("must_not_regress") or [])
-
+            should.extend(opp.get("should_improve") or [])
+            must.extend(opp.get("must_not_regress") or [])
         batch = PromotionBatch.new(
             target_skill=target_skill,
             opportunity_ids=opportunity_ids,
@@ -229,18 +303,268 @@ class EvolutionScout:
             merged_summary="; ".join(opp.get("summary", "") for opp in opportunities)[:500],
             priority=priority,
             risk_level=risk,
-            should_improve=sorted(set(should_improve)),
-            must_not_regress=sorted(set(must_not_regress)),
+            should_improve=sorted(set(should)),
+            must_not_regress=sorted(set(must)),
             recommended_next_action="run /skill-optimize",
         )
         return self.stores.batches.save(batch)
+
+    # ---- Stage 1: signal classification ---------------------------------
+
+    def _classify_signal(self, record: dict[str, Any]) -> dict[str, Any]:
+        content = record["content"]
+        attack_type = _detect_attack(content)
+        defended = bool(attack_type) and _looks_defended(content, record)
+        quarantined = bool(attack_type) and not defended
+        redacted_content = _redact_attack(content) if quarantined else content
+
+        tags = _detect_tags(content, record["source_type"])
+        if quarantined:
+            tags.add("memory_poisoning")
+            tags.add(f"attack:{attack_type}")
+        elif attack_type and defended:
+            tags.add("security_incident")
+            tags.add(f"defended:{attack_type}")
+
+        strength = _correction_strength(content)
+        if strength >= 0.7:
+            tags.add("user_correction")
+
+        return {
+            "source_type": record["source_type"],
+            "source_path": record["source_path"],
+            "source_ref": record["source_ref"],
+            "observed_skill": record["observed_skill"],
+            "content": redacted_content[:1500],
+            "tags": sorted(tags),
+            "frequency": record["frequency"],
+            "severity": record["severity"],
+            "quarantined": quarantined,
+            "attack_type": attack_type if quarantined else "",
+            "redacted": quarantined,
+            "correction_strength": strength,
+        }
+
+    def _signal_from_promo(self, promo: dict[str, Any]) -> dict[str, Any] | None:
+        promo_id = promo.get("promo_id") or ""
+        if not promo_id:
+            return None
+        summary = promo.get("summary") or promo.get("proposed_change") or ""
+        if not summary.strip():
+            return None
+        record = {
+            "source_type": "promo",
+            "source_path": ".skills_memory/PROMOTION_CANDIDATES.md",
+            "source_ref": promo_id,
+            "observed_skill": promo.get("target_skill") or "self_improvement",
+            "content": summary[:1500],
+            "frequency": int(promo.get("occurrence_count") or 1),
+            "severity": "medium",
+        }
+        return self._classify_signal(record)
+
+    # ---- Stage 2: clustering --------------------------------------------
+
+    def _cluster_into_opportunities(
+        self,
+        signals: list[dict[str, Any]],
+    ) -> list[EvolutionOpportunity]:
+        # Quarantined signals are clustered per attack_type and never mix
+        # with normal signals.
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for signal in signals:
+            if signal.get("quarantined"):
+                key = ("__quarantine__", signal.get("attack_type", "unknown"))
+            else:
+                key = ("normal", self._cluster_key(signal))
+            groups[key].append(signal)
+
+        opportunities: list[EvolutionOpportunity] = []
+        for (bucket, cluster_key), members in groups.items():
+            if bucket == "__quarantine__":
+                opp = self._quarantine_opportunity(cluster_key, members)
+            else:
+                opp = self._normal_opportunity(cluster_key, members)
+            if self.llm_enricher is not None and not members[0].get("quarantined"):
+                self._enrich_opportunity(opp, members)
+            opportunities.append(opp)
+        return opportunities
+
+    def _cluster_key(self, signal: dict[str, Any]) -> str:
+        tags = sorted(
+            t for t in (signal.get("tags") or [])
+            if not t.startswith("attack:")
+            and not t.startswith("defended:")
+            and not t.startswith("tool:")
+        )
+        if tags:
+            return "tag:" + "|".join(tags[:5])
+        words = _top_words(signal.get("content") or "", limit=5)
+        return "kw:" + "|".join(words)
+
+    def _quarantine_opportunity(
+        self,
+        attack_type: str,
+        members: list[dict[str, Any]],
+    ) -> EvolutionOpportunity:
+        skills = sorted({m["observed_skill"] for m in members})
+        target_skill = skills[0] if skills else "self_improvement"
+        return EvolutionOpportunity.new(
+            signal_ids=[m["signal_id"] for m in members],
+            target_skill=target_skill,
+            opportunity_type="quarantine",
+            summary=f"⚠ quarantined memory poisoning attempt ({attack_type})",
+            decision="quarantine",
+            evolution_score=0.0,
+            value_score=0.0,
+            risk_score=1.0,
+            evidence_quality=0.0,
+            testability=0.0,
+            priority="high",
+            risk_level="high",
+            confidence="high",
+            reason=(
+                f"为什么：检测到 {attack_type} 攻击痕迹，原文已脱敏。"
+                "预期效果：仅用于审计追溯；**禁止**进入 Skill Optimizer 或 SKILL.md。"
+            ),
+            score_breakdown=f"attack_type={attack_type}; members={len(members)}",
+            should_improve=["人工审阅这条 memory 的来源是否值得保留"],
+            must_not_regress=[
+                "禁止把攻击载荷沉淀进 skill rule",
+                "禁止用攻击文本生成 bounded edit",
+            ],
+            observed_skills=skills,
+            cross_skill=len(skills) > 1,
+            related_promo_ids=[],
+        )
+
+    def _normal_opportunity(
+        self,
+        cluster_key: str,
+        members: list[dict[str, Any]],
+    ) -> EvolutionOpportunity:
+        # Stage 2a: target_skill from observed_skill distribution; prefer
+        # non-self_improvement on ties.
+        skill_counts: dict[str, int] = defaultdict(int)
+        for m in members:
+            skill_counts[m["observed_skill"]] += 1
+        skills_sorted = sorted(
+            skill_counts.items(),
+            key=lambda kv: (-kv[1], 0 if kv[0] != "self_improvement" else 1, kv[0]),
+        )
+        target_skill = skills_sorted[0][0]
+        observed_skills = sorted(skill_counts.keys())
+        cross_skill = len(observed_skills) >= 2
+
+        evidence_quality, _ = _evidence_quality(members)
+
+        tags = {t for m in members for t in (m.get("tags") or [])}
+        bare_tags = {t for t in tags if ":" not in t}
+        frequency_sum = sum(int(m.get("frequency", 1)) for m in members)
+
+        has_security = "security_incident" in bare_tags
+        has_governance = "governance_related" in bare_tags or "policy_related" in bare_tags
+        has_cross_cutting = bool(bare_tags & CROSS_CUTTING_TAGS)
+        has_promo_evidence = any(m.get("source_type") == "promo" for m in members)
+
+        components = {
+            "frequency": min(1.0, frequency_sum / 5.0),
+            "transferability": _transferability(observed_skills, has_cross_cutting),
+            "impact": _impact(has_security, frequency_sum),
+            "skill_confidence": _skill_confidence(observed_skills, target_skill),
+            "testability": _testability(members, bare_tags, has_promo_evidence),
+            "safety_gain": 1.0 if has_security else 0.0,
+            "regression_risk": 0.3 if has_promo_evidence else 0.4,
+            "overfitting_risk": _overfitting_risk(members, frequency_sum),
+            "policy_risk": 0.5 if has_governance and not has_promo_evidence else 0.15,
+            "scope_risk": 0.55 if "capability_gap" in bare_tags else 0.30,
+            "cost_increase": 0.10,
+            "uncertainty": 0.30 if evidence_quality < 0.5 else 0.15,
+            "evidence_quality": evidence_quality,
+        }
+
+        value_score = _value_score(components)
+        risk_score = _risk_score(components)
+
+        decision, opp_type, priority, risk_level, confidence = _decide(
+            value=value_score,
+            risk=risk_score,
+            evidence=evidence_quality,
+            testability=components["testability"],
+            overfitting=components["overfitting_risk"],
+            has_security=has_security,
+            has_cross_cutting=has_cross_cutting,
+            target_skill=target_skill,
+            frequency_sum=frequency_sum,
+        )
+
+        should_improve = _derive_should_improve(bare_tags, members, target_skill)
+        must_not_regress = _derive_must_not_regress(bare_tags, has_security)
+
+        reason = _reason_text(
+            decision=decision,
+            value=value_score,
+            risk=risk_score,
+            evidence=evidence_quality,
+            testability=components["testability"],
+            members=members,
+            target_skill=target_skill,
+            cross_skill=cross_skill,
+        )
+        breakdown = _score_breakdown(decision, components, value_score, risk_score, evidence_quality)
+        related_promos = sorted({m["source_ref"] for m in members if m["source_type"] == "promo"})
+
+        return EvolutionOpportunity.new(
+            signal_ids=[m["signal_id"] for m in members],
+            target_skill=target_skill,
+            opportunity_type=opp_type,
+            summary=_summary_text(members, cluster_key),
+            decision=decision,
+            evolution_score=round(value_score, 4),  # backward-compat alias
+            value_score=round(value_score, 4),
+            risk_score=round(risk_score, 4),
+            evidence_quality=round(evidence_quality, 4),
+            testability=round(components["testability"], 4),
+            priority=priority,
+            risk_level=risk_level,
+            confidence=confidence,
+            reason=reason,
+            score_breakdown=breakdown,
+            should_improve=should_improve,
+            must_not_regress=must_not_regress,
+            observed_skills=observed_skills,
+            cross_skill=cross_skill,
+            related_promo_ids=related_promos,
+        )
+
+    def _enrich_opportunity(
+        self,
+        opp: EvolutionOpportunity,
+        signals: list[dict[str, Any]],
+    ) -> None:
+        try:
+            result = self.llm_enricher.enrich(opp.to_dict(), signals)
+        except Exception:
+            return
+        if not getattr(result, "used_llm", False):
+            return
+        if result.reason:
+            opp.reason = result.reason + " | " + opp.reason
+        if result.should_improve:
+            opp.should_improve = result.should_improve
+        opp.must_not_regress = sorted(set(opp.must_not_regress) | set(result.must_not_regress))
+
+    # ---- raw memory iteration -------------------------------------------
 
     def _iter_memory_records(self):
         for path in self._memory_files():
             text = path.read_text(encoding="utf-8")
             for record in _parse_id_records(text):
                 source_ref = record["record_id"]
-                observed_skill = self._skill_from_path(path) or record["fields"].get("Target Skill", "")
+                observed_skill = (
+                    self._skill_from_path(path)
+                    or record["fields"].get("Target Skill", "")
+                )
                 source_type, classification = self._classify_path(path)
                 content_lines = [record["title"], record["details"]]
                 content = "\n".join(line for line in content_lines if line).strip()
@@ -250,7 +574,6 @@ class EvolutionScout:
                     "source_ref": source_ref,
                     "observed_skill": observed_skill or "self_improvement",
                     "content": content[:1500],
-                    "tags": _tagify(content, classification),
                     "frequency": _safe_int(record["fields"].get("Occurrence Count", "1"), 1),
                     "severity": (
                         record["fields"].get("Priority", "")
@@ -264,9 +587,9 @@ class EvolutionScout:
         global_dir = self.project_root / ".skills_memory"
         if global_dir.exists():
             for name in DEFAULT_GLOBAL_FILES:
-                path = global_dir / name
-                if path.exists():
-                    files.append(path)
+                p = global_dir / name
+                if p.exists():
+                    files.append(p)
         skills_dir = self.project_root / "skills"
         if skills_dir.exists():
             for skill_path in sorted(skills_dir.iterdir()):
@@ -274,9 +597,9 @@ class EvolutionScout:
                 if not memory_dir.exists():
                     continue
                 for name in SKILL_MEMORY_FILES:
-                    path = memory_dir / name
-                    if path.exists():
-                        files.append(path)
+                    p = memory_dir / name
+                    if p.exists():
+                        files.append(p)
         return files
 
     def _classify_path(self, path: Path) -> tuple[str, str]:
@@ -302,117 +625,389 @@ class EvolutionScout:
     def _signal_key(self, signal: dict[str, Any]) -> str:
         return f"{signal.get('source_path', '')}::{signal.get('source_ref', '')}"
 
-    def _is_unsafe(self, content: str) -> bool:
-        lowered = content.lower()
-        return any(hint in lowered for hint in UNSAFE_HINTS)
 
-    def _signal_from_promo(self, promo: dict[str, Any]) -> dict[str, Any] | None:
-        promo_id = promo.get("promo_id") or ""
-        if not promo_id:
-            return None
-        summary = promo.get("summary") or promo.get("proposed_change") or ""
-        if not summary.strip():
-            return None
-        return {
-            "source_type": "promo",
-            "source_path": ".skills_memory/PROMOTION_CANDIDATES.md",
-            "source_ref": promo_id,
-            "observed_skill": promo.get("target_skill") or "self_improvement",
-            "content": summary[:1500],
-            "tags": _tagify(summary, "promo") + ["promo"],
-            "frequency": int(promo.get("occurrence_count") or 1),
-            "severity": "medium",
-        }
+# ---------------------------------------------------------------------------
+# Stage 1 helpers — attack detection + tag classification
+# ---------------------------------------------------------------------------
 
-    def _cluster_into_opportunities(
-        self,
-        signals: list[dict[str, Any]],
-    ) -> list[EvolutionOpportunity]:
-        groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-        for signal in signals:
-            cluster_key = self._cluster_key(signal)
-            groups[(signal["observed_skill"], cluster_key)].append(signal)
 
-        opportunities: list[EvolutionOpportunity] = []
-        for (skill, cluster_key), members in groups.items():
-            score, components = _evolution_score(members)
-            decision, opp_type, priority, risk, confidence = _make_decision(
-                members, score, components
+def _detect_attack(content: str) -> str:
+    lowered = content.lower()
+    for attack_type, patterns in ATTACK_PATTERNS.items():
+        for pattern in patterns:
+            if pattern.lower() in lowered:
+                return attack_type
+    return ""
+
+
+def _looks_defended(content: str, record: dict[str, Any]) -> bool:
+    lowered = content.lower()
+    source = str(record.get("source_type", ""))
+    if source == "error" or source.endswith(".error") or "error" in source:
+        if any(marker in lowered for marker in DEFENDED_INCIDENT_MARKERS):
+            return True
+    return False
+
+
+def _redact_attack(content: str) -> str:
+    redacted = content
+    for attack_type, patterns in ATTACK_PATTERNS.items():
+        for pattern in patterns:
+            redacted = re.sub(
+                re.escape(pattern),
+                f"[REDACTED_ATTACK:{attack_type}]",
+                redacted,
+                flags=re.IGNORECASE,
             )
-            reason = _reason_text(decision, components, members, target_skill=skill)
-            score_breakdown = _score_breakdown(decision, components, members)
-            should_improve = _derive_should_improve(members, decision=decision, target_skill=skill)
-            must_not_regress = _derive_must_not_regress(members)
-            related_promos = sorted(
-                {s["source_ref"] for s in members if s["source_type"] == "promo"}
-            )
-            opp = EvolutionOpportunity.new(
-                signal_ids=[s["signal_id"] for s in members],
-                target_skill=skill,
-                opportunity_type=opp_type,
-                summary=_summary_text(members, cluster_key),
-                decision=decision,
-                evolution_score=round(score, 4),
-                priority=priority,
-                risk_level=risk,
-                confidence=confidence,
-                reason=reason,
-                score_breakdown=score_breakdown,
-                should_improve=should_improve,
-                must_not_regress=must_not_regress,
-                related_promo_ids=related_promos,
-            )
-            if self.llm_enricher is not None:
-                self._enrich_opportunity(opp, members)
-            opportunities.append(opp)
-        return opportunities
+    return redacted
 
-    def _enrich_opportunity(
-        self,
-        opp: "EvolutionOpportunity",
-        signals: list[dict[str, Any]],
-    ) -> None:
-        try:
-            result = self.llm_enricher.enrich(opp.to_dict(), signals)
-        except Exception:
-            return
-        if not getattr(result, "used_llm", False):
-            return
-        if result.reason:
-            opp.reason = result.reason + " | " + opp.reason
-        if result.should_improve:
-            opp.should_improve = result.should_improve
-        # must_not_regress is always merged with the deterministic floor.
-        opp.must_not_regress = sorted(
-            set(opp.must_not_regress) | set(result.must_not_regress)
+
+def _detect_tags(content: str, source_type: str) -> set[str]:
+    lowered = content.lower()
+    tags: set[str] = set()
+    base = source_type.replace("skill_memory.", "").replace("global_", "")
+    if base:
+        tags.add(base)
+    for tag, words in TAG_LEXICON.items():
+        if not words:
+            continue
+        if any(w.lower() in lowered for w in words):
+            tags.add(tag)
+    for tool in ("read_file", "edit_file", "write_file", "load_skill", "bash"):
+        if tool in lowered:
+            tags.add(f"tool:{tool}")
+    return tags
+
+
+def _correction_strength(content: str) -> float:
+    lowered = content.lower()
+    strengths = [strength for phrase, strength in CORRECTION_PHRASES if phrase.lower() in lowered]
+    return max(strengths, default=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Stage 3 helpers — evidence_quality / value_score / risk_score / testability
+# ---------------------------------------------------------------------------
+
+
+def _evidence_quality(members: list[dict[str, Any]]) -> tuple[float, dict[str, float]]:
+    type_score = {
+        "promo": 1.0,
+        "error": 0.8,
+        "skill_memory.error": 0.8,
+        "global_error": 0.8,
+        "learning": 0.7,
+        "skill_memory.learning": 0.7,
+        "global_learning": 0.6,
+        "feature_request": 0.6,
+        "global_feature_request": 0.6,
+        "policy_candidate": 0.6,
+        "regression_test": 0.7,
+    }
+    reliabilities = [type_score.get(m.get("source_type", ""), 0.5) for m in members]
+    source_reliability = sum(reliabilities) / len(reliabilities)
+
+    distinct = len({(m["source_path"], m["source_ref"]) for m in members})
+    distinct_occurrence = min(1.0, distinct / 3.0)
+
+    human_correction = max(
+        (float(m.get("correction_strength", 0.0)) for m in members), default=0.0,
+    )
+
+    has_tool_failure = any("tool_failure" in (m.get("tags") or []) for m in members)
+    failure_reproducibility = (
+        0.8 if has_tool_failure and distinct >= 2
+        else (0.5 if has_tool_failure else 0.3)
+    )
+
+    trace_support = (
+        0.7 if any(any(t.startswith("tool:") for t in (m.get("tags") or [])) for m in members)
+        else 0.3
+    )
+
+    breakdown = {
+        "source_reliability": source_reliability,
+        "distinct_occurrence": distinct_occurrence,
+        "human_correction": human_correction,
+        "failure_reproducibility": failure_reproducibility,
+        "trace_support": trace_support,
+    }
+    weighted = (
+        0.30 * source_reliability
+        + 0.25 * distinct_occurrence
+        + 0.25 * human_correction
+        + 0.10 * failure_reproducibility
+        + 0.10 * trace_support
+    )
+    return min(1.0, max(0.0, weighted)), breakdown
+
+
+def _value_score(c: dict[str, float]) -> float:
+    return min(
+        1.0,
+        max(
+            0.0,
+            0.25 * c["evidence_quality"]
+            + 0.15 * c["frequency"]
+            + 0.15 * c["transferability"]
+            + 0.15 * c["impact"]
+            + 0.10 * c["skill_confidence"]
+            + 0.15 * c["testability"]
+            + 0.05 * c["safety_gain"],
+        ),
+    )
+
+
+def _risk_score(c: dict[str, float]) -> float:
+    return min(
+        1.0,
+        max(
+            0.0,
+            0.25 * c["regression_risk"]
+            + 0.20 * c["overfitting_risk"]
+            + 0.20 * c["policy_risk"]
+            + 0.15 * c["scope_risk"]
+            + 0.10 * c["cost_increase"]
+            + 0.10 * c["uncertainty"],
+        ),
+    )
+
+
+def _testability(
+    members: list[dict[str, Any]],
+    tags: set[str],
+    has_promo: bool,
+) -> float:
+    """Composite of 5 sub-signals, each contributing up to its weight.
+
+    Weights chosen so a strong user_correction on a format_preference
+    cluster reliably clears the 0.70 promote threshold, while a weak
+    cluster (only meta tags) stays well below.
+    """
+    score = 0.0
+    non_meta = tags - META_TAGS
+    if non_meta:
+        score += 0.20  # has should_improve
+    if {"security_incident", "governance_related", "policy_related"} & tags:
+        score += 0.15  # concrete must_not_regress
+    correction = max(
+        (float(m.get("correction_strength", 0.0)) for m in members), default=0.0,
+    )
+    score += 0.30 * correction  # human-correction strength
+    if tags & {"format_preference", "capability_gap"}:
+        score += 0.25  # judgeable output (format / capability)
+    if "tool_failure" in tags and len(members) >= 2:
+        score += 0.20  # reproducible negative case from tool failure
+    if has_promo:
+        score += 0.10  # existing PROMO already encodes a judgeable rule
+    return min(1.0, score)
+
+
+def _transferability(observed_skills: list[str], has_cross_cutting: bool) -> float:
+    if len(observed_skills) >= 3:
+        return 1.0
+    if len(observed_skills) == 2:
+        return 0.85
+    return 0.65 if has_cross_cutting else 0.40
+
+
+def _impact(has_security: bool, frequency_sum: int) -> float:
+    if has_security:
+        return 1.0
+    return min(1.0, 0.3 + 0.15 * frequency_sum)
+
+
+def _skill_confidence(observed_skills: list[str], target_skill: str) -> float:
+    if target_skill == "self_improvement":
+        return 0.4
+    non_self = [s for s in observed_skills if s != "self_improvement"]
+    return 1.0 if len(non_self) == len(observed_skills) else 0.7
+
+
+def _overfitting_risk(members: list[dict[str, Any]], frequency_sum: int) -> float:
+    if frequency_sum <= 1:
+        return 0.6
+    one_time = any(
+        m.get("severity") == "low"
+        and "user_correction" not in (m.get("tags") or [])
+        for m in members
+    )
+    if one_time and frequency_sum < 3:
+        return 0.5
+    return 0.2
+
+
+# ---------------------------------------------------------------------------
+# Stage 4 — decision matrix
+# ---------------------------------------------------------------------------
+
+
+def _decide(
+    *,
+    value: float,
+    risk: float,
+    evidence: float,
+    testability: float,
+    overfitting: float,
+    has_security: bool,
+    has_cross_cutting: bool,
+    target_skill: str,
+    frequency_sum: int,
+) -> tuple[str, str, str, str, str]:
+    if has_security:
+        return ("safety_review", "safety_review", "high", "high", "medium")
+
+    if value >= 0.60 and risk <= 0.35 and testability >= 0.70:
+        priority = "high" if has_cross_cutting or value >= 0.75 else "medium"
+        return ("promote", "promote", priority, "medium", "medium")
+
+    if value >= 0.55 and (testability < 0.70 or risk > 0.35):
+        return ("request_eval", "request_eval", "medium", "medium", "low")
+
+    if value >= 0.40 and evidence < 0.50:
+        return ("defer", "defer", "low", "low", "low")
+
+    if overfitting >= 0.5 and frequency_sum < 3:
+        return ("reject", "defer", "low", "low", "low")
+
+    if target_skill == "self_improvement" and not has_security:
+        return ("defer", "defer", "low", "low", "low")
+
+    if value >= 0.30:
+        return ("defer", "defer", "low", "low", "low")
+
+    return ("reject", "defer", "low", "low", "low")
+
+
+# ---------------------------------------------------------------------------
+# Narrative
+# ---------------------------------------------------------------------------
+
+
+def _reason_text(
+    *,
+    decision: str,
+    value: float,
+    risk: float,
+    evidence: float,
+    testability: float,
+    members: list[dict[str, Any]],
+    target_skill: str,
+    cross_skill: bool,
+) -> str:
+    skill_label = f"`{target_skill}`" if target_skill else "目标 skill"
+    frequency = sum(int(m.get("frequency", 1)) for m in members)
+    if decision == "promote":
+        why = (
+            f"{skill_label} 的证据足（value={value:.2f}, evidence={evidence:.2f}），"
+            f"风险可控（risk={risk:.2f}），且可测试（testability={testability:.2f}）。"
         )
+        if cross_skill:
+            why += " 同类问题跨多个 skill，可迁移性高。"
+        effect = "升级后预期固化为 SKILL.md 的 Memory-derived rules，减少同类问题的纠正成本。"
+    elif decision == "request_eval":
+        why = f"价值评估 {value:.2f} 已达晋升阈值，但 testability={testability:.2f} 或 risk={risk:.2f} 不达标。"
+        effect = "建议先补一组 positive + negative regression case 再考虑升级。"
+    elif decision == "safety_review":
+        why = "信号涉及安全/审批事件（命中 security_incident 标签），不能直接进入 skill rule。"
+        effect = "走人工 safety review；批准后才考虑沉淀为 policy 规则。"
+    elif decision == "quarantine":
+        why = "检测到攻击载荷（prompt injection / approval bypass / safety disable / secret exfiltration），原文已脱敏。"
+        effect = "仅用于审计；不进入任何 Optimizer 提案。"
+    elif decision == "defer":
+        if evidence < 0.5:
+            why = f"价值 {value:.2f} 中等，但证据质量 {evidence:.2f} 偏低（缺重复出现或强纠正）。"
+        else:
+            why = f"价值 {value:.2f} 介于观察区间（0.30..0.55），暂未达晋升阈值。"
+        effect = "保留观察，下次扫描如果证据累积再评估。"
+    else:  # reject
+        why = (
+            f"价值 {value:.2f} 偏低，证据 {evidence:.2f}，frequency={frequency}。"
+            "更像一次性偏好或低质量信号。"
+        )
+        effect = "不进入 skill rules，避免污染长期规则集。"
+    return f"为什么：{why} 预期效果：{effect}"
 
-    def _cluster_key(self, signal: dict[str, Any]) -> str:
-        tokens = sorted(set(signal.get("tags") or []))[:5]
-        if tokens:
-            return "tag:" + "|".join(tokens)
-        words = _top_words(signal.get("content") or "", limit=5)
-        return "kw:" + "|".join(words)
+
+def _score_breakdown(
+    decision: str,
+    c: dict[str, float],
+    value: float,
+    risk: float,
+    evidence: float,
+) -> str:
+    return (
+        f"decision={decision}; value={value:.2f}; risk={risk:.2f}; "
+        f"evidence={evidence:.2f}; testability={c['testability']:.2f}; "
+        f"frequency={c['frequency']:.2f}; transferability={c['transferability']:.2f}; "
+        f"impact={c['impact']:.2f}; skill_confidence={c['skill_confidence']:.2f}; "
+        f"policy_risk={c['policy_risk']:.2f}; overfitting={c['overfitting_risk']:.2f}"
+    )
 
 
 # ---------------------------------------------------------------------------
-# helpers
+# Derived fields, summary, parsing
 # ---------------------------------------------------------------------------
+
+
+def _derive_should_improve(
+    tags: set[str],
+    members: list[dict[str, Any]],
+    target_skill: str,
+) -> list[str]:
+    out: list[str] = []
+    skill_label = target_skill or "目标 skill"
+    if "tool_failure" in tags:
+        out.append(f"减少 {skill_label} 在类似输入下重复抛同一类错误")
+    if "format_preference" in tags:
+        out.append(f"把用户偏好的格式/结构固化到 {skill_label} 的 Memory-derived rules")
+    if "capability_gap" in tags:
+        out.append(f"覆盖 {skill_label} 目前缺失的能力调用方式")
+    if "rollback_related" in tags:
+        out.append("识别并避免触发版本回滚的输入模式")
+    if "governance_related" in tags or "policy_related" in tags:
+        out.append("不要把审批/治理细节硬编码进 skill；走 policy review")
+    if any(m.get("source_type") == "promo" for m in members):
+        out.append("把已有 PROMO 候选合并审查，避免碎片化升级")
+    if not out:
+        non_meta = sorted(tags - META_TAGS)
+        out = [f"梳理重复模式 '{tag}'" for tag in non_meta[:3]] or ["梳理本聚类中的重复经验"]
+    return out[:5]
+
+
+def _derive_must_not_regress(tags: set[str], has_security: bool) -> list[str]:
+    out = ["不放宽既有的安全策略", "不绕过 ReviewQueue 审批"]
+    if has_security or "memory_poisoning" in tags:
+        out.append("保留 safety_gain 相关断言不被覆盖")
+    if "governance_related" in tags or "policy_related" in tags:
+        out.append("不把治理/审批 phrasing 写进 SKILL.md 的可执行规则")
+    if "rollback_related" in tags:
+        out.append("不破坏现有的 rollback 路径")
+    return out
+
+
+def _summary_text(members: list[dict[str, Any]], cluster_key: str) -> str:
+    sample = members[0]["content"][:160].replace("\n", " ").strip()
+    return f"{cluster_key} | {sample}"
+
+
+def _max_rank(values: list[str], order: tuple[str, ...]) -> str:
+    seen = [v for v in values if v in order]
+    if not seen:
+        return order[0]
+    return max(seen, key=lambda v: order.index(v))
 
 
 def _parse_id_records(text: str) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     lines = text.splitlines()
-    starts: list[int] = []
-    for idx, line in enumerate(lines):
-        if line.startswith("## "):
-            starts.append(idx)
+    starts = [i for i, line in enumerate(lines) if line.startswith("## ")]
     starts.append(len(lines))
     for cursor in range(len(starts) - 1):
-        block_lines = lines[starts[cursor]: starts[cursor + 1]]
-        if not block_lines:
+        block = lines[starts[cursor]:starts[cursor + 1]]
+        if not block:
             continue
-        match = ID_HEADING_RE.match(block_lines[0])
+        match = ID_HEADING_RE.match(block[0])
         if not match:
             continue
         record_id = match.group(1)
@@ -420,7 +1015,7 @@ def _parse_id_records(text: str) -> list[dict[str, Any]]:
         fields: dict[str, str] = {}
         details: list[str] = []
         in_details = False
-        for line in block_lines[1:]:
+        for line in block[1:]:
             stripped = line.strip()
             if stripped.startswith("### Details"):
                 in_details = True
@@ -433,14 +1028,12 @@ def _parse_id_records(text: str) -> list[dict[str, Any]]:
                 fields[key.strip()] = value.strip()
             elif in_details:
                 details.append(line)
-        records.append(
-            {
-                "record_id": record_id,
-                "title": title,
-                "fields": fields,
-                "details": "\n".join(details).strip(),
-            }
-        )
+        records.append({
+            "record_id": record_id,
+            "title": title,
+            "fields": fields,
+            "details": "\n".join(details).strip(),
+        })
     return records
 
 
@@ -451,19 +1044,6 @@ def _safe_int(value: Any, default: int) -> int:
         return default
 
 
-def _tagify(content: str, classification: str) -> list[str]:
-    lowered = content.lower()
-    tags: list[str] = [classification]
-    for marker in ("read_file", "edit_file", "write_file", "load_skill", "weather", "json", "markdown"):
-        if marker in lowered:
-            tags.append(marker)
-    if any(hint in lowered for hint in SAFETY_HINTS):
-        tags.append("safety")
-    if "rollback" in lowered or "回退" in lowered:
-        tags.append("rollback")
-    return sorted(set(tags))
-
-
 def _top_words(content: str, limit: int) -> list[str]:
     seen: dict[str, int] = defaultdict(int)
     for word in WORD_RE.findall(content.lower()):
@@ -471,184 +1051,4 @@ def _top_words(content: str, limit: int) -> list[str]:
             continue
         seen[word] += 1
     ordered = sorted(seen.items(), key=lambda item: (-item[1], item[0]))
-    return [word for word, _ in ordered[:limit]]
-
-
-def _evolution_score(members: list[dict[str, Any]]) -> tuple[float, dict[str, float]]:
-    frequency = sum(int(s.get("frequency", 1)) for s in members)
-    transferability = 1.0 if len({s["observed_skill"] for s in members}) > 1 else 0.6
-    safety = any("safety" in (s.get("tags") or []) for s in members)
-    impact = 1.0 if safety else min(1.0, 0.3 + 0.15 * frequency)
-    skill_confidence = 1.0 if all(s["observed_skill"] != "self_improvement" for s in members) else 0.5
-    has_promo = any(s.get("source_type") == "promo" for s in members)
-    testability = 0.8 if has_promo else 0.5
-    safety_gain = 1.0 if safety else 0.0
-    regression_risk = 0.3 if has_promo else 0.4
-    overfitting_risk = 0.5 if frequency <= 1 else 0.2
-    cost_increase = 0.1
-
-    components = {
-        "frequency": min(1.0, frequency / 5.0),
-        "transferability": transferability,
-        "impact": impact,
-        "skill_confidence": skill_confidence,
-        "testability": testability,
-        "safety_gain": safety_gain,
-        "regression_risk": regression_risk,
-        "overfitting_risk": overfitting_risk,
-        "cost_increase": cost_increase,
-    }
-    score = (
-        0.20 * components["frequency"]
-        + 0.20 * components["transferability"]
-        + 0.20 * components["impact"]
-        + 0.15 * components["skill_confidence"]
-        + 0.15 * components["testability"]
-        + 0.10 * components["safety_gain"]
-        - 0.15 * components["regression_risk"]
-        - 0.10 * components["overfitting_risk"]
-        - 0.10 * components["cost_increase"]
-    )
-    return score, components
-
-
-def _make_decision(
-    members: list[dict[str, Any]],
-    score: float,
-    components: dict[str, float],
-) -> tuple[str, str, str, str, str]:
-    safety = components["safety_gain"] > 0
-    has_promo = any(s.get("source_type") == "promo" for s in members)
-    frequency = sum(int(s.get("frequency", 1)) for s in members)
-    only_self_improvement = all(s["observed_skill"] == "self_improvement" for s in members)
-
-    if only_self_improvement and not safety:
-        return ("defer", "defer", "low", "low", "low")
-    if safety and components["skill_confidence"] >= 0.5:
-        return ("promote", "safety_gain", "high", "medium", "medium")
-    if score >= 0.45 and frequency >= 2:
-        return ("promote", "promote", "medium", "medium", "medium")
-    if score >= 0.45 and frequency < 2 and not has_promo:
-        return ("request_eval", "request_eval", "medium", "medium", "low")
-    if score >= 0.30:
-        return ("defer", "defer", "low", "low", "low")
-    return ("reject", "defer", "low", "low", "low")
-
-
-def _reason_text(
-    decision: str,
-    components: dict[str, float],
-    members: list[dict[str, Any]],
-    *,
-    target_skill: str = "",
-) -> str:
-    """Return a Chinese narrative explaining *why* this needs evolution and
-    *what* the expected outcome is. The technical score breakdown lives in
-    a separate ``score_breakdown`` field for audit, so this stays readable.
-    """
-    frequency = sum(int(s.get("frequency", 1)) for s in members)
-    has_safety = components.get("safety_gain", 0) > 0
-    has_promo = any(s.get("source_type") == "promo" for s in members)
-    cross_skill = components.get("transferability", 0) >= 1.0
-    skill_label = f"`{target_skill}`" if target_skill else "目标 skill"
-
-    if decision == "promote" and has_safety:
-        why = f"信号涉及安全策略或审批被拒事件，{skill_label} 在类似场景下需要主动避让而不是事后拦截。"
-        effect = "升级后预期能减少重复触发 ReviewQueue 审批，缩短人工介入路径，同时保留既有安全护栏。"
-    elif decision == "promote" and frequency >= 2:
-        why = f"这条经验在 {skill_label} 已重复出现 {frequency} 次，属于稳定可复用的模式。"
-        effect = "升级后预期把它固化进 SKILL.md 的 Memory-derived rules，减少同类问题再次发生时的纠正成本。"
-    elif decision == "promote" and cross_skill:
-        why = f"信号跨多个 skill 出现，说明这是通用经验而不是个例。"
-        effect = "升级后预期能让相关 skill 共享这条规则，避免逐个修改。"
-    elif decision == "promote":
-        why = f"评分高于晋升阈值（≥0.45），且 {skill_label} 的归属置信度足够。"
-        effect = "升级后预期把这条经验固化为 skill 规则。"
-    elif decision == "request_eval":
-        why = "评分达到晋升阈值但证据只有 1 次出现，且没有现成的 PROMO 来佐证可测试性。"
-        effect = "建议先补一组 regression case（positive + negative），覆盖建立后再考虑升级。"
-    elif decision == "defer":
-        if all(s.get("observed_skill") == "self_improvement" for s in members):
-            why = "信号全部归属在 self_improvement，缺少明确的目标 skill，不适合直接升级。"
-        else:
-            why = "评分介于观察区间（0.30–0.45），证据强度尚不足以做出升级判断。"
-        effect = "保留观察，等待新的同类信号出现，或人工标注归属后再评估。"
-    else:  # reject
-        why = "评分低于观察阈值（<0.30），且不属于 safety 事件，更像是一次性偏好或低质量信号。"
-        effect = "不进入 skill rules，避免污染长期规则集。"
-
-    return f"为什么：{why} 预期效果：{effect}"
-
-
-def _score_breakdown(decision: str, components: dict[str, float], members: list[dict[str, Any]]) -> str:
-    """Technical breakdown kept alongside the human-readable reason."""
-    frequency = sum(int(s.get("frequency", 1)) for s in members)
-    parts = [
-        f"decision={decision}",
-        f"frequency={frequency}",
-        f"transferability={components['transferability']:.2f}",
-        f"impact={components['impact']:.2f}",
-        f"safety_gain={components['safety_gain']:.2f}",
-        f"skill_confidence={components['skill_confidence']:.2f}",
-        f"testability={components['testability']:.2f}",
-    ]
-    return "; ".join(parts)
-
-
-def _derive_should_improve(
-    members: list[dict[str, Any]],
-    *,
-    decision: str = "",
-    target_skill: str = "",
-) -> list[str]:
-    """Build a context-aware list of 'what we want this evolution to fix'.
-
-    Falls back to the old tag-based phrasing when we cannot derive
-    something more specific from the signal source types.
-    """
-    skill_label = target_skill or "目标 skill"
-    tags = {tag for signal in members for tag in (signal.get("tags") or [])}
-    source_types = {signal.get("source_type") for signal in members}
-    out: list[str] = []
-
-    if "safety" in tags:
-        out.append(f"让 {skill_label} 在触发安全策略前主动停止，减少 ReviewQueue 反复打断")
-    if any("error" in (st or "") for st in source_types):
-        out.append(f"减少 {skill_label} 在类似输入下重复抛同一种错误")
-    if any("feature_request" in (st or "") for st in source_types):
-        out.append(f"覆盖 {skill_label} 现在缺失的能力调用方式")
-    if any(st == "promo" for st in source_types):
-        out.append("把已有 PROMO 候选合并审查，避免碎片化升级")
-    if "rollback" in tags:
-        out.append("识别并避免触发版本回滚的输入模式")
-
-    if not out:
-        # Fall back to the old tag-based phrasing for unusual clusters.
-        out = sorted(
-            {
-                f"减少 '{tag}' 模式的重复出现"
-                for tag in tags
-                if tag not in {"error", "learning", "feature_request", "promo"}
-            }
-        )
-
-    return out[:5]
-
-
-def _derive_must_not_regress(members: list[dict[str, Any]]) -> list[str]:
-    out = ["不放宽既有的安全策略", "不绕过 ReviewQueue 审批"]
-    if any("safety" in (s.get("tags") or []) for s in members):
-        out.append("保留 safety_gain 相关的断言不被覆盖")
-    return out
-
-
-def _summary_text(members: list[dict[str, Any]], cluster_key: str) -> str:
-    sample = members[0]["content"][:160].replace("\n", " ").strip()
-    return f"{cluster_key} | {sample}"
-
-
-def _max_rank(values: list[str], order: tuple[str, ...]) -> str:
-    seen = [value for value in values if value in order]
-    if not seen:
-        return order[0]
-    return max(seen, key=lambda value: order.index(value))
+    return [w for w, _ in ordered[:limit]]

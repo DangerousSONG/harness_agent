@@ -41,6 +41,10 @@ class LearningSignal:
     tags: list[str] = field(default_factory=list)
     frequency: int = 1
     severity: str = "medium"
+    quarantined: bool = False
+    attack_type: str = ""  # prompt_injection | approval_bypass | safety_disable | secret_exfiltration
+    redacted: bool = False
+    correction_strength: float = 0.0
     created_at: str = field(default_factory=_utc_now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -68,6 +72,12 @@ class EvolutionOpportunity:
     must_not_regress: list[str]
     related_promo_ids: list[str] = field(default_factory=list)
     score_breakdown: str = ""
+    evidence_quality: float = 0.0
+    value_score: float = 0.0
+    risk_score: float = 0.0
+    testability: float = 0.0
+    observed_skills: list[str] = field(default_factory=list)
+    cross_skill: bool = False
     created_at: str = field(default_factory=_utc_now)
 
     def to_dict(self) -> dict[str, Any]:
