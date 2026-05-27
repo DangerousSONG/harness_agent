@@ -258,115 +258,115 @@ PROMO 存 `.skills_memory/PROMOTION_CANDIDATES.md`。
 
 ### Scout 四段式判断
 
-Scout 把每条 memory 走 4 个阶段，决定它最终落到哪个决策桶里。源码：`runtime/evolution_scout.py`。
+Scout 把每条 memory 走四个阶段，决定它最终落到哪个决策桶里。源码：`runtime/evolution_scout.py`。
 
 ```text
-① hard filter / quarantine   → 攻击载荷脱敏后归档，禁入 Optimizer
-② tag taxonomy (9 类)         → 给信号打可解释的语义标签
-③ cluster across skills       → 共享 cluster_key，先聚类后挑 target_skill
-④ evidence + value + risk     → 三个独立分数代替单一 score
-⑤ decision matrix             → 6 桶决策：promote / request_eval / defer
-                                / reject / safety_review / quarantine
+① 信号采集 + 硬过滤   → 攻击载荷脱敏后归档，禁入 Optimizer
+② 语义标签 (9 类)     → 给信号打可解释的语义标签
+③ 跨 skill 聚类       → 共享 cluster_key，先聚类后挑 target_skill
+④ 证据 × 价值 × 风险  → 三个独立分数代替单一 score
+⑤ 决策矩阵            → 六桶决策：promote / request_eval / defer
+                          / reject / safety_review / quarantine
 ```
 
-#### ① 信号采集 + hard filter
+#### ① 信号采集 + 硬过滤
 
 | 项 | 规则 |
 |---|---|
 | 扫描文件 | 全局：`.skills_memory/GLOBAL_{LEARNINGS,ERRORS,FEATURE_REQUESTS}.md` + `PROMOTION_CANDIDATES.md`；按 skill：`skills/<skill>/memory/{LEARNINGS,ERRORS,FEATURE_REQUESTS,POLICY_CANDIDATES,REGRESSION_TESTS}.md` |
-| 攻击检测 | `ATTACK_PATTERNS` 按 `attack_type` 分类：`prompt_injection`、`approval_bypass`、`safety_disable`、`secret_exfiltration` |
-| Quarantine | 命中攻击载荷 → signal `quarantined=True`，content 中的攻击短语原地替换成 `[REDACTED_ATTACK:<type>]`，但 `source_path` / `source_ref` 完整保留可追溯 |
-| Defended | 攻击载荷出现在 error 记录里且配 `blocked/rejected/已拦截` 等防御标记 → 不全隔离，打 `security_incident` tag 走 safety_review |
-| `correction_strength` | 命中 `以后(0.9) / 固定(0.9) / 默认(0.8) / 不要再(0.95) / from now on(0.95) / always(0.9) / must not(0.85) / ...`；`≥ 0.7` 自动打 `user_correction` tag |
-| 去重 | `(source_path, source_ref)` 唯一，幂等；re-scan 刷新 tags 但不重建 signal_id |
-| 内容截断 | content ≤ 1500 字符 |
+| 攻击检测 | `ATTACK_PATTERNS` 按攻击类型分类：提示注入 · 绕过审批 · 关闭安全 · 密钥外泄 |
+| 隔离规则 | 命中攻击载荷 → 信号标记 `quarantined=True`，content 中的攻击短语原地替换为 `[REDACTED_ATTACK:<类型>]`，但 `source_path` / `source_ref` 完整保留可追溯 |
+| 防御性事件 | 攻击载荷出现在 error 记录里且配 `blocked / rejected / 已拦截` 等防御标记 → 不全隔离，仅打 `security_incident` 标签走 safety_review |
+| 强纠正强度 | 命中 `以后 (0.9) / 固定 (0.9) / 默认 (0.8) / 不要再 (0.95) / from now on (0.95) / always (0.9) / must not (0.85) / …`；`≥ 0.7` 自动追加 `user_correction` 标签 |
+| 去重 | `(source_path, source_ref)` 唯一、幂等；re-scan 会刷新标签但不重建 `signal_id` |
+| 内容截断 | content 上限 1500 字符 |
 
-#### ② Tag taxonomy（9 类，取代旧的单一 `safety` 标签）
+#### ② 语义标签（9 类，取代旧的单一 `safety` 标签）
 
-| Tag | 触发 |
+| 标签 | 触发条件 |
 |---|---|
 | `security_incident` | 攻击词汇出现在防御性报告里（defended event） |
-| `governance_related` | `审批 / approval / reviewqueue / 审计` |
-| `memory_poisoning` | quarantine 自动打上 |
-| `policy_related` | `policy / 策略 / guideline / 规范` |
-| `rollback_related` | `rollback / 回滚 / 撤销` |
-| `tool_failure` | `traceback / exception / failed / 报错 / 异常` |
-| `user_correction` | `correction_strength ≥ 0.7`（强语气词） |
-| `format_preference` | `markdown / yaml / json / 格式 / 结构 / 模板` |
-| `capability_gap` | `missing capability / not supported / cannot / 需要支持` |
+| `governance_related` | 命中 `审批 / approval / reviewqueue / 审计` |
+| `memory_poisoning` | 隔离判定时自动追加 |
+| `policy_related` | 命中 `policy / 策略 / guideline / 规范` |
+| `rollback_related` | 命中 `rollback / 回滚 / 撤销` |
+| `tool_failure` | 命中 `traceback / exception / failed / 报错 / 异常` |
+| `user_correction` | 强纠正强度 ≥ 0.7 |
+| `format_preference` | 命中 `markdown / yaml / json / 格式 / 结构 / 模板` |
+| `capability_gap` | 命中 `missing capability / not supported / cannot / 需要支持` |
 
-> 关键修正：`approval / policy / review` **只**打 governance/policy 标签，**不**升级为 `security_incident` —— 普通治理词不再被误判为攻击。
+> 关键修正：`approval / policy / review` 等普通治理词**只**打 `governance_related` / `policy_related`，**不**升级为 `security_incident` —— 普通治理词不会再被误判为攻击。
 
 #### ③ 跨 skill 聚类
 
 ```text
-旧：按 (target_skill, cluster_key) 分组   → transferability 几乎用不上
+旧：按 (target_skill, cluster_key) 分组   → 可迁移度几乎用不上
 新：先按 cluster_key 全局聚类             → 同类问题跨 skill 自然汇合
      ↓
-   统计 cluster 内 observed_skill 分布   → cross_skill 标志
+   统计聚类内 observed_skill 分布         → 设置 cross_skill 标志
      ↓
-   选 target_skill（max count，平手时优先非 self_improvement）
+   选 target_skill（出现次数最多，平手时优先非 self_improvement）
 ```
 
-| 观察到的 skill 数 | transferability |
+| 观察到的 skill 数 | 可迁移度 (`transferability`) |
 |---|---|
-| ≥ 3 | 1.0 |
-| 2 | 0.85 |
-| 1 + cross_cutting tag（format/capability/tool_failure/governance） | 0.65 |
-| 1 单独 | 0.40 |
+| ≥ 3 个 | 1.0 |
+| 2 个 | 0.85 |
+| 1 个 skill + 跨切关注点标签（`format_preference` / `capability_gap` / `tool_failure` / `governance_related`） | 0.65 |
+| 1 个 skill 且无跨切关注点标签 | 0.40 |
 
-#### ④ Evidence × Value × Risk
+#### ④ 证据 × 价值 × 风险
 
-**evidence_quality**（0..1）
+**证据质量 `evidence_quality`**（取值 0..1）
 
 | 子项 | 权重 | 取值 |
 |---|---|---|
-| `source_reliability` | 0.30 | PROMO 1.0 / error 0.8 / learning 0.7 / 其他 0.5–0.6 |
-| `distinct_occurrence` | 0.25 | `min(1, distinct_source_refs / 3)` |
-| `human_correction` | 0.25 | cluster 内最大 `correction_strength` |
-| `failure_reproducibility` | 0.10 | `tool_failure ∧ distinct ≥ 2` ⇒ 0.8；含 `tool_failure` ⇒ 0.5；否则 0.3 |
-| `trace_support` | 0.10 | 任一 signal 带 `tool:*` tag ⇒ 0.7 否则 0.3 |
+| 来源可靠度 | 0.30 | PROMO 1.0 / error 0.8 / learning 0.7 / 其他 0.5–0.6 |
+| 独立出现次数 | 0.25 | `min(1, 唯一 source_ref 数 / 3)` |
+| 用户纠正强度 | 0.25 | 聚类内 `correction_strength` 最大值 |
+| 失败可复现度 | 0.10 | 含 `tool_failure` 且独立出现 ≥ 2 → 0.8；只含 `tool_failure` → 0.5；其他 0.3 |
+| 调用链支撑 | 0.10 | 任一信号带 `tool:*` 标签 → 0.7；否则 0.3 |
 
-**value_score** = `0.25·evidence + 0.15·{frequency, transferability, impact, testability} + 0.10·skill_confidence + 0.05·safety_gain`
+**价值分 `value_score`** = `0.25·证据 + 0.15·{频率, 可迁移度, 影响, 可测试度} + 0.10·skill_confidence + 0.05·safety_gain`
 
-**risk_score** = `0.25·regression + 0.20·{overfitting, policy} + 0.15·scope + 0.10·{cost_increase, uncertainty}`
+**风险分 `risk_score`** = `0.25·回归风险 + 0.20·{过拟合风险, 策略风险} + 0.15·范围风险 + 0.10·{成本增量, 不确定性}`
 
-| Risk 子项 | 取值 |
+| 风险子项 | 取值 |
 |---|---|
-| `regression_risk` | 含 PROMO ⇒ 0.3 否则 0.4 |
-| `overfitting_risk` | `Σf ≤ 1` ⇒ 0.6；low priority + freq<3 ⇒ 0.5；否则 0.2 |
-| `policy_risk` | 有 governance/policy tag 且无 PROMO 背书 ⇒ 0.5 否则 0.15 |
-| `scope_risk` | 含 `capability_gap` ⇒ 0.55 否则 0.30 |
-| `cost_increase` | 常量 0.10 |
-| `uncertainty` | `evidence < 0.5` ⇒ 0.30 否则 0.15 |
+| 回归风险 | 聚类含 PROMO → 0.3；否则 0.4 |
+| 过拟合风险 | `Σf ≤ 1` → 0.6；低优先级且 `Σf < 3` → 0.5；其他 0.2 |
+| 策略风险 | 含治理/策略标签且无 PROMO 背书 → 0.5；其他 0.15 |
+| 范围风险 | 含 `capability_gap` → 0.55；其他 0.30 |
+| 成本增量 | 常量 0.10 |
+| 不确定性 | 证据 < 0.5 → 0.30；其他 0.15 |
 
-**testability**（composite，取代"是否有 PROMO"的二值判断）
+**可测试度 `testability`**（复合分；取代旧的"是否含 PROMO"二值判断）
 
 | 子项 | 贡献（上限） |
 |---|---|
-| 含非 meta tag（has should_improve） | +0.20 |
-| 含 security/governance/policy tag（含具体 must_not_regress） | +0.15 |
+| 含非元标签（即有具体的 should_improve 候选） | +0.20 |
+| 含 security / governance / policy 标签（即有具体的 must_not_regress） | +0.15 |
 | `0.30 × correction_strength` | +0.30 |
-| 含 `format_preference` 或 `capability_gap`（judgeable output） | +0.25 |
-| `tool_failure ∧ distinct ≥ 2`（reproducible negative case） | +0.20 |
+| 含 `format_preference` 或 `capability_gap`（可判定的输出形态） | +0.25 |
+| 含 `tool_failure` 且独立出现 ≥ 2（可复现的负例） | +0.20 |
 | 含 PROMO 背书 | +0.10 |
 
 总分 clamp 到 [0, 1]。
 
 #### ⑤ 决策矩阵（自顶向下，先匹配先用）
 
-| 触发条件 | decision | priority |
+| 触发条件 | 决策 | 优先级 |
 |---|---|---|
-| 含 `security_incident` tag | `safety_review` | **high** |
-| `value ≥ 0.60 ∧ risk ≤ 0.35 ∧ testability ≥ 0.70` | `promote` | **high**（跨 skill 或 value≥0.75）/ medium |
-| `value ≥ 0.55 ∧ (testability < 0.70 ∨ risk > 0.35)` | `request_eval` | medium |
-| `value ≥ 0.40 ∧ evidence < 0.50` | `defer` | low |
-| `overfitting ≥ 0.5 ∧ Σf < 3` | `reject` | low |
-| `target_skill == self_improvement` 且无 security | `defer` | low |
-| `value ≥ 0.30` | `defer` | low |
-| 其它 | `reject` | low |
+| 含 `security_incident` 标签 | `safety_review` | **高** |
+| `价值 ≥ 0.60` 且 `风险 ≤ 0.35` 且 `可测试度 ≥ 0.70` | `promote` | **高**（跨 skill 或价值 ≥ 0.75）/ 中 |
+| `价值 ≥ 0.55` 且（`可测试度 < 0.70` 或 `风险 > 0.35`） | `request_eval` | 中 |
+| `价值 ≥ 0.40` 且 `证据 < 0.50` | `defer` | 低 |
+| `过拟合 ≥ 0.5` 且 `Σf < 3` | `reject` | 低 |
+| `target_skill == self_improvement` 且无 security | `defer` | 低 |
+| `价值 ≥ 0.30` | `defer` | 低 |
+| 其他 | `reject` | 低 |
 
-quarantine 桶单独走 ① 处理，不经决策矩阵；它产出的 opportunity 固定 `decision="quarantine"`，priority=high，并在 `must_not_regress` 中写明"禁止把攻击载荷沉淀进 skill rule"。
+quarantine 桶在 ① 阶段单独处理，不经决策矩阵；它产出的 opportunity 固定 `decision="quarantine"`、优先级 high，并在 `must_not_regress` 中写明"禁止把攻击载荷沉淀进 skill rule"。
 
 #### 派生字段
 
