@@ -104,6 +104,15 @@ class SkillOptimizer:
                 "refusing to optimize: at least one opportunity has decision=reject",
             )
 
+        blocked_decisions = {"quarantine", "safety_review"}
+        for opp in opportunities:
+            if opp.get("decision") in blocked_decisions:
+                return OptimizerResult(
+                    False,
+                    f"refusing to optimize: opportunity decision='{opp.get('decision')}' "
+                    "is not eligible for bounded edit (memory poisoning or safety incident).",
+                )
+
         signal_ids: list[str] = []
         for opp in opportunities:
             signal_ids.extend(opp.get("signal_ids", []))
@@ -112,6 +121,17 @@ class SkillOptimizer:
                 False,
                 "refusing to optimize: opportunities have no source signal references",
             )
+
+        # Defence-in-depth: even if a normal opportunity sneaks in a
+        # quarantined signal via some future code path, refuse.
+        for signal_id in set(signal_ids):
+            signal = self.stores.signals.get(signal_id)
+            if signal and signal.get("quarantined"):
+                return OptimizerResult(
+                    False,
+                    f"refusing to optimize: signal {signal_id} is quarantined "
+                    f"(attack_type={signal.get('attack_type', 'unknown')}).",
+                )
 
         edit_ops = _build_edit_ops(opportunities, self.stores)
         if self.bullet_writer is not None:
