@@ -2,6 +2,7 @@ openai>=1.40
 python-dotenv>=1.0
 fastapi>=0.110
 uvicorn>=0.29
+python-multipart>=0.0.9
 crawl4ai>=0.3
 playwright>=1.40
 pypdf>=4.0
