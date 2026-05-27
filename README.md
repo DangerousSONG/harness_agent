@@ -2,22 +2,150 @@
 
 本地优先的 **SafeHarness + Self-Evolving Skills** 实验系统。
 
-不让 Agent 无约束地修改自己，而是验证一条 **受控自进化** 链路：
+不让 Agent 无约束地修改自己，而是验证一条 **受控自进化** 链路。
 
-```text
-运行信号 → Skill Memory → PROMO → ReviewQueue → Regression Coverage
-        → Skill Patch  → Approve → Apply → Skill Version
+## 系统架构图
+
+<p align="center">
+  <img src="docs/architecture.svg" alt="Harness Agent architecture: SafeHarness + 主链路自进化 + 旁路自进化 + 共享审批 + 本地存储" width="100%"/>
+</p>
+
+<details>
+<summary>架构图（mermaid 备选，文本编辑器友好）</summary>
+
+```mermaid
+flowchart TB
+
+  %% =========== L1: Frontend ===========
+  subgraph L1["🖥️ 前端工作台 (Web Workbench · React + Vite)"]
+    direction LR
+    L1A["对话<br/>Chat + KB 0/3"]
+    L1B["工作区<br/>文件 · 命令 · 变更"]
+    L1C["资产库<br/>Skills · Tools · Memories · KB · Eval"]
+    L1D["Self-Evolution<br/>候选 · 审批 · 版本 · 旁路"]
+    L1E["设置<br/>Provider · Model"]
+  end
+
+  %% =========== L2: Orchestrator + SafeHarness ===========
+  subgraph L2["🛡️ 编排与运行时拦截 (Orchestrator + SafeHarness)"]
+    direction LR
+    L2A["Chat Orchestrator<br/>意图分类 · 路由 · 实时查询 · KB Q&A"]
+    L2B["SafeHarness · PolicyEngine · AuditLogger<br/>allow / warn / sanitize / require_approval / block"]
+  end
+
+  %% =========== L3: TWO evolution loops side by side ===========
+  subgraph L3["🧬 两条自进化链路 (互补 · 都受 ReviewQueue 约束)"]
+    direction LR
+
+    subgraph L3A["♻️ 主链路 · 事件驱动"]
+      direction TB
+      L3A1["Skill Memory<br/>LRN · ERR · FEAT · POL · REG"]
+      L3A2["PROMO 候选<br/>9 维 promotion_score"]
+      L3A3["/evolve-skill 向导"]
+      L3A4["Regression Gate<br/>positive + negative case"]
+      L3A1 --> L3A2 --> L3A3 --> L3A4
+    end
+
+    subgraph L3B["🛰️ 旁路 · 批量发现 (离线扫描)"]
+      direction TB
+      L3B1["EvolutionScout<br/>只读扫描 memory + PROMO"]
+      L3B2["Opportunity / Batch<br/>9 维 evolution_score"]
+      L3B3["SkillOptimizer<br/>bounded edit<br/>add/replace/delete<br/>仅 ## Memory-derived rules"]
+      L3B4["ValidationGate<br/>train / validation / regression"]
+      L3B1 --> L3B2 --> L3B3 --> L3B4
+    end
+  end
+
+  %% =========== L4: Shared approval (唯一落盘路径) ===========
+  subgraph L4["🚦 共享审批 (ReviewQueue · 唯一落盘路径)"]
+    direction LR
+    L4A["ReviewQueue<br/>pending → approved → applied<br/>类型: skill.promotion · skill.bounded_edit ·<br/>skill.regression_case · file.write · ..."]
+    L4B["Apply<br/>写入 skills/&lt;skill&gt;/SKILL.md<br/>或 eval/cases.yaml"]
+    L4C["Skill Evolution Registry<br/>版本快照 + patch.diff + eval_result"]
+  end
+
+  %% =========== L5: AI infra ===========
+  subgraph L5["⚙️ AI 基础设施 (LLM & 外部能力)"]
+    direction LR
+    L5A["OPENAI_MODEL<br/>对话 · KB Q&A · 总结"]
+    L5B["SEARCH_PROVIDER<br/>Bailian/DashScope MCP<br/>· DuckDuckGo fallback"]
+    L5C["crawl4ai<br/>并行抓取 + 早停"]
+    L5D["BM25 检索<br/>本地零依赖 · chunked"]
+  end
+
+  %% =========== L6: Local storage ===========
+  subgraph L6["💾 本地存储 (.gitignored)"]
+    direction LR
+    L6A[".reviews/"]
+    L6B[".skills_memory/"]
+    L6C[".skills_versions/"]
+    L6D[".evolution/"]
+    L6E[".knowledge_bases/"]
+    L6F[".audit/"]
+  end
+
+  %% =========== Wiring ===========
+  L1A -.-> L2A
+  L1B -.-> L2A
+  L1D -.-> L4A
+
+  L2A --> L2B
+  L2B -->|allow / sanitize| L2A
+  L2B -->|require_approval| L4A
+
+  L3A4 --> L4A
+  L3B4 -->|pass| L4A
+  L3B4 -.->|reject| L6D
+
+  L4A --> L4B --> L4C
+
+  L2A -.->|kb_ids| L5D
+  L5A -.-> L2A
+  L5B -.-> L2A
+  L5C -.-> L2A
+
+  L4A -.-> L6A
+  L4B -.-> L6C
+  L3A1 -.-> L6B
+  L3B1 -.-> L6D
+  L5D -.-> L6E
+  L2B -.-> L6F
+
+  classDef l1 fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#0f172a
+  classDef l2 fill:#ede9fe,stroke:#7c3aed,stroke-width:1.5px,color:#0f172a
+  classDef l3a fill:#d1fae5,stroke:#059669,stroke-width:1.5px,color:#0f172a
+  classDef l3b fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#0f172a
+  classDef l4 fill:#fee2e2,stroke:#dc2626,stroke-width:1.5px,color:#0f172a
+  classDef l5 fill:#fce7f3,stroke:#db2777,stroke-width:1.5px,color:#0f172a
+  classDef l6 fill:#f3f4f6,stroke:#475569,stroke-width:1.5px,color:#0f172a
+
+  class L1A,L1B,L1C,L1D,L1E l1
+  class L2A,L2B l2
+  class L3A1,L3A2,L3A3,L3A4 l3a
+  class L3B1,L3B2,L3B3,L3B4 l3b
+  class L4A,L4B,L4C l4
+  class L5A,L5B,L5C,L5D l5
+  class L6A,L6B,L6C,L6D,L6E,L6F l6
 ```
 
-旁路（不替代主链路，仅做批量发现 + 受约束补丁）：
+</details>
 
-```text
-Memory / PROMO → EvolutionScout（只读） → Opportunity / Batch
-              → SkillOptimizer（bounded edit） → ValidationGate
-              → ReviewQueue: skill.bounded_edit → Approve → Apply
-```
+**图例**：🖥️ 前端 · 🛡️ 编排/拦截 · ♻️ 主链路自进化 · 🛰️ 旁路自进化 · 🚦 审批落盘 · ⚙️ AI 基础设施 · 💾 本地存储
 
-九个角色，一句话定义：
+**数据流**：用户输入 → 前端 → Chat Orchestrator → SafeHarness 拦截 → 允许/审批；运行信号 → Skill Memory → PROMO（主链路）或 Scout 离线扫描 → Opportunity → Optimizer bounded edit（旁路）→ **两条路径都汇入 ReviewQueue** → Approve + Apply → SKILL.md 落盘 + 版本登记。
+
+**两条进化链路的分工**：
+
+| 维度 | ♻️ 主链路 | 🛰️ 旁路 |
+|---|---|---|
+| 触发 | 事件驱动（用户纠正、工具失败、安全事件） | 离线批量扫描（按需运行 `/evolution-scan`） |
+| 准入门槛 | `occurrence_count ≥ 3`（或强纠正 ≥ 2） | 单个安全事件即可（safety_gain 优先通道） |
+| 改 SKILL.md 范围 | 整篇可编辑（仍需 review） | **强约束：仅 `## Memory-derived rules` 节，仅 `add/replace/delete`，单次 ≤ 5 op** |
+| 回归保护 | Regression Gate：缺 positive+negative case 拒 apply | ValidationGate：训练/验证/回归三个分数都过阈值 |
+| 自动化程度 | 用户点 `/evolve-skill` 推进 | Scout 一次扫描产出多个 Opportunity，可批量 Optimize |
+| 共享部分 | **同一个 ReviewQueue · 同一个 Skill Evolution Registry · 同一个 Approve+Apply** |
+
+**九个核心角色一句话**：
 
 1. **SafeHarness** — 这个动作能不能直接做。
 2. **ReviewQueue** — 高风险动作是否经人确认。
@@ -27,7 +155,7 @@ Memory / PROMO → EvolutionScout（只读） → Opportunity / Batch
 6. **Regression Gate** — 这次升级会不会退化。
 7. **Skill Evolution Registry** — 这次升级如何被追溯和回滚。
 8. **EvolutionScout（旁路）** — 离线批量扫描 memory + PROMO，只读，不创建 review。
-9. **SkillOptimizer（旁路）** — 生成 bounded edit 提案；只能 `add/replace/delete` 在 `## Memory-derived rules` 节；不能 apply。
+9. **SkillOptimizer（旁路）** — 生成 bounded edit 提案；只能 `add/replace/delete` 在 `## Memory-derived rules`；不能直接 apply。
 
 核心原则：memory / PROMO / patch 都可以自动提议，但 **`SKILL.md` 的真实修改必须经过回归测试、人工审批、显式 apply 和版本登记**。
 
