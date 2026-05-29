@@ -755,6 +755,152 @@ class ScoutFourStageTestCase(unittest.TestCase):
                 self.assertTrue(signal["source_ref"])
 
 
+class ScoutClusteringTestCase(unittest.TestCase):
+    """Proves the normalized_problem_signature keeps semantically
+    distinct signals apart (no false merges) while still merging the
+    same problem across skills (transferability)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        (self.root / "skills").mkdir()
+        (self.root / ".skills_memory").mkdir()
+        self.promotions = PromotionBrowser(
+            skills_dir=self.root / "skills",
+            global_memory_dir=self.root / ".skills_memory",
+            project_root=self.root,
+        )
+        self.stores = EvolutionStores(self.root)
+        self.scout = EvolutionScout(
+            project_root=self.root,
+            stores=self.stores,
+            promotions=self.promotions,
+        )
+
+    def _write(self, skill, filename, record_id, title, details, *, occurrence=1, priority="medium"):
+        memory_dir = self.root / "skills" / skill / "memory"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        path = memory_dir / filename
+        existing = path.read_text(encoding="utf-8") if path.exists() else "# Memory\n\n"
+        block = (
+            f"## {record_id} - {title}\n"
+            f"- Time: 2024-01-01\n- Priority: {priority}\n- Status: open\n"
+            f"- Occurrence Count: {occurrence}\n- Target Skill: {skill}\n"
+            f"\n### Details\n{details}\n\n"
+        )
+        path.write_text(existing + block, encoding="utf-8")
+
+    def _signature_for(self, record_id):
+        signal = next(s for s in self.stores.signals.list() if s["source_ref"] == record_id)
+        return self.scout._cluster_key(signal)
+
+    def _opp_signal_refs(self, opp):
+        return {self.stores.signals.get(sid)["source_ref"] for sid in opp["signal_ids"]}
+
+    def test_distinct_error_types_do_not_merge(self):
+        # Same skill, both tool_failure, but one is a policy block and the
+        # other is a JSON parse error → different error_type → must NOT
+        # share a cluster.
+        self._write(
+            "alpha", "ERRORS.md", "ERR-POLICY",
+            "edit_file blocked by policy",
+            "The edit_file call to modify tools/handlers.py was blocked by a "
+            "policy that requires approval.",
+            occurrence=2,
+        )
+        self._write(
+            "alpha", "ERRORS.md", "ERR-PARSE",
+            "JSON parse traceback",
+            "Traceback: JSON parse error while reading the config.",
+            occurrence=2,
+        )
+        self.scout.scan()
+        sig_policy = self._signature_for("ERR-POLICY")
+        sig_parse = self._signature_for("ERR-PARSE")
+        self.assertNotEqual(sig_policy, sig_parse)
+        # And no opportunity contains BOTH refs.
+        for opp in self.stores.opportunities.list():
+            refs = self._opp_signal_refs(opp)
+            self.assertFalse({"ERR-POLICY", "ERR-PARSE"} <= refs, f"false merge: {opp}")
+
+    def test_distinct_safety_types_do_not_merge(self):
+        # Two defended security incidents of different safety_type.
+        self._write(
+            "alpha", "ERRORS.md", "ERR-SECRET",
+            "secret exfiltration attempt blocked",
+            "A request to send this secret to an external host was blocked by policy.",
+            occurrence=2,
+        )
+        self._write(
+            "beta", "ERRORS.md", "ERR-APPROVAL",
+            "approval bypass attempt blocked",
+            "A request to bypass approval on tools/handlers.py was rejected.",
+            occurrence=2,
+        )
+        self.scout.scan()
+        sig_secret = self._signature_for("ERR-SECRET")
+        sig_approval = self._signature_for("ERR-APPROVAL")
+        self.assertNotEqual(sig_secret, sig_approval)
+        self.assertIn("safe:", sig_secret)
+        self.assertIn("safe:", sig_approval)
+        for opp in self.stores.opportunities.list():
+            refs = self._opp_signal_refs(opp)
+            self.assertFalse({"ERR-SECRET", "ERR-APPROVAL"} <= refs, f"false safety merge: {opp}")
+
+    def test_same_problem_across_skills_does_merge(self):
+        # Identical problem signature on two skills → one opportunity,
+        # cross_skill True (transferability preserved).
+        details = "The edit_file call was blocked by a policy that requires approval."
+        self._write("alpha", "ERRORS.md", "ERR-A", "edit_file blocked by policy", details, occurrence=2)
+        self._write("beta", "ERRORS.md", "ERR-B", "edit_file blocked by policy", details, occurrence=2)
+        self.scout.scan()
+        self.assertEqual(self._signature_for("ERR-A"), self._signature_for("ERR-B"))
+        merged = [
+            o for o in self.stores.opportunities.list()
+            if {"ERR-A", "ERR-B"} <= self._opp_signal_refs(o)
+        ]
+        self.assertEqual(len(merged), 1, "same-signature cross-skill signals should merge into one opp")
+        self.assertTrue(merged[0]["cross_skill"])
+
+    def test_features_recorded_on_signal(self):
+        self._write(
+            "alpha", "ERRORS.md", "ERR-X",
+            "edit_file blocked by policy",
+            "The edit_file call to modify tools/handlers.py was blocked by a policy "
+            "that requires approval.",
+            occurrence=2,
+        )
+        self.scout.scan()
+        signal = next(s for s in self.stores.signals.list() if s["source_ref"] == "ERR-X")
+        features = signal["features"]
+        self.assertEqual(features.get("tool"), "edit_file")
+        self.assertEqual(features.get("error_type"), "policy_block")
+        self.assertEqual(features.get("target_artifact"), "tool_file")
+
+    def test_self_improvement_never_auto_promotes(self):
+        # Strong, testable, high-value signal but attributed only to
+        # self_improvement → must NOT promote (gate → request_eval).
+        self._write(
+            "self_improvement", "LEARNINGS.md", "LRN-SI1",
+            "From now on always use markdown headings",
+            "From now on always use markdown headings. Default to ATX-style headings.",
+            occurrence=3, priority="high",
+        )
+        self._write(
+            "self_improvement", "LEARNINGS.md", "LRN-SI2",
+            "Reports must not be plain text",
+            "Reports must not be plain text. From now on the structure is fixed.",
+            occurrence=2, priority="high",
+        )
+        self.scout.scan()
+        opps = [o for o in self.stores.opportunities.list() if o["target_skill"] == "self_improvement"]
+        self.assertTrue(opps)
+        for opp in opps:
+            self.assertNotEqual(opp["decision"], "promote", f"self_improvement must not promote: {opp}")
+            self.assertIn(opp["decision"], {"request_eval", "defer", "reject"})
+
+
 class EvolutionLLMTestCase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

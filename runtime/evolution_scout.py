@@ -151,6 +151,51 @@ CORRECTION_PHRASES: tuple[tuple[str, float], ...] = (
 CROSS_CUTTING_TAGS = {"format_preference", "capability_gap", "tool_failure", "governance_related"}
 META_TAGS = {"error", "learning", "feature_request", "policy_candidate", "regression_test", "promo"}
 
+# ---- feature extraction lexicons (for normalized_problem_signature) ----
+
+ACTION_LEXICON: dict[str, tuple[str, ...]] = {
+    "edit": ("edit", "modify", "change ", "更改", "修改"),
+    "read": ("read", "open ", "查看", "读取"),
+    "write": ("write", "create ", "生成", "写入"),
+    "run": ("run ", "execute", "运行", "执行"),
+    "load": ("load_skill", "load skill", "加载"),
+    "delete": ("delete", "remove ", "删除"),
+    "parse": ("parse", "解析"),
+    "format": ("format", "格式化", "排版"),
+}
+
+ERROR_TYPE_LEXICON: dict[str, tuple[str, ...]] = {
+    "policy_block": ("blocked by policy", "policy that requires approval", "policy requirement", "requires approval", "审批拦截", "策略拦截"),
+    "parse_error": ("parse", "traceback", "syntaxerror", "json", "解析失败", "语法错误"),
+    "timeout": ("timeout", "timed out", "超时"),
+    "missing_capability": ("not supported", "missing capability", "unable to", "cannot ", "不支持", "缺少能力"),
+    "permission": ("permission denied", "permission", "denied", "权限"),
+    "not_found": ("not found", "no such", "找不到", "不存在"),
+}
+
+ARTIFACT_LEXICON: tuple[tuple[str, str], ...] = (
+    ("eval_file", ("eval/cases", "cases.yaml")),
+    ("skill_file", ("skill.md", "skills/")),
+    ("tool_file", ("tools/", "tool.yaml")),
+    ("env_file", (".env", "dotenv")),
+    ("config_file", (".yaml", ".yml", ".toml", ".ini", "config")),
+    ("doc_file", (".md", "readme", "docs/")),
+)
+
+CORRECTION_PATTERN_LEXICON: dict[str, tuple[str, ...]] = {
+    "prohibition": ("不要再", "never", "must not", "禁止"),
+    "default": ("默认", "default", "always", "from now on", "以后"),
+    "structure": ("结构", "structure", "格式", "format", "模板", "template"),
+    "naming": ("命名", "naming", "name it"),
+}
+
+SAFETY_TYPE_LEXICON: dict[str, tuple[str, ...]] = {
+    "secret_leak": ("secret", "credential", "api key", "api_key", "token", "凭据", "密钥", "泄漏", "泄露"),
+    "approval_block": ("approval", "审批", "reviewqueue", "review queue", "require_approval"),
+    "injection": ("ignore previous", "injection", "prompt injection", "注入"),
+    "policy_violation": ("policy violation", "违规", "policy gate"),
+}
+
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -342,6 +387,13 @@ class EvolutionScout:
         if strength >= 0.7:
             tags.add("user_correction")
 
+        features = _extract_features(
+            redacted_content,
+            source_type=record["source_type"],
+            tags=tags,
+            attack_type=attack_type,
+        )
+
         return {
             "source_type": record["source_type"],
             "source_path": record["source_path"],
@@ -355,6 +407,7 @@ class EvolutionScout:
             "attack_type": attack_type if quarantined else "",
             "redacted": quarantined,
             "correction_strength": strength,
+            "features": features,
         }
 
     def _signal_from_promo(self, promo: dict[str, Any]) -> dict[str, Any] | None:
@@ -403,6 +456,25 @@ class EvolutionScout:
         return opportunities
 
     def _cluster_key(self, signal: dict[str, Any]) -> str:
+        """Skill-agnostic problem identity.
+
+        Priority:
+          1. normalized_problem_signature derived from extracted features
+             (action / tool / error_type / target_artifact /
+             correction_pattern / safety_type). This is discriminating
+             enough that a policy-block and a parse-error do NOT merge,
+             while the SAME problem on two skills DOES merge (→ high
+             transferability).
+          2. semantic tags (skill-agnostic) when no signature features.
+          3. keyword fallback.
+
+        Safety signals always carry their safety_type in the signature,
+        so different safety incidents never collapse into one bucket.
+        """
+        features = signal.get("features") or {}
+        signature = _problem_signature(features)
+        if signature:
+            return "sig:" + signature
         tags = sorted(
             t for t in (signal.get("tags") or [])
             if not t.startswith("attack:")
@@ -727,6 +799,83 @@ def _correction_strength(content: str) -> float:
     return max(strengths, default=0.0)
 
 
+def _first_lexicon_match(lowered: str, lexicon: dict[str, tuple[str, ...]]) -> str:
+    for label, needles in lexicon.items():
+        if any(n in lowered for n in needles):
+            return label
+    return ""
+
+
+def _extract_features(
+    content: str,
+    *,
+    source_type: str,
+    tags: set[str],
+    attack_type: str = "",
+) -> dict[str, str]:
+    """Pull a small, skill-agnostic feature set out of the memory text.
+
+    These features drive the normalized_problem_signature so that
+    different *kinds* of problem cluster apart even when their coarse
+    tags coincide.
+    """
+    lowered = content.lower()
+    features: dict[str, str] = {}
+
+    action = _first_lexicon_match(lowered, ACTION_LEXICON)
+    if action:
+        features["action"] = action
+
+    for tool in ("edit_file", "read_file", "write_file", "load_skill", "bash"):
+        if tool in lowered:
+            features["tool"] = tool
+            break
+
+    is_error = source_type.endswith("error") or "tool_failure" in tags
+    if is_error:
+        error_type = _first_lexicon_match(lowered, ERROR_TYPE_LEXICON)
+        features["error_type"] = error_type or "unknown_error"
+
+    artifact = ""
+    for label, needles in ARTIFACT_LEXICON:
+        if any(n in lowered for n in needles):
+            artifact = label
+            break
+    if artifact:
+        features["target_artifact"] = artifact
+
+    if "user_correction" in tags or "format_preference" in tags:
+        pattern = _first_lexicon_match(lowered, CORRECTION_PATTERN_LEXICON)
+        if pattern:
+            features["correction_pattern"] = pattern
+
+    # Safety type — derived for any security-tinged signal so different
+    # safety incidents bucket separately. Prefer the concrete attack_type
+    # (from quarantine / defended detection) when present.
+    if attack_type:
+        features["safety_type"] = {
+            "approval_bypass": "approval_block",
+            "secret_exfiltration": "secret_leak",
+            "prompt_injection": "injection",
+            "safety_disable": "policy_violation",
+        }.get(attack_type, attack_type)
+    elif tags & {"security_incident", "governance_related", "policy_related"}:
+        safety_type = _first_lexicon_match(lowered, SAFETY_TYPE_LEXICON)
+        if safety_type:
+            features["safety_type"] = safety_type
+
+    return features
+
+
+def _problem_signature(features: dict[str, str]) -> str:
+    """Stable, ordered signature string from extracted features. Empty
+    when no discriminating feature was found (caller falls back to
+    tags / keywords)."""
+    order = ("safety_type", "error_type", "action", "tool", "target_artifact", "correction_pattern")
+    parts = [f"{key[:4]}:{features[key]}" for key in order if features.get(key)]
+    return "|".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Stage 3 helpers — evidence_quality / value_score / risk_score / testability
 # ---------------------------------------------------------------------------
@@ -933,6 +1082,25 @@ def _decide_explained(
             "security_lane: contains security_incident tag",
             "security_incident=True",
             "promote (if not security)",
+        )
+
+    # self_improvement gate: an unattributed self_improvement cluster
+    # never auto-promotes. The only way to promote is for a human to
+    # re-attribute the source memory to a real skill (then the next scan
+    # picks that skill as target_skill and this gate no longer applies).
+    if target_skill == "self_improvement":
+        if value >= 0.55:
+            return (
+                "request_eval", "request_eval", "medium", "medium", "low",
+                "self_improvement_gate: needs human target_skill attribution before promote",
+                "target_skill=self_improvement",
+                "promote (after human attribution)",
+            )
+        return (
+            "defer", "defer", "low", "low", "low",
+            "self_improvement_gate: low value + unattributed",
+            "target_skill=self_improvement",
+            "request_eval (after human attribution)",
         )
 
     if value >= 0.60 and risk <= 0.35 and testability >= 0.70:

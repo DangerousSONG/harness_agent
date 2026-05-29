@@ -45,6 +45,7 @@ class LearningSignal:
     attack_type: str = ""  # prompt_injection | approval_bypass | safety_disable | secret_exfiltration
     redacted: bool = False
     correction_strength: float = 0.0
+    features: dict[str, str] = field(default_factory=dict)
     created_at: str = field(default_factory=_utc_now)
 
     def to_dict(self) -> dict[str, Any]:

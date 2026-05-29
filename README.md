@@ -314,15 +314,33 @@ Scout 把每条 memory 走四个阶段，决定它最终落到哪个决策桶里
 
 > 关键修正：`approval / policy / review` 等普通治理词**只**打 `governance_related` / `policy_related`，**不**升级为 `security_incident` —— 普通治理词不会再被误判为攻击。
 
-#### ③ 跨 skill 聚类
+#### ③ 跨 skill 聚类（normalized_problem_signature）
+
+`cluster_key` 不再只用 tag，而是优先用 **问题签名**——从 content 抽取的一组 skill-无关特征拼成：
+
+| 特征 | 来源 | 例 |
+|---|---|---|
+| `action` | 动作动词 | edit / read / write / run / parse / format |
+| `tool` | 命中工具名 | edit_file / read_file / bash / load_skill |
+| `error_type` | error 信号的错误归类 | policy_block / parse_error / timeout / missing_capability / permission |
+| `target_artifact` | 资源类别（非具体路径） | tool_file / skill_file / eval_file / env_file / config_file |
+| `correction_pattern` | 纠正语气类型 | prohibition / default / structure / naming |
+| `safety_type` | 安全事件类型 | secret_leak / approval_block / injection / policy_violation |
+
+签名形如 `sig:safe:approval_block|err:policy_block|tool:edit_file|arti:tool_file`，**不含 skill 名也不含具体文件路径**——这样：
+
+- 同一类问题在不同 skill 上 → 签名相同 → 合并 → 可迁移度高 ✓
+- 同 tag 但不同根因（policy 拦截 vs JSON 解析失败） → 签名不同 → **不**合并，避免误合并 / frequency 虚高 ✓
+- 不同 `safety_type` 的安全事件 → 签名不同 → 各自单独分桶，不会混成一类 ✓
+
+无可抽取特征时退化到 `tag:...`，再退化到 `kw:...`。
+
+聚类后流程：
 
 ```text
-旧：按 (target_skill, cluster_key) 分组   → 可迁移度几乎用不上
-新：先按 cluster_key 全局聚类             → 同类问题跨 skill 自然汇合
-     ↓
-   统计聚类内 observed_skill 分布         → 设置 cross_skill 标志
-     ↓
-   选 target_skill（出现次数最多，平手时优先非 self_improvement）
+按 cluster_key（签名优先）全局聚类
+   ↓ 统计聚类内 observed_skill 分布 → 设置 cross_skill 标志
+   ↓ 选 target_skill（出现次数最多，平手时优先非 self_improvement）
 ```
 
 | 观察到的 skill 数 | 可迁移度 (`transferability`) |
@@ -331,6 +349,8 @@ Scout 把每条 memory 走四个阶段，决定它最终落到哪个决策桶里
 | 2 个 | 0.85 |
 | 1 个 skill + 跨切关注点标签（`format_preference` / `capability_gap` / `tool_failure` / `governance_related`） | 0.65 |
 | 1 个 skill 且无跨切关注点标签 | 0.40 |
+
+> **self_improvement 不自动晋升**：若聚类的 `target_skill` 解析为 `self_improvement`（即没有真实 skill 归属），决策矩阵在 promote 之前就拦截 —— 高价值降级为 `request_eval`（提示"需人工标注 target_skill"），低价值 `defer`。只有人工把来源 memory 的 Target Skill 改成真实 skill，下次扫描才可能 promote。
 
 #### ④ 证据 × 价值 × 风险
 
