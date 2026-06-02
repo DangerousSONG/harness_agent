@@ -458,6 +458,48 @@ quarantine 桶在 ① 阶段单独处理，不经决策矩阵；它产出的 opp
 
 追溯链：`LearningSignal.source_path:source_ref` → `Opportunity.signal_ids` → `Batch.opportunity_ids + promo_ids` → `SkillEditProposal.source_*_ids` → `review.metadata.source_edit_id`。
 
+### 运行级归因（RunTrace + CreditAssignment）
+
+每次 `ChatOrchestrator.handle` 都会生成一条 `RUN-xxxxxxxx`，落盘到 `.audit/runs/<run_id>.json`：
+
+| 字段 | 含义 |
+|---|---|
+| `task` / `intent` / `selected_skill` | 用户输入、意图分类、最终选择的 skill |
+| `retrieved_memories` / `applied_rules` | 这次运行命中的 memory / rule（信息字段） |
+| `tool_calls[]` | 每次工具调用的 `tool_name / status / error / error_class` |
+| `policy_decisions[]` | SafeHarness 决策 + 工具注册检查 |
+| `final_output_summary` | 输出前 240 字符 |
+| `outcome` | `success / failure / partial / blocked / unknown` |
+| `credit_assignment` | 见下 |
+
+**Credit assignment**（`runtime/credit_assignment.py`，deterministic）按规则把失败归因到 8 类来源：
+
+| failure_source | 触发 |
+|---|---|
+| `environment` | tool 失败 + `error_class ∈ {auth, not_configured, network, timeout, permission, not_found}` |
+| `policy_block` | outcome=blocked 或 policy_decision=block |
+| `tool_failure` | tool 失败 + `error_class ∈ {invalid_input, unknown}` |
+| `rule_not_applied` | outcome=failure、有 selected_skill、无 env/policy/tool 失败 |
+| `bad_skill_selection` | outcome=failure、没选中 skill |
+| `bad_retrieval` | selected_skill 有但 retrieved_memories 空 |
+| `skill_gap` / `user_requirement_change` | 预留给 LLM 评判，暂不自动判 |
+
+成功运行同时记录 `positive_credits`：`skill_selected_correctly` / `memory_helpful` / `rule_effective` / `tool_successful`。
+
+**关键护栏 `should_generate_learning_signal(credit)`** —— 只有满足以下任一条件才允许把 RunTrace 转成 LearningSignal：
+
+- skill-side blame（`skill_gap / bad_skill_selection / rule_not_applied / bad_retrieval`）置信度 ≥ medium
+- 任一 `positive_credit` 命中
+
+`tool_failure / environment / policy_block` 单独存在时一律返回 False —— 工具/环境/审批问题不会被错误沉淀为 skill 更新。
+
+REST：
+
+| Method | Path | 作用 |
+|---|---|---|
+| GET | `/api/runs?limit=50` | 按时间倒序列出 run 摘要（含 outcome / credit recommended_action） |
+| GET | `/api/runs/{run_id}` | 完整 trace + credit_assignment |
+
 ### 决策可观测（Scout decision log）
 
 每次 Scout 生成或更新 opportunity 时，`runtime/scout_decisions.py::ScoutDecisionStore` 追加一条 `DEC-xxxxxxxx`：

@@ -8,6 +8,8 @@ from runtime.chat_intent import IntentRouter, TaskModeClassifier
 from runtime.chat_planner import ActionPlanner, ClarificationPlanner, RiskClassifier
 from runtime.chat_response import ResponseComposer, normalize_legacy_response, trace
 from runtime.chat_safety import InputSafetyGate
+from runtime.credit_assignment import assign_credit
+from runtime.run_trace import RunTraceStore, mark_exception, populate_from_response
 
 
 LegacyHandler = Callable[[Any, str, dict[str, Any]], dict[str, Any]]
@@ -63,8 +65,46 @@ class ChatOrchestrator:
         self.executor = Executor(legacy_handler)
         self.memory_capture_judge = MemoryCaptureJudge()
         self.composer = ResponseComposer()
+        # Run-level attribution. Falls back to a no-op when project_root
+        # is unavailable so tests with stub contexts still work.
+        project_root = getattr(ctx, "project_root", None)
+        self.run_trace_store = RunTraceStore(project_root) if project_root else None
 
     def handle(self, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        run_trace = (
+            self.run_trace_store.new_trace(task=message)
+            if self.run_trace_store else None
+        )
+        try:
+            response = self._handle_inner(message, context)
+        except BaseException as exc:
+            if run_trace is not None and self.run_trace_store is not None:
+                mark_exception(run_trace, exc)
+                credit = assign_credit(run_trace).to_dict()
+                try:
+                    self.run_trace_store.save(run_trace, credit_assignment=credit)
+                except Exception:
+                    pass
+            raise
+        if run_trace is not None and self.run_trace_store is not None:
+            try:
+                populate_from_response(
+                    run_trace,
+                    response=response,
+                    safety=response.get("safety"),
+                    intent=response.get("intent"),
+                    loaded_context=(response.get("data") or {}).get("loaded_context"),
+                )
+                credit = assign_credit(run_trace).to_dict()
+                self.run_trace_store.save(run_trace, credit_assignment=credit)
+                if isinstance(response.get("data"), dict):
+                    response["data"]["run_id"] = run_trace.run_id
+            except Exception:
+                # Observability must never break the chat response.
+                pass
+        return response
+
+    def _handle_inner(self, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
         context = context or {}
         safety = self.safety_gate.check(message)
         task_mode = self.task_mode_classifier.classify(message, safety)
