@@ -24,6 +24,7 @@ from runtime.evolution_scout import EvolutionScout
 from runtime.evolution_stores import EvolutionStores
 from runtime.knowledge_base import KnowledgeBaseStore, MAX_QA_CONTEXT_BYTES
 from runtime.promotion_browser import PromotionBrowser
+from runtime.run_trace import RunTraceStore
 from runtime.skill_optimizer import SkillOptimizer
 from runtime.regression_case_proposal import parse_regression_cases
 from runtime.skill_evolution_flow import evolve_skill_from_promotion
@@ -239,6 +240,7 @@ class WebContext:
         self.evolution_stores = EvolutionStores(self.project_root)
         from runtime.scout_decisions import ScoutDecisionStore
         self.scout_decisions = ScoutDecisionStore(self.project_root)
+        self.run_traces = RunTraceStore(self.project_root)
         self.evolution_scout, self.skill_optimizer = self._build_evolution_modules()
         self.knowledge_bases = KnowledgeBaseStore(self.project_root)
 
@@ -1407,6 +1409,17 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             threshold=threshold,
             decision=decision,
         ))
+
+    @app.get("/api/runs")
+    def runs_list(limit: int = 50) -> JSONResponse:
+        return ok(ctx.run_traces.list(limit=limit))
+
+    @app.get("/api/runs/{run_id}")
+    def runs_detail(run_id: str) -> JSONResponse:
+        payload = ctx.run_traces.get(run_id)
+        if payload is None:
+            return fail(f"Unknown run_id: {run_id}", status_code=404)
+        return ok(payload)
 
     @app.get("/api/evolution/{promo_id}/state")
     def evolution_state(promo_id: str) -> JSONResponse:
