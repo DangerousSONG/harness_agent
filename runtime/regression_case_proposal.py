@@ -142,7 +142,7 @@ def parse_regression_cases(text: str) -> list[dict[str, Any]]:
         key, value = stripped.split(":", 1)
         key = key.strip()
         value = value.strip()
-        if key in {"must_include", "must_not_include"}:
+        if key in {"must_include", "must_not_include", "expected_behavior", "negative_assertions"}:
             if value == "[]":
                 current[key] = []
                 current_list = None

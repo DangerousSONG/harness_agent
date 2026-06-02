@@ -34,6 +34,7 @@ from .evolution_stores import (
     LearningSignal,
 )
 from .promotion_browser import PromotionBrowser
+from .scout_decisions import ScoutDecisionStore
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +151,51 @@ CORRECTION_PHRASES: tuple[tuple[str, float], ...] = (
 CROSS_CUTTING_TAGS = {"format_preference", "capability_gap", "tool_failure", "governance_related"}
 META_TAGS = {"error", "learning", "feature_request", "policy_candidate", "regression_test", "promo"}
 
+# ---- feature extraction lexicons (for normalized_problem_signature) ----
+
+ACTION_LEXICON: dict[str, tuple[str, ...]] = {
+    "edit": ("edit", "modify", "change ", "更改", "修改"),
+    "read": ("read", "open ", "查看", "读取"),
+    "write": ("write", "create ", "生成", "写入"),
+    "run": ("run ", "execute", "运行", "执行"),
+    "load": ("load_skill", "load skill", "加载"),
+    "delete": ("delete", "remove ", "删除"),
+    "parse": ("parse", "解析"),
+    "format": ("format", "格式化", "排版"),
+}
+
+ERROR_TYPE_LEXICON: dict[str, tuple[str, ...]] = {
+    "policy_block": ("blocked by policy", "policy that requires approval", "policy requirement", "requires approval", "审批拦截", "策略拦截"),
+    "parse_error": ("parse", "traceback", "syntaxerror", "json", "解析失败", "语法错误"),
+    "timeout": ("timeout", "timed out", "超时"),
+    "missing_capability": ("not supported", "missing capability", "unable to", "cannot ", "不支持", "缺少能力"),
+    "permission": ("permission denied", "permission", "denied", "权限"),
+    "not_found": ("not found", "no such", "找不到", "不存在"),
+}
+
+ARTIFACT_LEXICON: tuple[tuple[str, str], ...] = (
+    ("eval_file", ("eval/cases", "cases.yaml")),
+    ("skill_file", ("skill.md", "skills/")),
+    ("tool_file", ("tools/", "tool.yaml")),
+    ("env_file", (".env", "dotenv")),
+    ("config_file", (".yaml", ".yml", ".toml", ".ini", "config")),
+    ("doc_file", (".md", "readme", "docs/")),
+)
+
+CORRECTION_PATTERN_LEXICON: dict[str, tuple[str, ...]] = {
+    "prohibition": ("不要再", "never", "must not", "禁止"),
+    "default": ("默认", "default", "always", "from now on", "以后"),
+    "structure": ("结构", "structure", "格式", "format", "模板", "template"),
+    "naming": ("命名", "naming", "name it"),
+}
+
+SAFETY_TYPE_LEXICON: dict[str, tuple[str, ...]] = {
+    "secret_leak": ("secret", "credential", "api key", "api_key", "token", "凭据", "密钥", "泄漏", "泄露"),
+    "approval_block": ("approval", "审批", "reviewqueue", "review queue", "require_approval"),
+    "injection": ("ignore previous", "injection", "prompt injection", "注入"),
+    "policy_violation": ("policy violation", "违规", "policy gate"),
+}
+
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -184,11 +230,13 @@ class EvolutionScout:
         stores: EvolutionStores,
         promotions: PromotionBrowser,
         llm_enricher: Any = None,
+        decision_store: ScoutDecisionStore | None = None,
     ):
         self.project_root = Path(project_root)
         self.stores = stores
         self.promotions = promotions
         self.llm_enricher = llm_enricher
+        self.decision_store = decision_store or ScoutDecisionStore(self.project_root)
 
     # ---- scan -----------------------------------------------------------
 
@@ -257,6 +305,15 @@ class EvolutionScout:
             else:
                 stored = self.stores.opportunities.save(opp)
                 new_opp_ids.append(stored["opportunity_id"])
+            # Decision log AFTER the opportunity_id is finalised. The
+            # store decides whether to append (material change) or
+            # idempotently no-op.
+            payload = getattr(opp, "_decision_payload", None)
+            if payload:
+                self.decision_store.record_decision(
+                    opportunity_id=opp.opportunity_id,
+                    **payload,
+                )
 
         parts = [
             f"scanned: signals_new={len(new_signals)}",
@@ -330,6 +387,13 @@ class EvolutionScout:
         if strength >= 0.7:
             tags.add("user_correction")
 
+        features = _extract_features(
+            redacted_content,
+            source_type=record["source_type"],
+            tags=tags,
+            attack_type=attack_type,
+        )
+
         return {
             "source_type": record["source_type"],
             "source_path": record["source_path"],
@@ -343,6 +407,7 @@ class EvolutionScout:
             "attack_type": attack_type if quarantined else "",
             "redacted": quarantined,
             "correction_strength": strength,
+            "features": features,
         }
 
     def _signal_from_promo(self, promo: dict[str, Any]) -> dict[str, Any] | None:
@@ -391,6 +456,25 @@ class EvolutionScout:
         return opportunities
 
     def _cluster_key(self, signal: dict[str, Any]) -> str:
+        """Skill-agnostic problem identity.
+
+        Priority:
+          1. normalized_problem_signature derived from extracted features
+             (action / tool / error_type / target_artifact /
+             correction_pattern / safety_type). This is discriminating
+             enough that a policy-block and a parse-error do NOT merge,
+             while the SAME problem on two skills DOES merge (→ high
+             transferability).
+          2. semantic tags (skill-agnostic) when no signature features.
+          3. keyword fallback.
+
+        Safety signals always carry their safety_type in the signature,
+        so different safety incidents never collapse into one bucket.
+        """
+        features = signal.get("features") or {}
+        signature = _problem_signature(features)
+        if signature:
+            return "sig:" + signature
         tags = sorted(
             t for t in (signal.get("tags") or [])
             if not t.startswith("attack:")
@@ -409,7 +493,7 @@ class EvolutionScout:
     ) -> EvolutionOpportunity:
         skills = sorted({m["observed_skill"] for m in members})
         target_skill = skills[0] if skills else "self_improvement"
-        return EvolutionOpportunity.new(
+        opp = EvolutionOpportunity.new(
             signal_ids=[m["signal_id"] for m in members],
             target_skill=target_skill,
             opportunity_type="quarantine",
@@ -437,6 +521,19 @@ class EvolutionScout:
             cross_skill=len(skills) > 1,
             related_promo_ids=[],
         )
+        opp._decision_payload = {  # type: ignore[attr-defined]
+            "target_skill": target_skill,
+            "decision": "quarantine",
+            "alternative_decision": "n/a",
+            "threshold_hit": f"quarantine_lane: attack_type={attack_type}",
+            "binding_threshold": f"attack_type={attack_type}",
+            "score_components": {"attack_type_count": float(len(members))},
+            "value_score": 0.0,
+            "risk_score": 1.0,
+            "evidence_quality": 0.0,
+            "testability": 0.0,
+        }
+        return opp
 
     def _normal_opportunity(
         self,
@@ -486,7 +583,10 @@ class EvolutionScout:
         value_score = _value_score(components)
         risk_score = _risk_score(components)
 
-        decision, opp_type, priority, risk_level, confidence = _decide(
+        (
+            decision, opp_type, priority, risk_level, confidence,
+            threshold_hit, binding_threshold, alternative_decision,
+        ) = _decide_explained(
             value=value_score,
             risk=risk_score,
             evidence=evidence_quality,
@@ -514,7 +614,7 @@ class EvolutionScout:
         breakdown = _score_breakdown(decision, components, value_score, risk_score, evidence_quality)
         related_promos = sorted({m["source_ref"] for m in members if m["source_type"] == "promo"})
 
-        return EvolutionOpportunity.new(
+        opp = EvolutionOpportunity.new(
             signal_ids=[m["signal_id"] for m in members],
             target_skill=target_skill,
             opportunity_type=opp_type,
@@ -536,6 +636,20 @@ class EvolutionScout:
             cross_skill=cross_skill,
             related_promo_ids=related_promos,
         )
+        decision_payload = {
+            "target_skill": target_skill,
+            "decision": decision,
+            "alternative_decision": alternative_decision,
+            "threshold_hit": threshold_hit,
+            "binding_threshold": binding_threshold,
+            "score_components": dict(components),
+            "value_score": value_score,
+            "risk_score": risk_score,
+            "evidence_quality": evidence_quality,
+            "testability": components["testability"],
+        }
+        opp._decision_payload = decision_payload  # type: ignore[attr-defined]
+        return opp
 
     def _enrich_opportunity(
         self,
@@ -683,6 +797,83 @@ def _correction_strength(content: str) -> float:
     lowered = content.lower()
     strengths = [strength for phrase, strength in CORRECTION_PHRASES if phrase.lower() in lowered]
     return max(strengths, default=0.0)
+
+
+def _first_lexicon_match(lowered: str, lexicon: dict[str, tuple[str, ...]]) -> str:
+    for label, needles in lexicon.items():
+        if any(n in lowered for n in needles):
+            return label
+    return ""
+
+
+def _extract_features(
+    content: str,
+    *,
+    source_type: str,
+    tags: set[str],
+    attack_type: str = "",
+) -> dict[str, str]:
+    """Pull a small, skill-agnostic feature set out of the memory text.
+
+    These features drive the normalized_problem_signature so that
+    different *kinds* of problem cluster apart even when their coarse
+    tags coincide.
+    """
+    lowered = content.lower()
+    features: dict[str, str] = {}
+
+    action = _first_lexicon_match(lowered, ACTION_LEXICON)
+    if action:
+        features["action"] = action
+
+    for tool in ("edit_file", "read_file", "write_file", "load_skill", "bash"):
+        if tool in lowered:
+            features["tool"] = tool
+            break
+
+    is_error = source_type.endswith("error") or "tool_failure" in tags
+    if is_error:
+        error_type = _first_lexicon_match(lowered, ERROR_TYPE_LEXICON)
+        features["error_type"] = error_type or "unknown_error"
+
+    artifact = ""
+    for label, needles in ARTIFACT_LEXICON:
+        if any(n in lowered for n in needles):
+            artifact = label
+            break
+    if artifact:
+        features["target_artifact"] = artifact
+
+    if "user_correction" in tags or "format_preference" in tags:
+        pattern = _first_lexicon_match(lowered, CORRECTION_PATTERN_LEXICON)
+        if pattern:
+            features["correction_pattern"] = pattern
+
+    # Safety type — derived for any security-tinged signal so different
+    # safety incidents bucket separately. Prefer the concrete attack_type
+    # (from quarantine / defended detection) when present.
+    if attack_type:
+        features["safety_type"] = {
+            "approval_bypass": "approval_block",
+            "secret_exfiltration": "secret_leak",
+            "prompt_injection": "injection",
+            "safety_disable": "policy_violation",
+        }.get(attack_type, attack_type)
+    elif tags & {"security_incident", "governance_related", "policy_related"}:
+        safety_type = _first_lexicon_match(lowered, SAFETY_TYPE_LEXICON)
+        if safety_type:
+            features["safety_type"] = safety_type
+
+    return features
+
+
+def _problem_signature(features: dict[str, str]) -> str:
+    """Stable, ordered signature string from extracted features. Empty
+    when no discriminating feature was found (caller falls back to
+    tags / keywords)."""
+    order = ("safety_type", "error_type", "action", "tool", "target_artifact", "correction_pattern")
+    parts = [f"{key[:4]}:{features[key]}" for key in order if features.get(key)]
+    return "|".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -854,29 +1045,133 @@ def _decide(
     target_skill: str,
     frequency_sum: int,
 ) -> tuple[str, str, str, str, str]:
+    decision, opp_type, priority, risk_level, confidence, _, _, _ = _decide_explained(
+        value=value,
+        risk=risk,
+        evidence=evidence,
+        testability=testability,
+        overfitting=overfitting,
+        has_security=has_security,
+        has_cross_cutting=has_cross_cutting,
+        target_skill=target_skill,
+        frequency_sum=frequency_sum,
+    )
+    return decision, opp_type, priority, risk_level, confidence
+
+
+def _decide_explained(
+    *,
+    value: float,
+    risk: float,
+    evidence: float,
+    testability: float,
+    overfitting: float,
+    has_security: bool,
+    has_cross_cutting: bool,
+    target_skill: str,
+    frequency_sum: int,
+) -> tuple[str, str, str, str, str, str, str, str]:
+    """Same matrix as ``_decide`` but also returns
+    ``threshold_hit`` (the rule that fired),
+    ``binding_threshold`` (the tightest inequality), and
+    ``alternative_decision`` (what would fire if the binding bound were
+    just barely missed). Used to feed ScoutDecisionStore."""
     if has_security:
-        return ("safety_review", "safety_review", "high", "high", "medium")
+        return (
+            "safety_review", "safety_review", "high", "high", "medium",
+            "security_lane: contains security_incident tag",
+            "security_incident=True",
+            "promote (if not security)",
+        )
+
+    # self_improvement gate: an unattributed self_improvement cluster
+    # never auto-promotes. The only way to promote is for a human to
+    # re-attribute the source memory to a real skill (then the next scan
+    # picks that skill as target_skill and this gate no longer applies).
+    if target_skill == "self_improvement":
+        if value >= 0.55:
+            return (
+                "request_eval", "request_eval", "medium", "medium", "low",
+                "self_improvement_gate: needs human target_skill attribution before promote",
+                "target_skill=self_improvement",
+                "promote (after human attribution)",
+            )
+        return (
+            "defer", "defer", "low", "low", "low",
+            "self_improvement_gate: low value + unattributed",
+            "target_skill=self_improvement",
+            "request_eval (after human attribution)",
+        )
 
     if value >= 0.60 and risk <= 0.35 and testability >= 0.70:
         priority = "high" if has_cross_cutting or value >= 0.75 else "medium"
-        return ("promote", "promote", priority, "medium", "medium")
+        binding = _tightest_promote_binding(value, risk, testability)
+        return (
+            "promote", "promote", priority, "medium", "medium",
+            "promote_lane: value>=0.60 ∧ risk<=0.35 ∧ testability>=0.70",
+            binding,
+            "request_eval",
+        )
 
     if value >= 0.55 and (testability < 0.70 or risk > 0.35):
-        return ("request_eval", "request_eval", "medium", "medium", "low")
+        binding = f"testability={testability:.2f}<0.70" if testability < 0.70 else f"risk={risk:.2f}>0.35"
+        return (
+            "request_eval", "request_eval", "medium", "medium", "low",
+            "request_eval_lane: value>=0.55 but testability or risk fails",
+            binding,
+            "promote",
+        )
 
     if value >= 0.40 and evidence < 0.50:
-        return ("defer", "defer", "low", "low", "low")
+        return (
+            "defer", "defer", "low", "low", "low",
+            "defer_lane: value>=0.40 but evidence<0.50",
+            f"evidence={evidence:.2f}<0.50",
+            "request_eval",
+        )
 
     if overfitting >= 0.5 and frequency_sum < 3:
-        return ("reject", "defer", "low", "low", "low")
+        return (
+            "reject", "defer", "low", "low", "low",
+            "reject_lane: overfitting>=0.5 ∧ frequency<3",
+            f"overfitting={overfitting:.2f}∧Σf={frequency_sum}",
+            "defer",
+        )
 
     if target_skill == "self_improvement" and not has_security:
-        return ("defer", "defer", "low", "low", "low")
+        return (
+            "defer", "defer", "low", "low", "low",
+            "defer_lane: target_skill==self_improvement",
+            "target_skill=self_improvement",
+            "promote (if attributed to a real skill)",
+        )
 
     if value >= 0.30:
-        return ("defer", "defer", "low", "low", "low")
+        return (
+            "defer", "defer", "low", "low", "low",
+            "defer_lane: value>=0.30",
+            f"value={value:.2f}∈[0.30,0.55)",
+            "request_eval",
+        )
 
-    return ("reject", "defer", "low", "low", "low")
+    return (
+        "reject", "defer", "low", "low", "low",
+        "reject_lane: value<0.30",
+        f"value={value:.2f}<0.30",
+        "defer",
+    )
+
+
+def _tightest_promote_binding(value: float, risk: float, testability: float) -> str:
+    """Return whichever of the three promote thresholds is currently
+    closest to flipping. Lets the decision log explain *why* this row
+    fired and where the marginal score sits."""
+    distances = {
+        f"value={value:.2f}>=0.60": value - 0.60,
+        f"risk={risk:.2f}<=0.35": 0.35 - risk,
+        f"testability={testability:.2f}>=0.70": testability - 0.70,
+    }
+    return min(distances.items(), key=lambda kv: kv[1])[0]
 
 
 # ---------------------------------------------------------------------------
