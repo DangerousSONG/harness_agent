@@ -200,6 +200,7 @@ cd web/ui && npm install && npm run dev
 | `/evolution-scan` / `/evolution-opportunities` / `/evolution-opportunity <id>` | Scout 旁路 |
 | `/promotion-batches` / `/promotion-batch <id>` / `/promotion-batch-create <opp_id...>` | Batch 合并 |
 | `/skill-optimize <batch_id>` / `/skill-edits` / `/skill-edit <id>` / `/skill-edit-validate <id>` / `/rejected-edits` | Optimizer 旁路 |
+| `/scout-decisions` / `/scout-stats [score_field=...] [threshold=...] [decision=...]` | Scout 决策日志 / 命中率统计 |
 | `/compact` / `/tasks` / `/team` / `/inbox` | 上下文 / 任务 / 队友 / 消息 |
 
 ## 主链路细节
@@ -304,11 +305,11 @@ Scout 把每条 memory 走四个阶段，决定它最终落到哪个决策桶里
 |---|---|
 | `security_incident` | 攻击词汇出现在防御性报告里（defended event） |
 | `governance_related` | 命中 `审批 / approval / reviewqueue / 审计` |
-| `memory_poisoning` | 隔离判定时自动追加 |
+| `memory_poisoning` | 隔离判定时**程序追加**（不来自关键词扫描） |
 | `policy_related` | 命中 `policy / 策略 / guideline / 规范` |
 | `rollback_related` | 命中 `rollback / 回滚 / 撤销` |
 | `tool_failure` | 命中 `traceback / exception / failed / 报错 / 异常` |
-| `user_correction` | 强纠正强度 ≥ 0.7 |
+| `user_correction` | `correction_strength ≥ 0.7` 时**程序追加**（命中 `以后 / 固定 / 默认 / always / from now on / must not / ...`） |
 | `format_preference` | 命中 `markdown / yaml / json / 格式 / 结构 / 模板` |
 | `capability_gap` | 命中 `missing capability / not supported / cannot / 需要支持` |
 
@@ -535,6 +536,8 @@ API：
 | GET | `/api/evolution/optimizer/edits[/{id}]` | 列出 / 单条 edit |
 | POST | `/api/evolution/optimizer/edits/{id}/validate` | 验证通过则创建 `skill.bounded_edit` review |
 | GET | `/api/evolution/optimizer/rejected` | 被拒 edit |
+| GET | `/api/evolution/scout/decisions[?opportunity_id=...&decision=...]` | 决策记录（默认排除 superseded） |
+| GET | `/api/evolution/scout/decisions/stats?score_field=value_score&threshold=0.6[&decision=...]` | 阈值命中率统计 |
 
 UI：**Self-Evolution → Side-Channel** tab，含 Opportunities / Batches / Edits / Rejected 四区。
 
@@ -564,30 +567,48 @@ SEARCH_API_BASE=                   # 自定义 endpoint
 
 健康检查：`GET /api/settings/crawl4ai/health` 报告 crawl4ai 安装与 Playwright 浏览器状态。
 
+### 知识库 Q&A（KB-aware chat）
+
+聊天框 `📎 知识库 N/3` 选择器至多选 3 个 KB。请求带 `context.kb_ids=[...]` 时，`chat_executor` 走 `_kb_qa` 分支：
+
+```text
+context.kb_ids → KnowledgeBaseStore.qa_context(query=message)
+   ├─ 有 index.json (BM25 chunked) → BM25Search.query 取 top-k chunk
+   └─ 无 index 旧 KB           → 朴素拼接前 N KB（兼容降级）
+              ↓ 上下文按 30 KB 预算裁剪
+              ↓ "ONLY 用提供的 KB excerpts，不得编造" 提示
+              ↓ OPENAI_MODEL 答题
+trace 显示 retrieval=bm25 + 每条 source 的 score / matched_terms
+```
+
+KB 落盘 `.knowledge_bases/<kb_id>/{meta.json, index.json, files/...}`。本地上传或 GitHub `https://github.com/<owner>/<repo>` tarball 导入；路径越权防护、单文 ≤ 2 MB、单 KB ≤ 100 MB、二进制不入 Q&A 上下文。chunker 默认 800 字符目标 + 100 overlap，CJK 取 2-gram。
+
 ## Web Workbench
 
-`web/server.py` 提供 FastAPI 后端（资产 / 审批 / 进化 / 旁路 / 实时查询 / 设置端点），`web/ui/` 为 React + Vite 工作台。主要 tab：
+`web/server.py` 提供 FastAPI 后端（资产 / 审批 / 进化 / 旁路 / 实时查询 / KB / 设置端点），`web/ui/` 为 React + Vite 工作台。左侧导航 4 项：
 
-- **Chat** — 自然语言入口，复用所有审批与版本规则
-- **Self-Evolution** — Promotions / Reviews / Versions / **Side-Channel** / Rollbacks / Safety Checks
-- **Assets** — Skills / Tools / Memories / Knowledge Bases
-- **Workspace** / **Changes** — 文件读写、命令、变更聚合
-- **Settings** — Provider 配置 + 模型连接（写入 `.env`）
+- **Chat** — 自然语言入口，复用所有审批与版本规则；输入框带"📎 知识库 N/3"选择器
+- **Workspace** — 文件读写、命令运行
+- **Assets** — 5 个 tab：Skills / Tools / Workflows / Memories / **Knowledge bases** / Eval cases
+- **Self-Evolution（治理）** — 4 个 tab：候选 PROMO / 审批队列 / 版本与回滚 / 旁路进化。顶部常驻 3 张 metric 卡（高风险待审 / 失败变更 / 审批保护变更）。审批队列内部有过滤芯片：全部 / 仅回滚 / 高严重度
+- **Settings** — Provider 配置 + 模型连接（写入 `.env` 并 in-process 生效）
 
-EN / 中文切换由 `LanguageProvider` 接管，本地存储记忆。
+EN / 中文切换由 `LanguageProvider` 接管，本地存储记忆。所有列表（Promotions / Reviews / Versions / 旁路四区 / KB 列表）统一走 `Paginator` 共享组件，每页 10 条。
 
 ## 项目结构
 
 ```text
 harness_agent/
 ├─ harness/      # REPL、主循环、prompt、任务、消息、teammate
-├─ runtime/      # backend 抽象、Skill 加载、memory、ReviewQueue、主链路 + 旁路进化、chat、web_search_provider
+├─ runtime/      # ReviewQueue / Skill 加载 / memory / 主链路进化 / chat
+│                # 旁路：evolution_scout · evolution_stores · skill_optimizer · evolution_llm · scout_decisions
+│                # 工具：skill_eval_runner · knowledge_base · kb_index · web_search_provider · tool_registry
 ├─ safety/       # SafeHarness 事件、决策、策略、guard、审计
 ├─ tools/        # OpenAI tool schema + handler 分发
 ├─ skills/       # Skill 定义、memory、eval cases
-├─ web/          # FastAPI server + React/Vite 工作台
-├─ docs/         # 设计文档（HARNESS_DESIGN / SAFEHARNESS_DESIGN / RUNTIME_BACKEND_DESIGN / UI_ACCEPTANCE）
-└─ tests/        # self_improvement + side-channel + web API 单测
+├─ web/          # FastAPI server + React/Vite 工作台 + SideChannelPage / KnowledgeBasesPage
+├─ docs/         # 设计文档 + architecture.svg
+└─ tests/        # self_improvement / evolution pipeline / scout decisions / kb / skill_eval_runner / web API
 ```
 
 ## 本地运行产物（建议加入 `.gitignore`）
