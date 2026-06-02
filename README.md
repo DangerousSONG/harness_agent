@@ -645,6 +645,7 @@ harness_agent/
 ├─ runtime/      # ReviewQueue / Skill 加载 / memory / 主链路进化 / chat
 │                # 旁路：evolution_scout · evolution_stores · skill_optimizer · evolution_llm · scout_decisions
 │                # 工具：skill_eval_runner · knowledge_base · kb_index · web_search_provider · tool_registry
+│                # 观测：run_trace · credit_assignment
 ├─ safety/       # SafeHarness 事件、决策、策略、guard、审计
 ├─ tools/        # OpenAI tool schema + handler 分发
 ├─ skills/       # Skill 定义、memory、eval cases
@@ -660,7 +661,7 @@ harness_agent/
 | `.tasks/` | 本地任务板 |
 | `.team/` | teammate 配置 + inbox |
 | `.transcripts/` | 压缩前对话记录 |
-| `.audit/` | SafeHarness 审计日志 |
+| `.audit/` | SafeHarness 审计日志 + `runs/RUN-*.json`（RunTrace + CreditAssignment） |
 | `.reviews/` | ReviewQueue item + patch preview |
 | `.skills_memory/` | 全局 memory + PROMO |
 | `.skills_versions/` | Skill 版本快照、patch、eval_result |
@@ -675,6 +676,7 @@ harness_agent/
 - 不会把 `policy_candidate` 直接写入 `SKILL.md`、不会把 secret / prompt injection / bypass approval / disable safety 沉淀为长期规则。
 - 旁路 Scout 只读，Optimizer 不能直接 apply；`edit_ops` 仅 `add/replace/delete`、section 必须为 `## Memory-derived rules`；evaluator / scorer / regression gate 不能被 Scout 或 Optimizer 修改。
 - LLM 输出经脱敏 + 注入检测，命中即回退 deterministic 路径。
+- 工具失败 / 环境问题 / 审批拦截**不会被错误沉淀为 skill 更新**：`should_generate_learning_signal` 在 RunTrace → LearningSignal 转换前拦截 `tool_failure / environment / policy_block` 单独存在的情况。
 - 所有 `SKILL.md` 进化必须可追溯：`memory → PROMO → regression REV → skill patch REV → approve → apply → version`。
 
 ## 常用验证
