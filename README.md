@@ -1,146 +1,23 @@
 # Harness Agent
 
-本地优先的 **SafeHarness + Self-Evolving Skills** 实验系统。
-
-不让 Agent 无约束地修改自己，而是验证一条 **受控自进化** 链路。
+本地优先的 **SafeHarness + Self-Evolving Skills** 实验系统。不让 Agent 无约束地修改自己，而是验证一条 **受控自进化** 链路。
 
 ## 系统架构图
 
 <p align="center">
-  <img src="docs/architecture.svg" alt="Harness Agent architecture: SafeHarness + 主链路自进化 + 旁路自进化 + 共享审批 + 本地存储" width="100%"/>
+  <img src="docs/architecture.svg" alt="Harness Agent architecture" width="100%"/>
 </p>
 
-<details>
-<summary>架构图（mermaid 备选，文本编辑器友好）</summary>
-
-```mermaid
-flowchart TB
-
-  %% =========== L1: Frontend ===========
-  subgraph L1["🖥️ 前端工作台 (Web Workbench · React + Vite)"]
-    direction LR
-    L1A["对话<br/>Chat + KB 0/3"]
-    L1B["工作区<br/>文件 · 命令 · 变更"]
-    L1C["资产库<br/>Skills · Tools · Memories · KB · Eval"]
-    L1D["Self-Evolution<br/>候选 · 审批 · 版本 · 旁路"]
-    L1E["设置<br/>Provider · Model"]
-  end
-
-  %% =========== L2: Orchestrator + SafeHarness ===========
-  subgraph L2["🛡️ 编排与运行时拦截 (Orchestrator + SafeHarness)"]
-    direction LR
-    L2A["Chat Orchestrator<br/>意图分类 · 路由 · 实时查询 · KB Q&A"]
-    L2B["SafeHarness · PolicyEngine · AuditLogger<br/>allow / warn / sanitize / require_approval / block"]
-  end
-
-  %% =========== L3: TWO evolution loops side by side ===========
-  subgraph L3["🧬 两条自进化链路 (互补 · 都受 ReviewQueue 约束)"]
-    direction LR
-
-    subgraph L3A["♻️ 主链路 · 事件驱动"]
-      direction TB
-      L3A1["Skill Memory<br/>LRN · ERR · FEAT · POL · REG"]
-      L3A2["PROMO 候选<br/>9 维 promotion_score"]
-      L3A3["/evolve-skill 向导"]
-      L3A4["Regression Gate<br/>positive + negative case"]
-      L3A1 --> L3A2 --> L3A3 --> L3A4
-    end
-
-    subgraph L3B["🛰️ 旁路 · 批量发现 (离线扫描)"]
-      direction TB
-      L3B1["EvolutionScout<br/>只读扫描 memory + PROMO"]
-      L3B2["Opportunity / Batch<br/>9 维 evolution_score"]
-      L3B3["SkillOptimizer<br/>bounded edit<br/>add/replace/delete<br/>仅 ## Memory-derived rules"]
-      L3B4["ValidationGate<br/>train / validation / regression"]
-      L3B1 --> L3B2 --> L3B3 --> L3B4
-    end
-  end
-
-  %% =========== L4: Shared approval (唯一落盘路径) ===========
-  subgraph L4["🚦 共享审批 (ReviewQueue · 唯一落盘路径)"]
-    direction LR
-    L4A["ReviewQueue<br/>pending → approved → applied<br/>类型: skill.promotion · skill.bounded_edit ·<br/>skill.regression_case · file.write · ..."]
-    L4B["Apply<br/>写入 skills/&lt;skill&gt;/SKILL.md<br/>或 eval/cases.yaml"]
-    L4C["Skill Evolution Registry<br/>版本快照 + patch.diff + eval_result"]
-  end
-
-  %% =========== L5: AI infra ===========
-  subgraph L5["⚙️ AI 基础设施 (LLM & 外部能力)"]
-    direction LR
-    L5A["OPENAI_MODEL<br/>对话 · KB Q&A · 总结"]
-    L5B["SEARCH_PROVIDER<br/>Bailian/DashScope MCP<br/>· DuckDuckGo fallback"]
-    L5C["crawl4ai<br/>并行抓取 + 早停"]
-    L5D["BM25 检索<br/>本地零依赖 · chunked"]
-  end
-
-  %% =========== L6: Local storage ===========
-  subgraph L6["💾 本地存储 (.gitignored)"]
-    direction LR
-    L6A[".reviews/"]
-    L6B[".skills_memory/"]
-    L6C[".skills_versions/"]
-    L6D[".evolution/"]
-    L6E[".knowledge_bases/"]
-    L6F[".audit/"]
-  end
-
-  %% =========== Wiring ===========
-  L1A -.-> L2A
-  L1B -.-> L2A
-  L1D -.-> L4A
-
-  L2A --> L2B
-  L2B -->|allow / sanitize| L2A
-  L2B -->|require_approval| L4A
-
-  L3A4 --> L4A
-  L3B4 -->|pass| L4A
-  L3B4 -.->|reject| L6D
-
-  L4A --> L4B --> L4C
-
-  L2A -.->|kb_ids| L5D
-  L5A -.-> L2A
-  L5B -.-> L2A
-  L5C -.-> L2A
-
-  L4A -.-> L6A
-  L4B -.-> L6C
-  L3A1 -.-> L6B
-  L3B1 -.-> L6D
-  L5D -.-> L6E
-  L2B -.-> L6F
-
-  classDef l1 fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#0f172a
-  classDef l2 fill:#ede9fe,stroke:#7c3aed,stroke-width:1.5px,color:#0f172a
-  classDef l3a fill:#d1fae5,stroke:#059669,stroke-width:1.5px,color:#0f172a
-  classDef l3b fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#0f172a
-  classDef l4 fill:#fee2e2,stroke:#dc2626,stroke-width:1.5px,color:#0f172a
-  classDef l5 fill:#fce7f3,stroke:#db2777,stroke-width:1.5px,color:#0f172a
-  classDef l6 fill:#f3f4f6,stroke:#475569,stroke-width:1.5px,color:#0f172a
-
-  class L1A,L1B,L1C,L1D,L1E l1
-  class L2A,L2B l2
-  class L3A1,L3A2,L3A3,L3A4 l3a
-  class L3B1,L3B2,L3B3,L3B4 l3b
-  class L4A,L4B,L4C l4
-  class L5A,L5B,L5C,L5D l5
-  class L6A,L6B,L6C,L6D,L6E,L6F l6
-```
-
-</details>
-
-**图例**：🖥️ 前端 · 🛡️ 编排/拦截 · ♻️ 主链路自进化 · 🛰️ 旁路自进化 · 🚦 审批落盘 · ⚙️ AI 基础设施 · 💾 本地存储
+**六层视角**：前端工作台 · 编排与 SafeHarness · 两条自进化链路（主链路事件驱动 / 旁路批量发现）· 共享审批 ReviewQueue · AI 基础设施 · 本地存储。
 
 **两条进化链路的分工**：
 
 | 维度 | ♻️ 主链路 | 🛰️ 旁路 |
 |---|---|---|
-| 触发 | 事件驱动（用户纠正 / 工具失败 / 安全事件） | 离线批量扫描（`/evolution-scan` 触发） |
-| 准入门槛 | `occurrence_count ≥ 3`（强纠正 ≥ 2） | 单次 safety 事件即可（safety_gain 优先通道） |
+| 触发 | 事件驱动（用户纠正 / 工具失败 / 安全事件） | 离线批量扫描（`/evolution-scan`） |
+| 准入 | `occurrence_count ≥ 3`（强纠正 ≥ 2） | 单次 safety 事件即可（safety_gain 通道） |
 | 改 SKILL.md 范围 | 整篇可编辑 | 仅 `## Memory-derived rules` 节 · 仅 `add/replace/delete` · 单次 ≤ 5 op |
-| 退化保护 | Regression Gate（positive + negative case） | ValidationGate（train / validation / regression 三分） |
-| 自动化 | `/evolve-skill` 推进 | Scout 一次扫描多个 Opportunity，可批量 |
+| 退化保护 | Regression Gate（positive + negative case） | ValidationGate（train / validation / regression） |
 | 共享 | **同一 ReviewQueue · 同一 Skill Evolution Registry · 同一 Approve+Apply** |
 
 核心原则：memory / PROMO / patch 都可以自动提议，但 **`SKILL.md` 的真实修改必须经过回归测试、人工审批、显式 apply 和版本登记**。
@@ -150,290 +27,152 @@ flowchart TB
 Python 3.10+。
 
 ```bash
-python -m venv .venv
-# Linux / macOS
-source .venv/bin/activate
-# Windows PowerShell
-# .\.venv\Scripts\activate
+python -m venv .venv && source .venv/bin/activate    # Windows: .\.venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env   # Windows: copy
+cp .env.example .env
 ```
 
 最少配置 `.env`：
 
 ```env
 OPENAI_API_KEY=...
-MODEL_ID=...                 # CLI / agent_harness 使用
-OPENAI_MODEL=                # web server / chat orchestrator 使用（可与 MODEL_ID 同值）
+MODEL_ID=...                 # CLI / agent_harness
+OPENAI_MODEL=                # web server / chat orchestrator（可与 MODEL_ID 同值）
 OPENAI_BASE_URL=
 
-# Chat 实时查询的搜索 provider（优先级：Bailian / DashScope > DuckDuckGo no-key fallback）
+# 实时查询 provider 优先级：Bailian / DashScope > DuckDuckGo no-key fallback
 SEARCH_PROVIDER=bailian
 DASHSCOPE_API_KEY=...
-SEARCH_TOOL_NAME=auto        # MCP tool 自动发现；或固定如 alibaba_web_search
+SEARCH_TOOL_NAME=auto        # MCP tool 自动发现
 
 # 旁路 Scout / Optimizer 默认 deterministic；接 LLM：
 # EVOLUTION_LLM_ENABLED=1
 ```
 
-启动 CLI：
+启动：
 
 ```bash
-python harness/agent_harness.py
-```
-
-启动 Web 工作台（FastAPI + Vite）：
-
-```bash
-uvicorn web.server:create_app --factory --reload --port 8000
-cd web/ui && npm install && npm run dev
+python harness/agent_harness.py                                   # CLI
+uvicorn web.server:create_app --factory --reload --port 8000      # Web 后端
+cd web/ui && npm install && npm run dev                           # Web 前端
 ```
 
 ## REPL 命令
 
 | Command | Description |
 | --- | --- |
-| `/reviews` / `/review <id>` / `/approve <id>` / `/apply <id>` / `/reject <id>` | ReviewQueue 操作 |
-| `/promotions` / `/promotion <promo_id>` | 列出 / 查看 PROMO |
-| `/evolve-skill <promo_id>` | 推进 PROMO 到下一步（regression / skill.promotion） |
-| `/skill-versions <skill>` / `/skill-version <skill> <ver>` / `/rollback-skill <skill> <ver>` | 版本与回滚 |
-| `/evolution-scan` / `/evolution-opportunities` / `/evolution-opportunity <id>` | Scout 旁路 |
-| `/promotion-batches` / `/promotion-batch <id>` / `/promotion-batch-create <opp_id...>` | Batch 合并 |
-| `/skill-optimize <batch_id>` / `/skill-edits` / `/skill-edit <id>` / `/skill-edit-validate <id>` / `/rejected-edits` | Optimizer 旁路 |
-| `/scout-decisions` / `/scout-stats [score_field=...] [threshold=...] [decision=...]` | Scout 决策日志 / 命中率统计 |
-| `/compact` / `/tasks` / `/team` / `/inbox` | 上下文 / 任务 / 队友 / 消息 |
+| `/reviews` · `/review <id>` · `/approve <id>` · `/apply <id>` · `/reject <id>` | ReviewQueue |
+| `/promotions` · `/promotion <id>` · `/evolve-skill <id>` | PROMO / 主链路推进 |
+| `/skill-versions <skill>` · `/skill-version <skill> <ver>` · `/rollback-skill <skill> <ver>` | 版本与回滚 |
+| `/evolution-scan` · `/evolution-opportunities` · `/evolution-opportunity <id>` | Scout 旁路 |
+| `/promotion-batches` · `/promotion-batch <id>` · `/promotion-batch-create <opp_id...>` | Batch 合并 |
+| `/skill-optimize <batch_id>` · `/skill-edits` · `/skill-edit <id>` · `/skill-edit-validate <id>` · `/rejected-edits` | Optimizer 旁路 |
+| `/scout-decisions` · `/scout-stats [score_field=...] [threshold=...] [decision=...]` | 决策日志 / 命中率 |
+| `/compact` · `/tasks` · `/team` · `/inbox` | 上下文 / 任务 / 队友 / 消息 |
 
 ## 主链路细节
 
-### SafeHarness
-`RuntimeEvent` → `PolicyEngine` → 返回 `allow / warn / sanitize / require_approval / block`，决定经 `AuditLogger` 落盘到 `.audit/`。命中 `require_approval` 时不执行原始动作，转而创建 `REV-xxxx`。切策略：`SAFETY_POLICY=high_security python harness/agent_harness.py`。
+**SafeHarness** — `RuntimeEvent → PolicyEngine → allow / warn / sanitize / require_approval / block`，决策经 `AuditLogger` 落到 `.audit/`。`require_approval` 不执行原始动作，转为创建 `REV-xxxx`。`SAFETY_POLICY=high_security` 切换严格策略。
 
-### ReviewQueue
-落盘位置：`.reviews/REV-*.json`（item）+ `.reviews/patches/REV-*.diff`（patch preview）。状态：`pending → approved → applied / rejected`。`/approve` 只生成 diff 不改文件，`/apply` 才落盘。`load_skill` 类无文件 review 在 `/apply` 时执行 load 并设 `last_loaded_skill`；`edit_file` `old_text=""` 会拒绝生成可应用的伪 diff。
+**ReviewQueue** — `.reviews/REV-*.json` + `.reviews/patches/REV-*.diff`。`pending → approved → applied / rejected`。`/approve` 只生成 diff；`/apply` 才落盘。
 
-### Skill Memory
-入口 `classify_and_record_learning_signal`：自动归属 / 脱敏 / 去重 / 污染拦截。落盘到 `skills/<skill>/memory/{LEARNINGS,ERRORS,FEATURE_REQUESTS,POLICY_CANDIDATES,REGRESSION_TESTS}.md`。**不沉淀**：secret · token · prompt injection · bypass approval · disable safety · 一次性偏好。
+**Skill Memory** — `classify_and_record_learning_signal` 自动归属 / 脱敏 / 去重 / 污染拦截。落盘 `skills/<skill>/memory/{LEARNINGS,ERRORS,FEATURE_REQUESTS,POLICY_CANDIDATES,REGRESSION_TESTS}.md`。**不沉淀**：secret · token · prompt injection · bypass approval · disable safety · 一次性偏好。
 
-### PROMO 候选
-
-相似 memory 合并并累计 `occurrence_count`。综合 `promotion_score` 决定升级路径：
+**PROMO 候选** — 相似 memory 合并并累计 `occurrence_count`，9 维 `promotion_score` 决定升级路径：
 
 | 触发 | 输出 |
 |---|---|
 | `occurrence_count ≥ 3` + 可迁移 + 低风险 | `skill_rule` PROMO |
-| 强纠正（"以后/固定/默认/不要再/可复用"）+ 可测试，`occurrence_count ≥ 2` | `skill_rule` PROMO |
+| 强纠正（"以后/固定/默认/不要再/可复用"）+ 可测试，`count ≥ 2` | `skill_rule` PROMO |
 | high-severity safety / `policy_candidate` | `policy_review`（**不直接进 SKILL.md**） |
 | 低归属置信度 / secret / 注入 / bypass approval / disable safety | 不生成 |
 
-PROMO 存 `.skills_memory/PROMOTION_CANDIDATES.md`。
+**`/evolve-skill <promo_id>`** — 按状态推进：缺 regression → `skill.regression_case` review；有 coverage → `skill.promotion` review；完成 → 显示版本。
 
-### `/evolve-skill <promo_id>`
-流程向导，按状态推进 — 缺 regression → 创建 `skill.regression_case` review；有 coverage → 创建 `skill.promotion` review；已完成 → 显示版本。**全程不绕 ReviewQueue，不静默改 `SKILL.md`**。
+**Regression Gate** —
+1. *覆盖检查*：`skill.promotion` apply 前在 `skills/<skill>/eval/cases.yaml` 必须找到该 PROMO 的 positive + negative case，否则 apply 拒绝。
+2. *Eval 运行*（`runtime/skill_eval_runner.py`）：apply **写盘前**对 *proposed* SKILL.md 跑一次 `cases.yaml`。失败 → 拒绝、文件不动；通过 → `RunReport` 写入 `eval_result.json`。
+   > Deterministic 模式只校验 SKILL.md 文本层面（`target_rule` 是否落到 `## Memory-derived rules`）。`expected_behavior` / `negative_assertions` 描述的是 *agent 运行时输出*，文本检测无法保真，因此 *记录但不强制*；LLM evaluator 接口已留好。
 
-### Regression Gate
-
-两层把关：
-
-1. **覆盖检查** — `skill.promotion` apply 前必须在 `skills/<skill>/eval/cases.yaml` 找到该 PROMO 的 positive case（新规则生效）+ negative case（不污染其他任务）。缺失 → apply 拒绝。
-2. **Eval 运行**（`runtime/skill_eval_runner.py`）— `skill.promotion` / `skill.bounded_edit` apply **写盘之前**对 *proposed* SKILL.md 跑一次 `cases.yaml`。失败 → apply 拒绝，文件不动。通过的 `RunReport`（pass/fail、失败原因、`covered_promo_ids`、`covered_rules`）写入 `eval_result.json`。
-
-每条 case 的字段（新旧别名都接受）：
-
-| 字段 | 含义 |
-|---|---|
-| `id` | case 标识 |
-| `input` | 示例输入（信息字段，记录用） |
-| `expected_behavior`（别名 `must_include`） | 期望 *agent 输出* 包含的 token |
-| `negative_assertions`（别名 `must_not_include`） | 期望 *agent 输出* 不包含的 token |
-| `target_rule` | 本 case 守护的具体规则，必须出现在 `## Memory-derived rules` |
-| `source_promo_id` | 追溯到 PROMO |
-
-> Deterministic 模式只校验 SKILL.md 文本层面：`target_rule` 是否落到 `## Memory-derived rules`。`expected_behavior` / `negative_assertions` 描述的是 *agent 运行时输出*，文本检测无法保真复现，因此 *记录但不强制*；这部分要等 LLM evaluator 上线（runner 接口已留好）。
-
-### Skill Evolution Registry
-`skill.promotion` apply 成功后写 `.skills_versions/<skill>/`：`versions.jsonl` + `<version>/{SKILL.md, patch.diff, eval_result.json}`。**Runtime 加载源始终是 `skills/<skill>/SKILL.md`**；`.skills_versions/` 仅用于审计与回滚（rollback 也走 review）。
-
-### 端到端示例
-
-```text
-/promotions
-/evolve-skill PROMO-F2C535BB    # → REV regression_case
-/approve REV-xxxx
-/apply REV-xxxx
-/evolve-skill PROMO-F2C535BB    # → REV skill.promotion
-/approve REV-yyyy
-/apply REV-yyyy                 # → recorded skill version v0.1.1
-/skill-versions markdown_writer
-```
+**Skill Evolution Registry** — `skill.promotion` apply 成功后写 `.skills_versions/<skill>/`：`versions.jsonl` + `<version>/{SKILL.md, patch.diff, eval_result.json}`。**Runtime 加载源始终是 `skills/<skill>/SKILL.md`**；`.skills_versions/` 仅用于审计与回滚（rollback 也走 review）。
 
 ## 旁路 Scout + Optimizer
 
-旁路是主链路的**离线批量补丁**通道。Scout 只读扫描可进化的机会；Optimizer 受约束生成 bounded edit；ValidationGate 拦截退化；通过则汇入主链路 ReviewQueue。三层硬约束：
+旁路是主链路的**离线批量补丁**通道。三层硬约束：
 
-- **Scout 只读** — 扫 `.skills_memory/`、`skills/*/memory/`、`PROMOTION_CANDIDATES.md`；不写 `SKILL.md` / `eval/cases.yaml`；不创建 review；不改 evaluator / scorer / regression gate
-- **Optimizer 受约束写** — 仅在 `.evolution/skill_edits/` 草拟；`edit_ops ∈ {add, replace, delete}`；`target_section == "## Memory-derived rules"`；单次 ≤ 5 op，每 op ≤ 500 字符；对象上没有 `apply` / `write_skill`；**`decision in {quarantine, safety_review}` 或 signal `quarantined=True` 一律拒绝提案**
-- **ValidationGate 把守** — 失败 → `.evolution/rejected_edits/` 归档，不创建 review；通过 → `submit_review` 创建 `skill.bounded_edit` review，由人审批后 apply
+- **Scout 只读** — 扫 `.skills_memory/` + `skills/*/memory/` + `PROMOTION_CANDIDATES.md` + `.audit/runs/`；不写 `SKILL.md` / `eval/cases.yaml`；不创建 review。
+- **Optimizer 受约束写** — 仅在 `.evolution/skill_edits/` 草拟；`edit_ops ∈ {add, replace, delete}`，`target_section == "## Memory-derived rules"`，单次 ≤ 5 op，每 op ≤ 500 字符；`decision ∈ {quarantine, safety_review}` 或 signal `quarantined=True` 一律拒绝提案。
+- **ValidationGate 把守** — 失败 → `.evolution/rejected_edits/` 归档；通过 → `submit_review` 创建 `skill.bounded_edit` review，人审批后 apply。
 
 ### Scout 四段式判断
 
-Scout 把每条 memory 走四个阶段，决定它最终落到哪个决策桶里。源码：`runtime/evolution_scout.py`。
+源码：`runtime/evolution_scout.py`。
 
 ```text
-① 信号采集 + 硬过滤   → 攻击载荷脱敏后归档，禁入 Optimizer
+① 信号采集 + 硬过滤   → 攻击载荷脱敏归档，禁入 Optimizer
 ② 语义标签 (9 类)     → 给信号打可解释的语义标签
-③ 跨 skill 聚类       → 共享 cluster_key，先聚类后挑 target_skill
-④ 证据 × 价值 × 风险  → 三个独立分数代替单一 score
-⑤ 决策矩阵            → 六桶决策：promote / request_eval / defer
-                          / reject / safety_review / quarantine
+③ 跨 skill 聚类       → normalized_problem_signature 共享 cluster_key
+④ 证据 × 价值 × 风险  → 三个独立分数，外加 testability
+⑤ 决策矩阵            → promote / request_eval / defer / reject /
+                          safety_review / quarantine
 ```
 
-#### ① 信号采集 + 硬过滤
+**信号源（3 个）**：
 
-| 项 | 规则 |
-|---|---|
-| 扫描文件 | 全局：`.skills_memory/GLOBAL_{LEARNINGS,ERRORS,FEATURE_REQUESTS}.md` + `PROMOTION_CANDIDATES.md`；按 skill：`skills/<skill>/memory/{LEARNINGS,ERRORS,FEATURE_REQUESTS,POLICY_CANDIDATES,REGRESSION_TESTS}.md` |
-| 攻击检测 | `ATTACK_PATTERNS` 按攻击类型分类：提示注入 · 绕过审批 · 关闭安全 · 密钥外泄 |
-| 隔离规则 | 命中攻击载荷 → 信号标记 `quarantined=True`，content 中的攻击短语原地替换为 `[REDACTED_ATTACK:<类型>]`，但 `source_path` / `source_ref` 完整保留可追溯 |
-| 防御性事件 | 攻击载荷出现在 error 记录里且配 `blocked / rejected / 已拦截` 等防御标记 → 不全隔离，仅打 `security_incident` 标签走 safety_review |
-| 强纠正强度 | 命中 `以后 (0.9) / 固定 (0.9) / 默认 (0.8) / 不要再 (0.95) / from now on (0.95) / always (0.9) / must not (0.85) / …`；`≥ 0.7` 自动追加 `user_correction` 标签 |
-| 去重 | `(source_path, source_ref)` 唯一、幂等；re-scan 会刷新标签但不重建 `signal_id` |
-| 内容截断 | content 上限 1500 字符 |
-
-#### ② 语义标签（9 类，取代旧的单一 `safety` 标签）
-
-| 标签 | 触发条件 |
-|---|---|
-| `security_incident` | 攻击词汇出现在防御性报告里（defended event） |
-| `governance_related` | 命中 `审批 / approval / reviewqueue / 审计` |
-| `memory_poisoning` | 隔离判定时**程序追加**（不来自关键词扫描） |
-| `policy_related` | 命中 `policy / 策略 / guideline / 规范` |
-| `rollback_related` | 命中 `rollback / 回滚 / 撤销` |
-| `tool_failure` | 命中 `traceback / exception / failed / 报错 / 异常` |
-| `user_correction` | `correction_strength ≥ 0.7` 时**程序追加**（命中 `以后 / 固定 / 默认 / always / from now on / must not / ...`） |
-| `format_preference` | 命中 `markdown / yaml / json / 格式 / 结构 / 模板` |
-| `capability_gap` | 命中 `missing capability / not supported / cannot / 需要支持` |
-
-> 关键修正：`approval / policy / review` 等普通治理词**只**打 `governance_related` / `policy_related`，**不**升级为 `security_incident` —— 普通治理词不会再被误判为攻击。
-
-#### ③ 跨 skill 聚类（normalized_problem_signature）
-
-`cluster_key` 不再只用 tag，而是优先用 **问题签名**——从 content 抽取的一组 skill-无关特征拼成：
-
-| 特征 | 来源 | 例 |
+| 源 | 内容 | 备注 |
 |---|---|---|
-| `action` | 动作动词 | edit / read / write / run / parse / format |
-| `tool` | 命中工具名 | edit_file / read_file / bash / load_skill |
-| `error_type` | error 信号的错误归类 | policy_block / parse_error / timeout / missing_capability / permission |
-| `target_artifact` | 资源类别（非具体路径） | tool_file / skill_file / eval_file / env_file / config_file |
-| `correction_pattern` | 纠正语气类型 | prohibition / default / structure / naming |
-| `safety_type` | 安全事件类型 | secret_leak / approval_block / injection / policy_violation |
+| 全局 + skill memory | `LEARNINGS / ERRORS / FEATURE_REQUESTS / POLICY_CANDIDATES / REGRESSION_TESTS` | 按 ID 解析 |
+| PROMO 候选 | `PROMOTION_CANDIDATES.md` | 自动加权可靠度 |
+| **RunTrace signals**（`runtime/run_trace_scanner.py`） | `.audit/runs/*.json` → `skill_gap / rule_not_applied / positive_preference` | 仅候选；`tool_failure / environment / policy_block / unknown` 在 scanner 上游已过滤 |
 
-签名形如 `sig:safe:approval_block|err:policy_block|tool:edit_file|arti:tool_file`，**不含 skill 名也不含具体文件路径**——这样：
+**Stage 1 安全过滤** — `ATTACK_PATTERNS` 分类：提示注入 · 绕过审批 · 关闭安全 · 密钥外泄。命中 → 信号 `quarantined=True`，content 中攻击短语替换为 `[REDACTED_ATTACK:<类型>]`，但 `source_path` / `source_ref` 完整保留可追溯。攻击载荷出现在 error 记录里并配 `blocked / rejected / 已拦截` 等防御标记 → 仅打 `security_incident` 标签走 safety_review，不全隔离。
 
-- 同一类问题在不同 skill 上 → 签名相同 → 合并 → 可迁移度高 ✓
-- 同 tag 但不同根因（policy 拦截 vs JSON 解析失败） → 签名不同 → **不**合并，避免误合并 / frequency 虚高 ✓
-- 不同 `safety_type` 的安全事件 → 签名不同 → 各自单独分桶，不会混成一类 ✓
+**Stage 2 语义标签**（9 类，取代旧的单一 `safety`）：`security_incident / governance_related / memory_poisoning / policy_related / rollback_related / tool_failure / user_correction / format_preference / capability_gap`。强纠正（`以后 0.9 / 固定 0.9 / 默认 0.8 / 不要再 0.95 / from now on 0.95 / must not 0.85 / ...`）`≥ 0.7` 自动追加 `user_correction`。
 
-无可抽取特征时退化到 `tag:...`，再退化到 `kw:...`。
+> 关键修正：`approval / policy / review` 等普通治理词**只**打 `governance_related` / `policy_related`，**不**升级为 `security_incident`。
 
-聚类后流程：
+**Stage 3 聚类** — `cluster_key` 优先使用从 content 抽取的 **问题签名**：`action / tool / error_type / target_artifact / correction_pattern / safety_type`。签名形如 `sig:safe:approval_block|err:policy_block|tool:edit_file`，**不含 skill 名也不含具体文件路径**——同类问题在不同 skill 上能合并（→ 高可迁移度），同 tag 但不同根因（policy 拦截 vs JSON 解析）**不**合并。无可抽取特征时退化到 `tag:...` / `kw:...`。
 
-```text
-按 cluster_key（签名优先）全局聚类
-   ↓ 统计聚类内 observed_skill 分布 → 设置 cross_skill 标志
-   ↓ 选 target_skill（出现次数最多，平手时优先非 self_improvement）
-```
+聚类后 `target_skill` 选 `observed_skill` 分布出现次数最多者（平手时优先非 `self_improvement`）。可迁移度按 skill 数计：3+ 1.0 / 2 0.85 / 1+跨切标签 0.65 / 单 skill 0.40。
 
-| 观察到的 skill 数 | 可迁移度 (`transferability`) |
+> **`self_improvement` 不自动晋升**：无真实 skill 归属的聚类，决策矩阵在 promote 之前拦截 —— 高价值降为 `request_eval`（"需人工标注 target_skill"），低价值 `defer`。RunTraceScanner 在 signal 上游已经把 `needs_human_label=true` 的候选强制 `observed_skill=self_improvement`，触发同一道闸。
+
+**Stage 4 评分**（每项 [0,1]）—
+- `evidence_quality` = 0.30·来源可靠度 + 0.25·独立出现次数 + 0.25·纠正强度 + 0.10·失败可复现度 + 0.10·调用链支撑
+- `value_score`     = 0.25·证据 + 0.15·{频率, 可迁移度, 影响, 可测试度} + 0.10·skill_confidence + 0.05·safety_gain
+- `risk_score`      = 0.25·回归 + 0.20·{过拟合, 策略} + 0.15·范围 + 0.10·{成本, 不确定性}
+- `testability`     复合分（非元标签 0.20 + safety/governance 0.15 + 0.30·correction + format/capability 0.25 + 可复现 tool_failure 0.20 + PROMO 背书 0.10）
+
+**Stage 5 决策矩阵**（自顶向下，先匹配先用）：
+
+| 触发条件 | 决策 |
 |---|---|
-| ≥ 3 个 | 1.0 |
-| 2 个 | 0.85 |
-| 1 个 skill + 跨切关注点标签（`format_preference` / `capability_gap` / `tool_failure` / `governance_related`） | 0.65 |
-| 1 个 skill 且无跨切关注点标签 | 0.40 |
+| `security_incident` 标签 | `safety_review` |
+| `value ≥ 0.60 ∧ risk ≤ 0.35 ∧ testability ≥ 0.70` | `promote` |
+| `value ≥ 0.55 ∧ (testability < 0.70 ∨ risk > 0.35)` | `request_eval` |
+| `value ≥ 0.40 ∧ evidence < 0.50` | `defer` |
+| `overfitting ≥ 0.5 ∧ Σf < 3` | `reject` |
+| `target_skill = self_improvement` 非 security | `defer` |
+| `value ≥ 0.30` | `defer` |
+| 其他 | `reject` |
 
-> **self_improvement 不自动晋升**：若聚类的 `target_skill` 解析为 `self_improvement`（即没有真实 skill 归属），决策矩阵在 promote 之前就拦截 —— 高价值降级为 `request_eval`（提示"需人工标注 target_skill"），低价值 `defer`。只有人工把来源 memory 的 Target Skill 改成真实 skill，下次扫描才可能 promote。
+quarantine 桶在 Stage 1 单独处理，固定 `decision=quarantine`、优先级 high，`must_not_regress` 写明"禁止把攻击载荷沉淀进 skill rule"。
 
-#### ④ 证据 × 价值 × 风险
+**派生字段** — `should_improve` 按 tag 类型生成具体表述；`must_not_regress` 默认两条（不放宽安全策略、不绕 ReviewQueue），按 tag 追加。Batch 合并必须同 skill；跨 skill 抛 `ValueError`。
 
-**证据质量 `evidence_quality`**（取值 0..1）
+### Optimizer 受约束补丁
 
-| 子项 | 权重 | 取值 |
-|---|---|---|
-| 来源可靠度 | 0.30 | PROMO 1.0 / error 0.8 / learning 0.7 / 其他 0.5–0.6 |
-| 独立出现次数 | 0.25 | `min(1, 唯一 source_ref 数 / 3)` |
-| 用户纠正强度 | 0.25 | 聚类内 `correction_strength` 最大值 |
-| 失败可复现度 | 0.10 | 含 `tool_failure` 且独立出现 ≥ 2 → 0.8；只含 `tool_failure` → 0.5；其他 0.3 |
-| 调用链支撑 | 0.10 | 任一信号带 `tool:*` 标签 → 0.7；否则 0.3 |
+`propose()` 接受 `batch_id` 或 `opportunity_id`；`decision=reject` 让整次提案被拒。
 
-**价值分 `value_score`** = `0.25·证据 + 0.15·{频率, 可迁移度, 影响, 可测试度} + 0.10·skill_confidence + 0.05·safety_gain`
-
-**风险分 `risk_score`** = `0.25·回归风险 + 0.20·{过拟合风险, 策略风险} + 0.15·范围风险 + 0.10·{成本增量, 不确定性}`
-
-| 风险子项 | 取值 |
-|---|---|
-| 回归风险 | 聚类含 PROMO → 0.3；否则 0.4 |
-| 过拟合风险 | `Σf ≤ 1` → 0.6；低优先级且 `Σf < 3` → 0.5；其他 0.2 |
-| 策略风险 | 含治理/策略标签且无 PROMO 背书 → 0.5；其他 0.15 |
-| 范围风险 | 含 `capability_gap` → 0.55；其他 0.30 |
-| 成本增量 | 常量 0.10 |
-| 不确定性 | 证据 < 0.5 → 0.30；其他 0.15 |
-
-**可测试度 `testability`**（复合分；取代旧的"是否含 PROMO"二值判断）
-
-| 子项 | 贡献（上限） |
-|---|---|
-| 含非元标签（即有具体的 should_improve 候选） | +0.20 |
-| 含 security / governance / policy 标签（即有具体的 must_not_regress） | +0.15 |
-| `0.30 × correction_strength` | +0.30 |
-| 含 `format_preference` 或 `capability_gap`（可判定的输出形态） | +0.25 |
-| 含 `tool_failure` 且独立出现 ≥ 2（可复现的负例） | +0.20 |
-| 含 PROMO 背书 | +0.10 |
-
-总分 clamp 到 [0, 1]。
-
-#### ⑤ 决策矩阵（自顶向下，先匹配先用）
-
-| 触发条件 | 决策 | 优先级 |
-|---|---|---|
-| 含 `security_incident` 标签 | `safety_review` | **高** |
-| `价值 ≥ 0.60` 且 `风险 ≤ 0.35` 且 `可测试度 ≥ 0.70` | `promote` | **高**（跨 skill 或价值 ≥ 0.75）/ 中 |
-| `价值 ≥ 0.55` 且（`可测试度 < 0.70` 或 `风险 > 0.35`） | `request_eval` | 中 |
-| `价值 ≥ 0.40` 且 `证据 < 0.50` | `defer` | 低 |
-| `过拟合 ≥ 0.5` 且 `Σf < 3` | `reject` | 低 |
-| `target_skill == self_improvement` 且无 security | `defer` | 低 |
-| `价值 ≥ 0.30` | `defer` | 低 |
-| 其他 | `reject` | 低 |
-
-quarantine 桶在 ① 阶段单独处理，不经决策矩阵；它产出的 opportunity 固定 `decision="quarantine"`、优先级 high，并在 `must_not_regress` 中写明"禁止把攻击载荷沉淀进 skill rule"。
-
-#### 派生字段
-
-- `should_improve` — 按 tag 类型生成具体表述（`tool_failure` → "减少在类似输入下重复抛同一类错误"；`format_preference` → "把用户偏好的格式固化到 Memory-derived rules"；…）
-- `must_not_regress` — 默认两条（不放宽安全策略、不绕 ReviewQueue），按 tag 追加（security 加 safety_gain；governance 加禁止治理短语写进 SKILL.md；rollback 加不破坏 rollback 路径）
-- **Batch 合并** — 必须同 skill；`priority`/`risk_level` 取并集最大档；`should_improve`/`must_not_regress`/`promo_ids` 取并集；跨 skill 抛 `ValueError`
-
-### Optimizer 受约束补丁规则
-
-`propose()` 接受 `batch_id` 或 `opportunity_id`；任何 `decision=reject` 的 opportunity 让整次提案被拒；`signal_ids` 必须非空。
-
-**`edit_ops` 形态**（`evolution_stores.validate_edit_ops`）
-
-- `op ∈ {add, replace, delete}`，`target_section == "## Memory-derived rules"`
-- 单次提案 ≤ 5 op；每 op `text` / `replace_text` ≤ 500 字符
-- `add` / `delete` 要求 `text` 非空；`replace` 要求 `text` 和 `replace_text` 都非空
-
-**ValidationGate 默认评分**
-
-| 分项 | 计算 |
-|---|---|
-| `train_score` | 常量 0.6 |
-| `validation_score` | 起 0.5，新 bullet 已在 SKILL.md 出现 −0.05，否则 +0.10，clamp [0, 1] |
-| `regression_score` | 命中禁词（`disable safety / bypass approval / ignore previous`）⇒ 0.0；`cases:` 非空 ⇒ 0.75；否则 0.6 |
-| **判定** | `validation_score ≥ 0.5` **且** `regression_score ≥ 0.5` |
+**ValidationGate 默认评分** —
+- `train_score`: 常量 0.6
+- `validation_score`: 起 0.5；新 bullet 已在 SKILL.md 出现 −0.05，否则 +0.10，clamp [0,1]
+- `regression_score`: 命中禁词（`disable safety / bypass approval / ignore previous`） ⇒ 0.0；`cases:` 非空 ⇒ 0.75；否则 0.6
+- 判定：`validation_score ≥ 0.5 ∧ regression_score ≥ 0.5`
 
 ### LLM 接入（opt-in）
 
-设 `EVOLUTION_LLM_ENABLED=1` + `OPENAI_API_KEY` + `OPENAI_MODEL` 即开。默认关闭走 deterministic 路径。
+设 `EVOLUTION_LLM_ENABLED=1` + `OPENAI_API_KEY` + `OPENAI_MODEL` 即开。默认 deterministic。
 
 | 接入点 | 做什么 | 仍然不能做 |
 |---|---|---|
@@ -441,132 +180,59 @@ quarantine 桶在 ① 阶段单独处理，不经决策矩阵；它产出的 opp
 | `LLMBulletWriter` | 生成 1–3 条 bullet（≤ 240 字符/条） | 突破 `add/replace/delete`、扩 section、绕 `validate_edit_ops` |
 | `LLMValidationGate` | 给 train / validation / regression 三分 | 直接 apply、跳 ReviewQueue、写 `SKILL.md` |
 
-所有 LLM 输出经 `redact_secrets` + `looks_like_memory_poisoning` 清洗，命中污染字样 → 丢弃 → 回退 deterministic。网络 / 解析错误也自动回退，不阻塞 pipeline。
+所有 LLM 输出经 `redact_secrets` + `looks_like_memory_poisoning` 清洗，命中污染字样 → 丢弃 → 回退 deterministic。网络/解析错误同样回退。
 
 ### 落盘 & 追溯
 
 ```text
 .evolution/
-├─ signals/                # SIG-xxxxxxxx.json
-├─ opportunities/          # OPP-xxxxxxxx.json
-├─ batches/                # BATCH-xxxxxxxx.json
-├─ skill_edits/            # EDIT-xxxxxxxx.json
-├─ validation_results/     # VAL-xxxxxxxx.json
-├─ rejected_edits/         # EDIT-xxxxxxxx.json
-└─ scout_decisions/        # DEC-xxxxxxxx.json
+├─ signals/  opportunities/  batches/  skill_edits/
+├─ validation_results/  rejected_edits/
+└─ scout_decisions/
 ```
 
 追溯链：`LearningSignal.source_path:source_ref` → `Opportunity.signal_ids` → `Batch.opportunity_ids + promo_ids` → `SkillEditProposal.source_*_ids` → `review.metadata.source_edit_id`。
 
 ### 运行级归因（RunTrace + CreditAssignment）
 
-每次 `ChatOrchestrator.handle` 都会生成一条 `RUN-xxxxxxxx`，落盘到 `.audit/runs/<run_id>.json`：
+每次 `ChatOrchestrator.handle` 生成一条 `RUN-xxxxxxxx`，落盘 `.audit/runs/<run_id>.json`：
 
 | 字段 | 含义 |
 |---|---|
-| `task` / `intent` / `selected_skill` | 用户输入、意图分类、最终选择的 skill |
-| `retrieved_memories` / `applied_rules` | 这次运行命中的 memory / rule（信息字段） |
-| `tool_calls[]` | 每次工具调用的 `tool_name / status / error / error_class` |
+| `task / intent / selected_skill` | 输入 + 意图 + 最终 skill |
+| `retrieved_memories / applied_rules` | 命中的 memory / rule |
+| `tool_calls[]` | `tool_name / status / error / error_class` |
 | `policy_decisions[]` | SafeHarness 决策 + 工具注册检查 |
-| `final_output_summary` | 输出前 240 字符 |
-| `outcome` | `success / failure / partial / blocked / unknown` |
+| `final_output_summary` / `outcome` | 输出前 240 字符；`success / failure / partial / blocked / unknown` |
 | `credit_assignment` | 见下 |
 
-**Credit assignment**（`runtime/credit_assignment.py`，deterministic）按规则把失败归因到 8 类来源：
+**Credit assignment**（`runtime/credit_assignment.py`，deterministic）— 8 类 `failure_source`：`environment / policy_block / tool_failure / rule_not_applied / bad_skill_selection / bad_retrieval / skill_gap / user_requirement_change`。成功运行同时记录 4 类 `positive_credit`：`skill_selected_correctly / memory_helpful / rule_effective / tool_successful`。
 
-| failure_source | 触发 |
-|---|---|
-| `environment` | tool 失败 + `error_class ∈ {auth, not_configured, network, timeout, permission, not_found}` |
-| `policy_block` | outcome=blocked 或 policy_decision=block |
-| `tool_failure` | tool 失败 + `error_class ∈ {invalid_input, unknown}` |
-| `rule_not_applied` | outcome=failure、有 selected_skill、无 env/policy/tool 失败 |
-| `bad_skill_selection` | outcome=failure、没选中 skill |
-| `bad_retrieval` | selected_skill 有但 retrieved_memories 空 |
-| `skill_gap` / `user_requirement_change` | 预留给 LLM 评判，暂不自动判 |
-
-成功运行同时记录 `positive_credits`：`skill_selected_correctly` / `memory_helpful` / `rule_effective` / `tool_successful`。
-
-**关键护栏 `should_generate_learning_signal(credit)`** —— 只有满足以下任一条件才允许把 RunTrace 转成 LearningSignal：
+**关键护栏 `should_generate_learning_signal(credit)`** —— 只有满足以下任一才允许把 RunTrace 转 LearningSignal：
 
 - skill-side blame（`skill_gap / bad_skill_selection / rule_not_applied / bad_retrieval`）置信度 ≥ medium
 - 任一 `positive_credit` 命中
 
-`tool_failure / environment / policy_block` 单独存在时一律返回 False —— 工具/环境/审批问题不会被错误沉淀为 skill 更新。
+`tool_failure / environment / policy_block` 单独存在时一律 False —— 工具/环境/审批问题不会被错误沉淀为 skill 更新。
+
+**接入 Scout（`runtime/run_trace_scanner.py`）** — 把符合上述护栏 + 主因 `∈ {skill_gap, rule_not_applied}` 或 positive_credit + 用户偏好短语（"以后这样" / "固定这样" / "记住这个格式" / "以后都按这个"）的 run 转成候选 signal，`source_type=run_trace`、`source_ref=RUN-xxxxxxxx`。injection 类内容 → `quarantined=True`；`skill_gap` 且无 `selected_skill` → `target_skill=self_improvement` + `needs_human_label=true`，触发 `self_improvement_gate` 永远拒绝 promote。
 
 REST：
 
 | Method | Path | 作用 |
 |---|---|---|
-| GET | `/api/runs?limit=20&outcome=&intent=&should_emit=` | 按时间倒序列出 run 摘要（含 outcome / primary_failure_source / should_emit_learning_signal / credit recommended_action）。支持按 outcome、intent 子串、should_emit 过滤 |
+| GET | `/api/runs?limit=20&outcome=&intent=&should_emit=` | 倒序列出 run 摘要（含 `primary_failure_source` / `should_emit_learning_signal` / `credit recommended_action`）。支持按 outcome、intent 子串、should_emit 过滤 |
 | GET | `/api/runs/{run_id}` | 完整 trace + credit_assignment |
 
-前端：`Self-Evolution → Runs` 选项卡（`web/ui/src/pages/RunsPage.jsx`）以表格呈现以上字段，点击任一行展开完整 trace JSON。只读视图，不会触发任何 PROMO 或 skill 改动。
+前端：`Self-Evolution → Runs` 选项卡（`web/ui/src/pages/RunsPage.jsx`）以表格呈现，点击一行展开完整 trace JSON。只读视图，不会触发任何 PROMO 或 skill 改动。
 
 ### 决策可观测（Scout decision log）
 
-每次 Scout 生成或更新 opportunity 时，`runtime/scout_decisions.py::ScoutDecisionStore` 追加一条 `DEC-xxxxxxxx`：
-
-| 字段 | 含义 |
-|---|---|
-| `decision_id` / `opportunity_id` / `scan_at` / `target_skill` | 索引与定位 |
-| `decision` / `alternative_decision` | 当前决策 + 下一最近备选（例如 `promote` vs `request_eval`） |
-| `threshold_hit` | 命中的决策表分支（如 `promote_lane: value>=0.60 ∧ risk<=0.35 ∧ testability>=0.70`） |
-| `binding_threshold` | 最紧的那条阈值（距离翻面最近的不等式） |
-| `score_components` | 完整的评分分量字典（frequency / transferability / impact / ...） |
-| `value_score` / `risk_score` / `evidence_quality` / `testability` | 四个 headline 分数 |
-| `outcome` | 当前 outcome 状态（`pending` / `optimizer_proposed` / `review_created` / `approved` / `rejected` / `applied_eval_passed` / `applied_eval_failed` / `apply_failed` / `superseded`） |
-| `outcome_history[]` | 状态机时间线，每条带 `at` + `status` + `details`（含 `edit_id` / `review_id` / `error` 等） |
+每次 Scout 生成或更新 opportunity，`runtime/scout_decisions.py::ScoutDecisionStore` 追加一条 `DEC-xxxxxxxx`，含 `decision / alternative_decision / threshold_hit / binding_threshold / score_components / value_score / risk_score / evidence_quality / testability / outcome / outcome_history[]`。
 
 **append-only-on-material-change** — re-scan 时，只有 decision 变化或任一 headline 分数移动超过 `MATERIAL_DELTA=0.02` 才追加新 `DEC-`；老记录标记 `superseded`，不污染统计。
 
-**outcome 回写**：
-
-| 状态 | 触发点 |
-|---|---|
-| `pending` | Scout 生成 opportunity |
-| `optimizer_proposed` | `SkillOptimizer.propose` 成功 |
-| `review_created` | `SkillOptimizer.submit_review` 成功 |
-| `approved` / `rejected` | `ReviewQueue.approve` / `reject` |
-| `applied_eval_passed` | `ReviewQueue.apply` 成功（eval 通过） |
-| `applied_eval_failed` / `apply_failed` | apply 时 ValueError，区分 eval 失败和其他 |
-| `superseded` | 同一 opportunity 出现新决策 |
-
-通过 `review.metadata.source_opportunity_ids` 把 review 链路绑回 scout，所以无需改 ReviewQueue 的核心 API。
-
-### Decision stats（CLI / API）
-
-CLI：
-
-```text
-/scout-decisions                                       # 列出所有非 superseded 决策
-/scout-stats                                           # 整体命中率
-/scout-stats threshold=0.6                             # value_score >= 0.6 的命中率
-/scout-stats score_field=testability threshold=0.7     # testability >= 0.7 的命中率
-/scout-stats decision=promote threshold=0.6            # 限定 decision=promote
-```
-
-API：
-
-| Method | Path | 作用 |
-|---|---|---|
-| GET | `/api/evolution/scout/decisions[?opportunity_id=...][&decision=...]` | 列出决策记录（默认排除 superseded） |
-| GET | `/api/evolution/scout/decisions/stats?score_field=value_score&threshold=0.6[&decision=...]` | 命中率统计（命中 = outcome 为 `applied_eval_passed`） |
-
-返回示例：
-
-```json
-{
-  "score_field": "value_score",
-  "threshold": 0.6,
-  "decision_filter": "",
-  "total": 12,
-  "hit_count": 4,
-  "hit_rate": 0.333,
-  "outcomes": {"pending": 2, "review_created": 3, "applied_eval_passed": 4, ...},
-  "decisions": {"promote": 8, "request_eval": 4},
-  "hit_outcome": "applied_eval_passed"
-}
-```
+**outcome 回写**：`pending → optimizer_proposed → review_created → approved / rejected → applied_eval_passed / applied_eval_failed / apply_failed`，新决策出现 → 老记录 `superseded`。通过 `review.metadata.source_opportunity_ids` 把 review 链路绑回 scout，无需改 ReviewQueue 核心 API。
 
 ### Side-Channel REST API
 
@@ -580,64 +246,42 @@ API：
 | GET | `/api/evolution/optimizer/edits[/{id}]` | 列出 / 单条 edit |
 | POST | `/api/evolution/optimizer/edits/{id}/validate` | 验证通过则创建 `skill.bounded_edit` review |
 | GET | `/api/evolution/optimizer/rejected` | 被拒 edit |
-| GET | `/api/evolution/scout/decisions[?opportunity_id=...&decision=...]` | 决策记录（默认排除 superseded） |
-| GET | `/api/evolution/scout/decisions/stats?score_field=value_score&threshold=0.6[&decision=...]` | 阈值命中率统计 |
+| GET | `/api/evolution/scout/decisions[?opportunity_id=&decision=]` | 决策记录（默认排除 superseded） |
+| GET | `/api/evolution/scout/decisions/stats?score_field=&threshold=[&decision=]` | 阈值命中率（命中 = `applied_eval_passed`） |
 
 UI：**Self-Evolution → Side-Channel** tab，含 Opportunities / Batches / Edits / Rejected 四区。
 
 ## Chat / 实时查询
 
-`runtime/chat_orchestrator.py` + `chat_intent.py` + `chat_executor.py` 负责把自然语言路由到 skill / tool / workspace 操作或实时查询。
+`runtime/chat_orchestrator.py` + `chat_intent.py` + `chat_executor.py` 把自然语言路由到 skill / tool / workspace 或实时查询。
 
 实时查询路径（`web_research_query / financial_research_query / news_query`）：
 
 ```text
 query → SEARCH_PROVIDER（Bailian / DashScope MCP → DuckDuckGo no-key fallback）
-      → 返回 URL 列表
-      → crawl_urls_to_markdown（并行 + 早停：拿到 2 个 usable page 就 cancel 其余）
+      → URL 列表 → crawl_urls_to_markdown（并行 + 早停：2 个 usable 后 cancel 其余）
       → OPENAI_MODEL summarize（≤ 9k chars，timeout 12s，max_tokens 600）
 ```
 
-默认 `max_results=3`，并行抓取上限 3，每 URL 12s 超时。典型延时 3–6s（之前串行 ~25s）。
-
-实时查询配置入口：UI **Settings**（写入 `.env` 并 in-process 应用），或直接编辑 `.env`：
-
-```env
-SEARCH_PROVIDER=bailian            # 或 dashscope / duckduckgo
-DASHSCOPE_API_KEY=...              # Bailian / DashScope MCP key
-SEARCH_TOOL_NAME=auto              # MCP tool 自动发现；或固定 alibaba_web_search 等
-SEARCH_API_BASE=                   # 自定义 endpoint
-```
-
-健康检查：`GET /api/settings/crawl4ai/health` 报告 crawl4ai 安装与 Playwright 浏览器状态。
+默认 `max_results=3`，并行抓取上限 3，每 URL 12s 超时。典型延时 3–6s。配置入口：UI **Settings**（写入 `.env` 并 in-process 应用）或直接编辑 `.env`。健康检查：`GET /api/settings/crawl4ai/health`。
 
 ### 知识库 Q&A（KB-aware chat）
 
-聊天框 `📎 知识库 N/3` 选择器至多选 3 个 KB。请求带 `context.kb_ids=[...]` 时，`chat_executor` 走 `_kb_qa` 分支：
-
-```text
-context.kb_ids → KnowledgeBaseStore.qa_context(query=message)
-   ├─ 有 index.json (BM25 chunked) → BM25Search.query 取 top-k chunk
-   └─ 无 index 旧 KB           → 朴素拼接前 N KB（兼容降级）
-              ↓ 上下文按 30 KB 预算裁剪
-              ↓ "ONLY 用提供的 KB excerpts，不得编造" 提示
-              ↓ OPENAI_MODEL 答题
-trace 显示 retrieval=bm25 + 每条 source 的 score / matched_terms
-```
+聊天框 `📎 知识库 N/3` 选择器至多选 3 个 KB。请求带 `context.kb_ids=[...]` 时走 `_kb_qa` 分支：有 `index.json` 用 BM25 chunked，无则朴素拼接前 N KB；上下文按 30 KB 预算裁剪；"ONLY 用提供的 KB excerpts，不得编造"提示；OPENAI_MODEL 答题。trace 显示 `retrieval=bm25` + 每条 source 的 score / matched_terms。
 
 KB 落盘 `.knowledge_bases/<kb_id>/{meta.json, index.json, files/...}`。本地上传或 GitHub `https://github.com/<owner>/<repo>` tarball 导入；路径越权防护、单文 ≤ 2 MB、单 KB ≤ 100 MB、二进制不入 Q&A 上下文。chunker 默认 800 字符目标 + 100 overlap，CJK 取 2-gram。
 
 ## Web Workbench
 
-`web/server.py` 提供 FastAPI 后端（资产 / 审批 / 进化 / 旁路 / 实时查询 / KB / 设置端点），`web/ui/` 为 React + Vite 工作台。左侧导航 4 项：
+`web/server.py` 提供 FastAPI 后端，`web/ui/` 为 React + Vite 工作台。左侧导航 5 项：
 
-- **Chat** — 自然语言入口，复用所有审批与版本规则；输入框带"📎 知识库 N/3"选择器
+- **Chat** — 自然语言入口，带"📎 知识库 N/3"选择器
 - **Workspace** — 文件读写、命令运行
-- **Assets** — 5 个 tab：Skills / Tools / Workflows / Memories / **Knowledge bases** / Eval cases
-- **Self-Evolution（治理）** — 4 个 tab：候选 PROMO / 审批队列 / 版本与回滚 / 旁路进化。顶部常驻 3 张 metric 卡（高风险待审 / 失败变更 / 审批保护变更）。审批队列内部有过滤芯片：全部 / 仅回滚 / 高严重度
+- **Assets** — Skills / Tools / Workflows / Memories / Knowledge bases / Eval cases
+- **Self-Evolution** — 5 个 tab：候选 PROMO / 审批队列 / 版本与回滚 / 旁路进化 / **Runs**（RunTrace + credit 可视化）。顶部常驻 3 张 metric 卡（高风险待审 / 失败变更 / 审批保护变更）
 - **Settings** — Provider 配置 + 模型连接（写入 `.env` 并 in-process 生效）
 
-EN / 中文切换由 `LanguageProvider` 接管，本地存储记忆。所有列表（Promotions / Reviews / Versions / 旁路四区 / KB 列表）统一走 `Paginator` 共享组件，每页 10 条。
+EN / 中文切换由 `LanguageProvider` 接管，本地存储记忆。所有列表统一走 `Paginator` 共享组件，每页 10 条。
 
 ## 项目结构
 
@@ -647,38 +291,26 @@ harness_agent/
 ├─ runtime/      # ReviewQueue / Skill 加载 / memory / 主链路进化 / chat
 │                # 旁路：evolution_scout · evolution_stores · skill_optimizer · evolution_llm · scout_decisions
 │                # 工具：skill_eval_runner · knowledge_base · kb_index · web_search_provider · tool_registry
-│                # 观测：run_trace · credit_assignment
+│                # 观测：run_trace · credit_assignment · run_trace_scanner
 ├─ safety/       # SafeHarness 事件、决策、策略、guard、审计
 ├─ tools/        # OpenAI tool schema + handler 分发
 ├─ skills/       # Skill 定义、memory、eval cases
-├─ web/          # FastAPI server + React/Vite 工作台 + SideChannelPage / KnowledgeBasesPage
+├─ web/          # FastAPI server + React/Vite 工作台
 ├─ docs/         # 设计文档 + architecture.svg
-└─ tests/        # self_improvement / evolution pipeline / scout decisions / kb / skill_eval_runner / web API
+└─ tests/        # self_improvement · evolution pipeline · scout decisions · run_trace · kb · skill_eval_runner · web API
 ```
 
 ## 本地运行产物（建议加入 `.gitignore`）
 
-| 路径 | 内容 |
-|---|---|
-| `.tasks/` | 本地任务板 |
-| `.team/` | teammate 配置 + inbox |
-| `.transcripts/` | 压缩前对话记录 |
-| `.audit/` | SafeHarness 审计日志 + `runs/RUN-*.json`（RunTrace + CreditAssignment） |
-| `.reviews/` | ReviewQueue item + patch preview |
-| `.skills_memory/` | 全局 memory + PROMO |
-| `.skills_versions/` | Skill 版本快照、patch、eval_result |
-| `.evolution/` | Scout / Optimizer 落盘的 signal / opportunity / batch / edit / validation / rejected |
-| `skills/*/memory/` | 单个 skill 的 memory |
-
-也别提交 `.env`。
+`.tasks/` · `.team/` · `.transcripts/` · `.audit/`（含 `runs/RUN-*.json`） · `.reviews/` · `.skills_memory/` · `.skills_versions/` · `.evolution/` · `skills/*/memory/`。也别提交 `.env`。
 
 ## 安全边界
 
-- 不会自动静默修改 `SKILL.md`、不会绕过 ReviewQueue、不会在缺 regression coverage 时 apply skill patch。
-- 不会把 `policy_candidate` 直接写入 `SKILL.md`、不会把 secret / prompt injection / bypass approval / disable safety 沉淀为长期规则。
-- 旁路 Scout 只读，Optimizer 不能直接 apply；`edit_ops` 仅 `add/replace/delete`、section 必须为 `## Memory-derived rules`；evaluator / scorer / regression gate 不能被 Scout 或 Optimizer 修改。
-- LLM 输出经脱敏 + 注入检测，命中即回退 deterministic 路径。
-- 工具失败 / 环境问题 / 审批拦截**不会被错误沉淀为 skill 更新**：`should_generate_learning_signal` 在 RunTrace → LearningSignal 转换前拦截 `tool_failure / environment / policy_block` 单独存在的情况。
+- `SKILL.md` 不会被自动静默修改、不会绕过 ReviewQueue、不会在缺 regression coverage 时 apply。
+- `policy_candidate` 不直接写入 `SKILL.md`；secret / prompt injection / bypass approval / disable safety 不沉淀为长期规则。
+- Scout 只读；Optimizer 仅 `add/replace/delete` 在 `## Memory-derived rules`；evaluator / scorer / regression gate 不能被 Scout 或 Optimizer 修改。
+- LLM 输出经脱敏 + 注入检测，命中即回退 deterministic。
+- 工具失败 / 环境问题 / 审批拦截**不会被错误沉淀为 skill 更新**：`should_generate_learning_signal` 在 RunTrace → LearningSignal 转换前拦截。同样的护栏在 `RunTraceScanner` 上再加一层（`tool_failure / environment / policy_block / unknown` 不进 Scout opportunity）。
 - 所有 `SKILL.md` 进化必须可追溯：`memory → PROMO → regression REV → skill patch REV → approve → apply → version`。
 
 ## 常用验证
