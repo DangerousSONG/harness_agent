@@ -122,11 +122,25 @@ class Executor:
                     response["trace"] = [*existing_trace, model_call]
                 else:
                     response["trace"] = [model_call]
+                # If the legacy handler also landed on its generic
+                # "我可以帮你进行写作 / 解释 / 工作区状态查询 …" capabilities
+                # sentence, upgrade it to the more informative
+                # "current LLM is not configured / call failed" copy.
+                # Real workspace answers (a clarification, a tool route,
+                # a workspace status read, …) come back as anything OTHER
+                # than that exact line and are passed through unchanged.
+                legacy_msg = response.get("message", "")
+                if isinstance(legacy_msg, str) and self._looks_like_generic_capability_fallback(legacy_msg):
+                    response["message"] = self._general_chat_fallback_message(
+                        getattr(self, "_last_llm_fallback_reason", "")
+                    )
             return response
         if primary == "general_chat":
             return self.composer.compose(
                 response_type="answer",
-                message=self.GENERAL_CHAT_FALLBACK_MESSAGE,
+                message=self._general_chat_fallback_message(
+                    getattr(self, "_last_llm_fallback_reason", "")
+                ),
                 safety=safety,
                 task_mode=task_mode,
                 intent=intent,
@@ -161,12 +175,33 @@ class Executor:
             traces=prefix_trace,
         )
 
-    # Surfaced last so the public-facing fallback message lives next to
-    # the place that uses it.
-    GENERAL_CHAT_FALLBACK_MESSAGE = (
-        "我可以帮你进行写作、解释、工作区状态查询、Skill 记忆、晋升候选、"
-        "审查和版本化自进化相关操作。"
+    # Surfaced last so the public-facing fallback messages live next to
+    # the place that uses them.
+    GENERAL_CHAT_FALLBACK_NO_MODEL = (
+        "当前还没有配置可用的对话模型（OPENAI_MODEL / OPENAI_API_KEY 为空）。"
+        "开放性问题需要 LLM 才能回答；你可以："
+        "①到右上角 Settings 配置 OPENAI_API_KEY + OPENAI_MODEL；"
+        "②或把问题改成具体任务——写作、解释、工作区状态、Skill 记忆、晋升候选、审查、版本化自进化，我可以直接处理。"
     )
+    GENERAL_CHAT_FALLBACK_CALL_FAILED = (
+        "我尝试调用了配置的 OPENAI_MODEL，但请求失败（详见 Trace 里的 model_call 步骤）。"
+        "可以先到 Settings 检查 OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL 是否仍然可用；"
+        "或把问题改成具体任务（写作、解释、工作区状态、Skill 记忆、晋升候选、审查、版本化自进化），我可以直接处理。"
+    )
+
+    def _general_chat_fallback_message(self, reason: str) -> str:
+        if reason == "no_api_key_or_model":
+            return self.GENERAL_CHAT_FALLBACK_NO_MODEL
+        return self.GENERAL_CHAT_FALLBACK_CALL_FAILED
+
+    # Marker phrase shared with web/server.py's _draft_answer for the
+    # generic "我可以帮你 + capabilities" sentence. When the legacy
+    # handler returns this exact line we know it landed on the catch-
+    # all fallback and we can safely upgrade the message.
+    _GENERIC_FALLBACK_MARKER = "我可以帮你进行写作、解释、工作区状态查询"
+
+    def _looks_like_generic_capability_fallback(self, text: str) -> bool:
+        return self._GENERIC_FALLBACK_MARKER in (text or "")
 
     def _kb_qa(
         self,

@@ -473,9 +473,11 @@ class WebApiTests(unittest.TestCase):
                     "I can help with writing, explanation",
                     payload["message"],
                 )
-                # The Chinese fallback message is what shows up.
-                self.assertIn("我可以帮你", payload["message"])
-                self.assertIn("简体中文" if False else "Skill", payload["message"])
+                # The new fallback explicitly names what's wrong instead
+                # of just listing capabilities, so the user knows the
+                # LLM wasn't actually consulted and what to fix.
+                self.assertIn("OPENAI_MODEL", payload["message"])
+                self.assertIn("Settings", payload["message"])
                 # Trace records the model_call attempt with the debug
                 # fields the user asked for: intent / route /
                 # whether_llm_called / model_name / fallback_reason.
@@ -490,6 +492,14 @@ class WebApiTests(unittest.TestCase):
                 self.assertEqual(step.get("whether_llm_called"), "false")
                 self.assertEqual(step.get("fallback_reason"), "no_api_key_or_model")
                 self.assertIn(step.get("status"), {"skipped", "failed"})
+                # The model_call step is essential so it lives in the
+                # always-visible block of the chat trace, not under
+                # "显示全部 N 步". The user needs to see at a glance
+                # whether the LLM ran.
+                self.assertTrue(
+                    step.get("essential"),
+                    "model_call step must be essential so the UI shows it without expansion",
+                )
         finally:
             for k, v in saved.items():
                 if v is not None:
