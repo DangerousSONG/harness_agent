@@ -140,6 +140,22 @@ export const api = {
     request(`/api/tools/${encodeURIComponent(name)}/archive`, {
       method: "POST",
     }),
+  restoreSkill: (name) =>
+    request(`/api/skills/${encodeURIComponent(name)}/restore`, {
+      method: "POST",
+    }),
+  restoreTool: (name) =>
+    request(`/api/tools/${encodeURIComponent(name)}/restore`, {
+      method: "POST",
+    }),
+  hardDeleteSkill: (name) =>
+    request(`/api/skills/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
+  hardDeleteTool: (name) =>
+    request(`/api/tools/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
   memories: () => request("/api/memories"),
   promoteMemory: (id) =>
     request(`/api/memories/${encodeURIComponent(id)}/promote`, { method: "POST" }),

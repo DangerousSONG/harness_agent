@@ -470,6 +470,34 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             return fail(result["message"], status_code=result.get("status_code", 400))
         return ok(result["data"], result["message"])
 
+    @app.post("/api/skills/{skill}/restore")
+    def skill_restore(skill: str) -> JSONResponse:
+        result = _restore_asset(ctx, kind="skill", name=skill)
+        if not result["ok"]:
+            return fail(result["message"], status_code=result.get("status_code", 400))
+        return ok(result["data"], result["message"])
+
+    @app.post("/api/tools/{tool_name}/restore")
+    def tool_restore(tool_name: str) -> JSONResponse:
+        result = _restore_asset(ctx, kind="tool", name=tool_name)
+        if not result["ok"]:
+            return fail(result["message"], status_code=result.get("status_code", 400))
+        return ok(result["data"], result["message"])
+
+    @app.delete("/api/skills/{skill}")
+    def skill_hard_delete(skill: str) -> JSONResponse:
+        result = _hard_delete_asset(ctx, kind="skill", name=skill)
+        if not result["ok"]:
+            return fail(result["message"], status_code=result.get("status_code", 400))
+        return ok(result["data"], result["message"])
+
+    @app.delete("/api/tools/{tool_name}")
+    def tool_hard_delete(tool_name: str) -> JSONResponse:
+        result = _hard_delete_asset(ctx, kind="tool", name=tool_name)
+        if not result["ok"]:
+            return fail(result["message"], status_code=result.get("status_code", 400))
+        return ok(result["data"], result["message"])
+
     @app.get("/api/tools/{tool_name}")
     def tool_detail(tool_name: str) -> JSONResponse:
         tool = next((item for item in _tool_views(ctx) if item["name"] == tool_name), None)
@@ -2016,6 +2044,143 @@ def _archive_asset(ctx: WebContext, *, kind: str, name: str) -> dict[str, Any]:
             "asset_type": kind,
             "lifecycle_status": record.lifecycle_status,
             "previous_status": previous,
+        },
+    }
+
+
+def _restore_asset(ctx: WebContext, *, kind: str, name: str) -> dict[str, Any]:
+    """Reverse of ``_archive_asset``. Flips the lifecycle marker back to
+    ``active`` so the SkillProfileStore / ToolRegistry pick the asset
+    up again. Files are untouched."""
+    from runtime.asset_lifecycle import LifecycleStore
+    if kind not in {"skill", "tool"}:
+        return {"ok": False, "message": f"Unknown asset kind: {kind!r}", "status_code": 400}
+    normalized = normalize_name(name) if kind == "skill" else _extract_tool_name(name)
+    if not normalized:
+        return {"ok": False, "message": "Invalid asset name.", "status_code": 400}
+    asset_dir = ctx.project_root / ("skills" if kind == "skill" else "tools") / normalized
+    if not asset_dir.exists():
+        return {"ok": False, "message": f"Unknown {kind}: {normalized}", "status_code": 404}
+    store = LifecycleStore(ctx.project_root)
+    existing = store.read(kind, normalized)
+    previous = existing.lifecycle_status if existing else "active"
+    if previous == "active":
+        return {
+            "ok": True,
+            "message": f"{kind} {normalized} 已经处于已上架状态。",
+            "data": {
+                "name": normalized,
+                "asset_type": kind,
+                "lifecycle_status": "active",
+                "previous_status": previous,
+            },
+        }
+    record = store.write(
+        kind=kind,
+        name=normalized,
+        lifecycle_status="active",
+        risk_level=getattr(existing, "risk_level", "low") if existing else "low",
+        review_id=getattr(existing, "review_id", "") if existing else "",
+    )
+    _write_operation_log(
+        ctx,
+        f"{kind}.restore",
+        {
+            "name": normalized,
+            "previous_status": previous,
+            "new_status": record.lifecycle_status,
+        },
+    )
+    return {
+        "ok": True,
+        "message": f"{normalized} 已恢复，重新可被加载/执行。",
+        "data": {
+            "name": normalized,
+            "asset_type": kind,
+            "lifecycle_status": record.lifecycle_status,
+            "previous_status": previous,
+        },
+    }
+
+
+def _hard_delete_asset(ctx: WebContext, *, kind: str, name: str) -> dict[str, Any]:
+    """Permanently remove an archived asset from disk.
+
+    Safety contract:
+
+    - The asset MUST be archived first (``lifecycle_status=archived``).
+      Hard-deleting an active asset would break SkillRouter / running
+      sessions; we refuse with 409 and ask the caller to archive
+      first. The UI never surfaces this option on a non-archived
+      asset, but the backend enforces it independently.
+    - We never touch ``.reviews/``, ``.skills_versions/``, or any
+      audit trail; only the asset's own directory
+      (``skills/<name>/`` or ``tools/<name>/``) and its lifecycle
+      marker are removed. Reviews / versions that referenced this
+      asset stay on disk so they remain auditable.
+    - Writes a ``skill.hard_delete`` / ``tool.hard_delete`` row to
+      the audit log so the destructive action is traceable.
+    """
+    from runtime.asset_lifecycle import LIFECYCLE_FILENAME, LifecycleStore
+    import shutil
+
+    if kind not in {"skill", "tool"}:
+        return {"ok": False, "message": f"Unknown asset kind: {kind!r}", "status_code": 400}
+    normalized = normalize_name(name) if kind == "skill" else _extract_tool_name(name)
+    if not normalized:
+        return {"ok": False, "message": "Invalid asset name.", "status_code": 400}
+    asset_dir = ctx.project_root / ("skills" if kind == "skill" else "tools") / normalized
+    if not asset_dir.exists():
+        return {"ok": False, "message": f"Unknown {kind}: {normalized}", "status_code": 404}
+    store = LifecycleStore(ctx.project_root)
+    existing = store.read(kind, normalized)
+    if not existing or existing.lifecycle_status != "archived":
+        return {
+            "ok": False,
+            "message": "只有「已归档」的资产可以永久删除；请先归档后再尝试。",
+            "status_code": 409,
+        }
+    # Defence-in-depth: keep the rm scope strictly to the asset's
+    # own directory under skills/ or tools/.
+    resolved = asset_dir.resolve()
+    expected_parent = (ctx.project_root / ("skills" if kind == "skill" else "tools")).resolve()
+    try:
+        resolved.relative_to(expected_parent)
+    except ValueError:
+        return {
+            "ok": False,
+            "message": "Refusing to remove a path outside the expected asset directory.",
+            "status_code": 400,
+        }
+    try:
+        shutil.rmtree(resolved)
+    except OSError as exc:
+        return {
+            "ok": False,
+            "message": f"Failed to remove asset files: {exc}",
+            "status_code": 500,
+        }
+    # ``rmtree`` already nuked .lifecycle.json inside the dir, but
+    # call out the residue path explicitly just in case the layout
+    # ever moves the marker.
+    residue = resolved / LIFECYCLE_FILENAME
+    if residue.exists():
+        residue.unlink()
+    _write_operation_log(
+        ctx,
+        f"{kind}.hard_delete",
+        {
+            "name": normalized,
+            "removed_path": str(resolved.relative_to(ctx.project_root)).replace("\\", "/"),
+        },
+    )
+    return {
+        "ok": True,
+        "message": f"{normalized} 已永久删除（文件已移除）。",
+        "data": {
+            "name": normalized,
+            "asset_type": kind,
+            "lifecycle_status": "removed",
         },
     }
 
