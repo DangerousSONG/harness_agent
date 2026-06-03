@@ -1,4 +1,4 @@
-import { BookOpen, Boxes, GitPullRequest, Hammer, Play, Plus, Workflow, Wrench, X } from "lucide-react";
+import { BookOpen, Boxes, GitPullRequest, Hammer, Play, Plus, Trash2, Workflow, Wrench, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
@@ -40,8 +40,42 @@ export default function AssetsPage({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [creationKind, setCreationKind] = useState(null); // "skill" | "tool" | null
+  const [archiveTarget, setArchiveTarget] = useState(null); // { kind, name }
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [toast, setToast] = useState({ tone: "info", message: "" });
   const tab = controlledTab || localTab;
   const setTab = onTabChange || setLocalTab;
+
+  const requestDelete = (kind, name) => setArchiveTarget({ kind, name });
+  const cancelDelete = () => {
+    if (!archiveBusy) setArchiveTarget(null);
+  };
+  const confirmDelete = async () => {
+    if (!archiveTarget) return;
+    setArchiveBusy(true);
+    try {
+      if (archiveTarget.kind === "skill") {
+        await api.archiveSkill(archiveTarget.name);
+      } else {
+        await api.archiveTool(archiveTarget.name);
+      }
+      setToast({
+        tone: "success",
+        message: `${archiveTarget.name} 已归档，不再被加载或执行。`,
+      });
+      setArchiveTarget(null);
+      onAssetCreated?.();
+    } catch (err) {
+      setToast({ tone: "error", message: getErrorMessage(err) });
+    } finally {
+      setArchiveBusy(false);
+    }
+  };
+  useEffect(() => {
+    if (!toast.message) return;
+    const timer = setTimeout(() => setToast({ tone: "info", message: "" }), 3500);
+    return () => clearTimeout(timer);
+  }, [toast.message]);
   const evalCards = useMemo(
     () => (skills || []).filter((skill) => skill.has_eval_cases),
     [skills],
@@ -149,6 +183,8 @@ export default function AssetsPage({
                   [t("assets.skills.metric.versions"), (versions || []).filter((item) => item.skill === skill.name).length],
                 ]}
                 onClick={() => openAsset("skill", skill)}
+                onDelete={() => requestDelete("skill", skill.name)}
+                deleteBusy={archiveBusy && archiveTarget?.name === skill.name}
               />
             )}
           />
@@ -192,6 +228,8 @@ export default function AssetsPage({
                   [t("assets.tools.metric.executable"), tool.executable ? t("common.yes") : t("common.no")],
                 ]}
                 onClick={() => openAsset("tool", tool)}
+                onDelete={() => requestDelete("tool", tool.name)}
+                deleteBusy={archiveBusy && archiveTarget?.name === tool.name}
               />
             )}
           />
@@ -308,7 +346,65 @@ export default function AssetsPage({
         onClose={() => setCreationKind(null)}
         onCreated={() => onAssetCreated?.()}
       />
+      <ArchiveConfirmDialog
+        target={archiveTarget}
+        busy={archiveBusy}
+        onCancel={cancelDelete}
+        onConfirm={confirmDelete}
+      />
+      {toast.message ? (
+        <div
+          className={[
+            "pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-lg border px-4 py-3 text-sm shadow-soft",
+            toast.tone === "error"
+              ? "border-rose-200 bg-rose-50/95 text-rose-700"
+              : "border-emerald-200 bg-emerald-50/95 text-emerald-800",
+          ].join(" ")}
+        >
+          {toast.message}
+        </div>
+      ) : null}
     </section>
+  );
+}
+
+function ArchiveConfirmDialog({ target, busy, onCancel, onConfirm }) {
+  if (!target) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/40 p-4"
+      onClick={busy ? undefined : onCancel}
+    >
+      <div
+        className="w-full max-w-md rounded-xl border border-line bg-white p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-base font-semibold text-zinc-950">
+          确认删除 {target.kind === "skill" ? "Skill" : "Tool"}：
+          <span className="ml-1 font-mono text-rose-700">{target.name}</span>?
+        </h3>
+        <p className="mt-2 text-sm leading-6 text-zinc-600">
+          删除后该资产会被标记为「已归档」，
+          {target.kind === "skill"
+            ? "SkillRouter 不会再选择它"
+            : "ToolRegistry 不会再执行它"}
+          。文件保留在磁盘以便审计与恢复，可由管理员后续处理。
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button className="secondary-button" onClick={onCancel} disabled={busy}>
+            取消
+          </button>
+          <button
+            className="primary-button"
+            style={{ background: "#dc2626" }}
+            onClick={onConfirm}
+            disabled={busy}
+          >
+            {busy ? "处理中…" : "确认删除"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -341,7 +437,7 @@ function CreateEntryCard({ title, description, onClick }) {
   );
 }
 
-function AssetCard({ title, description, status, rows, metrics, children, onClick }) {
+function AssetCard({ title, description, status, rows, metrics, children, onClick, onDelete, deleteBusy }) {
   return (
     <article className="section-panel cursor-pointer p-4 transition hover:border-zinc-300" onClick={onClick}>
       <div className="flex items-start justify-between gap-4">
@@ -349,7 +445,23 @@ function AssetCard({ title, description, status, rows, metrics, children, onClic
           <h2 className="truncate text-base font-semibold text-zinc-950">{title}</h2>
           {description ? <p className="mt-1 line-clamp-2 text-sm leading-6 text-zinc-500">{description}</p> : null}
         </div>
-        <StatusPill status={status || "draft"} />
+        <div className="flex items-center gap-2">
+          <StatusPill status={status || "draft"} />
+          {onDelete ? (
+            <button
+              type="button"
+              className="rounded-md p-1.5 text-zinc-400 hover:bg-rose-50 hover:text-rose-600"
+              title="删除（归档）"
+              disabled={deleteBusy}
+              onClick={(event) => {
+                event.stopPropagation();
+                onDelete();
+              }}
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          ) : null}
+        </div>
       </div>
       {children}
       {metrics?.length ? (
