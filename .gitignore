@@ -51,6 +51,8 @@ skills/*/memory/
 .tasks/
 .team/
 .transcripts/
+.evolution/
+.knowledge_bases/
 
 
 # =========================
