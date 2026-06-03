@@ -1,8 +1,9 @@
-import { BookOpen, Boxes, GitPullRequest, Hammer, Play, Workflow, Wrench, X } from "lucide-react";
+import { BookOpen, Boxes, GitPullRequest, Hammer, Play, Plus, Workflow, Wrench, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import KnowledgeBasesPage from "./KnowledgeBasesPage";
+import AssetCreationDialog from "../components/AssetCreationDialog";
 import { api, getErrorMessage } from "../lib/api";
 import { compact, formatDate, titleize } from "../lib/format";
 import { useTranslate } from "../lib/i18n.jsx";
@@ -29,6 +30,7 @@ export default function AssetsPage({
   onTabChange,
   onOpenReview,
   onOpenVersions,
+  onAssetCreated,
 }) {
   const t = useTranslate();
   const [localTab, setLocalTab] = useState("skills");
@@ -37,6 +39,7 @@ export default function AssetsPage({
   const [detailTab, setDetailTab] = useState("overview");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [creationKind, setCreationKind] = useState(null); // "skill" | "tool" | null
   const tab = controlledTab || localTab;
   const setTab = onTabChange || setLocalTab;
   const evalCards = useMemo(
@@ -118,11 +121,19 @@ export default function AssetsPage({
           <AssetGrid
             items={skills}
             empty={t("assets.skills.empty")}
+            leading={
+              <CreateEntryCard
+                key="__create_skill__"
+                title="创建 Skill"
+                description="通过自然语言描述能力需求，生成 Skill 草稿并完成系统校验。"
+                onClick={() => setCreationKind("skill")}
+              />
+            }
             render={(skill) => (
               <AssetCard
                 key={skill.name}
                 title={skill.name}
-                description={skill.description || t("assets.skills.default_desc")}
+                description={skill.description || "暂无描述"}
                 status={assetStatus("skill", skill.name, reviews, skill)}
                 rows={assetRows({
                   assetType: "skill",
@@ -147,11 +158,19 @@ export default function AssetsPage({
           <AssetGrid
             items={tools}
             empty={t("assets.tools.empty")}
+            leading={
+              <CreateEntryCard
+                key="__create_tool__"
+                title="注册 Tool"
+                description="注册一个可被 Skill 调用的工具，配置入口、参数和安全策略。"
+                onClick={() => setCreationKind("tool")}
+              />
+            }
             render={(tool) => (
               <AssetCard
                 key={tool.name}
                 title={tool.name}
-                description={tool.description || t("assets.tools.default_desc")}
+                description={tool.description || "暂无描述"}
                 status={
                   tool.lifecycle_status && tool.lifecycle_status !== "active"
                     ? (LIFECYCLE_LABEL[tool.lifecycle_status] || tool.lifecycle_status)
@@ -283,13 +302,43 @@ export default function AssetsPage({
           />
         ) : null}
       </div>
+      <AssetCreationDialog
+        open={creationKind !== null}
+        kind={creationKind}
+        onClose={() => setCreationKind(null)}
+        onCreated={() => onAssetCreated?.()}
+      />
     </section>
   );
 }
 
-function AssetGrid({ items, empty, render }) {
-  if (!items?.length) return <EmptyState title={empty} />;
-  return <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">{items.map(render)}</div>;
+function AssetGrid({ items, empty, render, leading }) {
+  if (!items?.length && !leading) return <EmptyState title={empty} />;
+  return (
+    <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+      {leading}
+      {(items || []).map(render)}
+    </div>
+  );
+}
+
+function CreateEntryCard({ title, description, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group flex h-full min-h-[180px] cursor-pointer flex-col items-start gap-3 rounded-xl border-2 border-dashed border-blue-300 bg-blue-50/40 p-5 text-left transition hover:border-appleBlue hover:bg-blue-50/70"
+    >
+      <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-appleBlue ring-1 ring-blue-200 group-hover:ring-appleBlue">
+        <Plus className="h-4 w-4" />
+      </span>
+      <div>
+        <p className="text-base font-semibold text-zinc-950">{title}</p>
+        <p className="mt-1 text-sm leading-6 text-zinc-600">{description}</p>
+      </div>
+      <span className="primary-button mt-auto">创建</span>
+    </button>
+  );
 }
 
 function AssetCard({ title, description, status, rows, metrics, children, onClick }) {
@@ -758,6 +807,7 @@ const LIFECYCLE_LABEL = {
   active: "已上架",
   rejected: "未通过",
   archived: "已归档",
+  disabled: "已禁用",
 };
 
 function filterByAsset(items, assetType, name) {
