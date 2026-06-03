@@ -1,8 +1,13 @@
 // scoutViewModel.js — frontend-only view-model layer over the raw
 // Side-Channel API payloads. Translates engineering-grade fields
-// (decision / score / tag / reason) into category + plain-language
-// surfaces. No backend changes; raw fields are still available under
-// ``raw`` for the "debug" disclosure panel.
+// (decision / score / tag / reason / edit_ops / cluster_key) into a
+// plain-language surface the regular user can navigate. No backend
+// changes; raw fields are kept under ``raw`` for the "展开技术细节"
+// disclosure panel.
+//
+// Three classifiers + three mappers:
+//   classifyOpportunity / classifyBatch / classifyEdit
+//   buildOpportunityView / mapBatchToView / mapEditToView
 
 const POLICY_PHRASE_NEEDLES = [
   "policy_block",
@@ -32,24 +37,6 @@ const LEVEL_LABEL = {
   low: "低",
 };
 
-const DECISION_JUDGEMENT = {
-  promote: "证据足且可测试，建议升级为 skill 规则。",
-  request_eval: "价值已达晋升阈值，但还需要更强的可测试性或证据。",
-  defer: "暂未达晋升阈值，先观察一段时间。",
-  reject: "证据偏弱或风险偏高，本轮不建议沉淀。",
-  safety_review: "命中安全/策略标记，需要走人工策略审查，不能直接进入 skill 规则。",
-  quarantine: "检测到攻击载荷或被污染的内容，仅做隔离审计。",
-};
-
-const DECISION_NEXT_STEP = {
-  promote: "为这条机会补一组正/负回归 case，再生成 skill 补丁。",
-  request_eval: "先补一组正/负回归 case；测得起来再考虑升级。",
-  defer: "继续观察；下一次扫描如果证据累积再评估。",
-  reject: "无需行动。如果你有更多上下文，可以恢复后再评估。",
-  safety_review: "走人工策略/安全审查；批准后才考虑沉淀为 policy。",
-  quarantine: "仅用于审计；禁止把这段内容写进任何 skill 规则。",
-};
-
 const CATEGORY_LABEL = {
   skill_optimization: "Skill 优化",
   policy_event: "策略 / 安全事件",
@@ -72,6 +59,53 @@ const RISK_TONE = {
   low: "text-zinc-600 bg-zinc-50 border-line",
 };
 
+// Strings that must never appear in main copy. If a backend-supplied
+// bullet matches any of these, it gets dropped from the user view
+// (still preserved under ``raw`` for the technical-detail panel).
+const ENGINEERING_NEEDLES = [
+  /^tag:/i,
+  /^sig:/i,
+  /^kw:/i,
+  /reduce repetition of pattern/i,
+  /\bopp-[0-9a-f]+\b/i,
+  /\bsig-[0-9a-f]+\b/i,
+  /\bbatch-[0-9a-f]+\b/i,
+  /\bedit-[0-9a-f]+\b/i,
+  /add\s*→\s*##/i,
+  /## memory-derived rules/i,
+  /must_not_regress/i,
+  /should_improve/i,
+  /evidence_quality/i,
+  /value_score/i,
+  /risk_score/i,
+  /testability/i,
+  /policy_gate/i,
+  /requires_policy_review/i,
+  /needs_human_label/i,
+];
+
+function isEngineeringText(text) {
+  if (typeof text !== "string" || !text.trim()) return true;
+  return ENGINEERING_NEEDLES.some((rx) => rx.test(text));
+}
+
+function sanitizeBullets(values) {
+  if (!Array.isArray(values)) return [];
+  return values.filter((v) => !isEngineeringText(v));
+}
+
+function stripClusterKey(summary) {
+  if (typeof summary !== "string") return "";
+  // Drop "sig:foo|bar | …" or "tag:foo|bar | …" prefixes the
+  // deterministic summary writer prepends.
+  const parts = summary.split(" | ");
+  if (parts.length > 1) {
+    const head = parts[0].trim();
+    if (/^(sig|tag|kw):/i.test(head)) return parts.slice(1).join(" | ").trim();
+  }
+  return summary;
+}
+
 function lowercaseSafe(value) {
   return typeof value === "string" ? value.toLowerCase() : "";
 }
@@ -87,7 +121,6 @@ function hasPolicyMarkers(opp, signals) {
   if (reason.includes("policy_gate")) return true;
   if (opp?.decision === "quarantine") return true;
   if (opp?.decision === "safety_review") return true;
-
   for (const signal of signals) {
     if (signal?.quarantined) return true;
     const tags = signal?.tags || [];
@@ -124,53 +157,111 @@ export function classifyOpportunity(opp, signalsById = {}) {
   return "skill_optimization";
 }
 
+// --------------------------------------------------------------- titles
+
 function buildTitle(opp, category) {
-  const skill = opp?.target_skill || "未归属 skill";
+  const skill = opp?.target_skill || "未归属 Skill";
   switch (category) {
     case "policy_event":
-      return `${skill} · 命中策略/安全标记`;
+      return "命中安全/审批策略，需要人工策略审查";
     case "tool_event":
-      return `${skill} · 工具或能力问题`;
+      return `${skill} · 工具或能力配置需要核对`;
     case "needs_label":
       return "需要人工标注归属 Skill";
     case "skill_optimization":
     default:
-      return `${skill} · 可考虑的 skill 优化`;
+      return `${skill} · 可考虑沉淀的 Skill 优化`;
   }
 }
 
-function buildImpactTarget(opp, category) {
-  if (category === "needs_label") return "（未归属，待人工标注）";
-  return opp?.target_skill || "—";
+function describeAffectedObject(signals, fallback) {
+  // Try to extract a concrete subject from the first signal's content
+  // (file path, tool name, skill name) so the user sees what was hit.
+  for (const sig of signals) {
+    const content = sig?.content || "";
+    const filePath = content.match(/\b(?:tools|skills|web|runtime|harness)\/[A-Za-z0-9_./-]+/);
+    if (filePath) return filePath[0];
+    const toolMention = content.match(/\b([a-z_]+_(?:file|tool|handler|registry))\b/);
+    if (toolMention) return toolMention[1];
+  }
+  return fallback || "—";
 }
 
-function buildWhatHappened(opp, signals) {
-  if (opp?.summary) {
-    // Drop the cluster_key prefix like "sig:foo|bar | " that the
-    // deterministic summary writer prepends.
-    const parts = opp.summary.split(" | ");
-    if (parts.length > 1) return parts.slice(1).join(" | ");
-    return opp.summary;
+// --------------------------------------------------------- what happened
+
+function buildWhatHappenedSkill(opp, signals) {
+  const subject = opp?.target_skill || "skill";
+  const sample = stripClusterKey(opp?.summary || "") || (signals[0]?.content || "").slice(0, 160);
+  if (sample) {
+    return `系统发现一组针对 ${subject} 的重复偏好或纠正，证据：${sample.replace(/\s+/g, " ").trim()}`;
   }
-  const firstSignal = signals[0];
-  if (firstSignal?.content) return firstSignal.content.slice(0, 200);
-  return "（暂无可读摘要）";
+  return `系统在 ${subject} 上发现一组可复用的偏好或纠正。`;
 }
 
-function buildJudgement(opp) {
-  return DECISION_JUDGEMENT[opp?.decision] || opp?.reason || "—";
+function buildWhatHappenedPolicy(opp, signals) {
+  const affected = describeAffectedObject(signals, opp?.target_skill || "");
+  if (affected && affected !== "—") {
+    return `系统检测到一次涉及 ${affected} 的操作触发了 SafeHarness 的策略/审批规则，已被拦截，未直接执行。`;
+  }
+  return "系统检测到一次操作触发了 SafeHarness 的策略/审批规则，已被拦截，未直接执行。";
 }
 
-function buildNextStep(opp, category) {
-  if (category === "policy_event") return DECISION_NEXT_STEP.safety_review;
-  if (category === "tool_event") {
-    return "走人工工具/能力审查；不要把工具失败硬编码进 skill 规则。";
-  }
-  if (category === "needs_label") {
-    return "把这条 cluster 的来源 memory 的 Target Skill 标注为真实的 skill，下次扫描就能走正常审批流程。";
-  }
-  return DECISION_NEXT_STEP[opp?.decision] || "—";
+function buildWhatHappenedTool(opp, signals) {
+  const affected = describeAffectedObject(signals, opp?.target_skill || "tool");
+  return `系统在 ${affected} 上发现工具失败或能力缺失的迹象。`;
 }
+
+function buildWhatHappenedNeedsLabel(opp) {
+  return `系统暂未把这条 cluster 归属到具体的真实 Skill（当前 target_skill="self_improvement"）。`;
+}
+
+function buildWhatHappened(opp, signals, category) {
+  switch (category) {
+    case "policy_event":
+      return buildWhatHappenedPolicy(opp, signals);
+    case "tool_event":
+      return buildWhatHappenedTool(opp, signals);
+    case "needs_label":
+      return buildWhatHappenedNeedsLabel(opp);
+    case "skill_optimization":
+    default:
+      return buildWhatHappenedSkill(opp, signals);
+  }
+}
+
+// ----------------------------------------------------- system judgement
+
+function buildJudgement(category) {
+  switch (category) {
+    case "policy_event":
+      return "这是安全策略正常生效的事件，不属于 Skill 优化，**不应直接生成 SKILL.md 补丁**。";
+    case "tool_event":
+      return "这反映的是工具注册或能力配置的问题，不应通过修改 SKILL.md 来掩盖；建议走人工工具审查。";
+    case "needs_label":
+      return "未归属到真实 Skill 的 cluster 不允许自动晋升。需要人工把来源 memory 的 Target Skill 标注成真实 skill，下一次扫描才能进入正常审批流程。";
+    case "skill_optimization":
+    default:
+      return "证据可复用、风险较低，适合在补充回归测试后沉淀为 Skill 规则。";
+  }
+}
+
+// ----------------------------------------------------- recommended action
+
+function buildRecommendedAction(category) {
+  switch (category) {
+    case "policy_event":
+      return "建议进入策略审查，确认当前审批规则是否需要调整。若策略合理，可继续观察或忽略。";
+    case "tool_event":
+      return "建议走人工工具审查，确认工具配置、权限或注册关系是否需要调整。";
+    case "needs_label":
+      return "请到来源 memory 把 Target Skill 字段改成真实的 skill 名，再回来重新扫描。";
+    case "skill_optimization":
+    default:
+      return "建议先生成回归测试，再生成 Skill 变更草稿并进入审批。";
+  }
+}
+
+// ----------------------------------------------------- opportunity view
 
 export function buildOpportunityView(opp, signalsById = {}) {
   const category = classifyOpportunity(opp, signalsById);
@@ -183,17 +274,20 @@ export function buildOpportunityView(opp, signalsById = {}) {
     categoryLabel: CATEGORY_LABEL[category],
     categoryTone: CATEGORY_TONE[category],
     title: buildTitle(opp, category),
-    impactTarget: buildImpactTarget(opp, category),
+    impactTarget: describeAffectedObject(signals, opp?.target_skill || ""),
     riskLevel,
     riskLabel: LEVEL_LABEL[riskLevel] || riskLevel,
     riskTone: RISK_TONE[riskLevel] || RISK_TONE.low,
     confidence,
     confidenceLabel: LEVEL_LABEL[confidence] || confidence,
-    whatHappened: buildWhatHappened(opp, signals),
-    judgement: buildJudgement(opp),
-    nextStep: buildNextStep(opp, category),
-    suggestions: opp?.should_improve || [],
-    guardrails: opp?.must_not_regress || [],
+    whatHappened: buildWhatHappened(opp, signals, category),
+    judgement: buildJudgement(category),
+    recommendedAction: buildRecommendedAction(category),
+    // Sanitized: drop bullets that smell like engineering output.
+    suggestions:
+      category === "skill_optimization"
+        ? sanitizeBullets(opp?.should_improve || [])
+        : [],
     sources: signals.map((s) => ({
       id: s.signal_id,
       sourceRef: s.source_ref,
@@ -204,37 +298,276 @@ export function buildOpportunityView(opp, signalsById = {}) {
   };
 }
 
-export function buildEditView(edit) {
+// ---------------------------------------------------------- batch view
+
+export function mapBatchToView(batch, memberOpps = []) {
+  const firstCategory = memberOpps[0]?.category || "skill_optimization";
+  const targetSkill = batch?.target_skill || memberOpps[0]?.raw?.target_skill || "—";
+  const evidenceCount = (batch?.opportunity_ids || []).length || memberOpps.length;
+  const subject =
+    firstCategory === "skill_optimization"
+      ? targetSkill
+      : describeAffectedObject(
+          memberOpps.flatMap((m) => m.sources || []).map((s) => ({ content: s.preview })),
+          targetSkill,
+        );
+
+  const title = (() => {
+    switch (firstCategory) {
+      case "policy_event":
+        return "策略审查草稿：命中安全/审批规则的事件";
+      case "tool_event":
+        return "工具审查草稿：工具或能力配置问题";
+      case "needs_label":
+        return "归属待标注草稿：未归属的 cluster";
+      case "skill_optimization":
+      default:
+        return `Skill 变更草稿：${targetSkill}`;
+    }
+  })();
+
+  const whyClean = (() => {
+    switch (firstCategory) {
+      case "policy_event":
+        return "系统把同一类策略/审批拦截事件汇总成一组待处理项。安全事件不适合作为普通 Skill 规则沉淀。";
+      case "tool_event":
+        return "系统把同一类工具失败或能力缺失事件汇总成一组待处理项；建议在工具层修复，而不是写进 Skill。";
+      case "needs_label":
+        return "系统把未归属到具体 Skill 的 cluster 汇总到这里，等待人工标注真实 Target Skill。";
+      case "skill_optimization":
+      default:
+        return `系统在 ${targetSkill} 上汇总了 ${evidenceCount} 条可复用的偏好/纠正证据，预计可沉淀为 Skill 规则。`;
+    }
+  })();
+
+  const plannedContent = (() => {
+    switch (firstCategory) {
+      case "policy_event":
+        return "**不生成 SKILL.md 补丁。** 建议创建策略审查，确认当前文件修改/工具调用的审批规则是否需要调整。";
+      case "tool_event":
+        return "**不生成 SKILL.md 补丁。** 建议创建工具审查，检查工具注册、权限或配置。";
+      case "needs_label":
+        return "**不生成 SKILL.md 补丁。** 请把来源 memory 的 Target Skill 改成真实 skill 名后重新扫描。";
+      case "skill_optimization":
+      default:
+        return "拟生成一份变更草稿，把上述偏好/纠正沉淀为 Skill 规则；草稿仍需走人工审查并通过回归测试。";
+    }
+  })();
+
+  const reviewRequirements = (() => {
+    switch (firstCategory) {
+      case "policy_event":
+        return [
+          "不得绕过 ReviewQueue 审批流程",
+          "不得放宽现有的 SafeHarness 安全策略",
+          "不得把安全/审批事件写入普通 Skill 规则",
+        ];
+      case "tool_event":
+        return [
+          "不得通过修改 SKILL.md 来绕过工具层缺陷",
+          "不得放宽工具的默认审批策略",
+        ];
+      case "needs_label":
+        return ["必须先由人工把 Target Skill 标注到真实 skill"];
+      case "skill_optimization":
+      default:
+        return [
+          "拟新增的规则必须配套正/负回归 case",
+          "草稿仍然必须经过 ReviewQueue 审批与人工 apply",
+          "不放宽既有的安全策略",
+        ];
+    }
+  })();
+
+  const copy = copyFor(firstCategory);
+  return {
+    id: batch?.batch_id || "",
+    category: firstCategory,
+    categoryLabel: CATEGORY_LABEL[firstCategory],
+    categoryTone: CATEGORY_TONE[firstCategory],
+    title,
+    targetSubject: subject,
+    evidenceCount,
+    risk: batch?.risk_level || "—",
+    riskLabel: LEVEL_LABEL[batch?.risk_level] || (batch?.risk_level || "—"),
+    why: whyClean,
+    plannedContent,
+    reviewRequirements,
+    canGenerateSkillDraft: firstCategory === "skill_optimization",
+    whyLabel: copy.whyLabel,
+    planLabel: copy.planLabel,
+    regressionLabel: copy.regressionLabel,
+    categoryNotice: copy.notice,
+    recommendedActionList: copy.actionList,
+    raw: batch,
+  };
+}
+
+// ---------------------------------------------------------- edit view
+
+export function mapEditToView(edit, signalsById = {}, oppsById = {}) {
   if (!edit) return null;
+
+  const sourceOppIds = edit.source_opportunity_ids || [];
+  const memberOpps = sourceOppIds
+    .map((oid) => oppsById[oid])
+    .filter(Boolean)
+    .map((opp) => buildOpportunityView(opp, signalsById));
+  const category = memberOpps[0]?.category || "skill_optimization";
+
   const ops = edit.edit_ops || [];
   const proposedRules = ops
     .filter((op) => op.op === "add" || op.op === "replace")
-    .map((op) => op.text || op.replace_text || "")
+    .map((op) => (op.text || op.replace_text || "").trim())
     .filter(Boolean);
-  const removals = ops.filter((op) => op.op === "delete").map((op) => op.text || "");
+  const removals = ops
+    .filter((op) => op.op === "delete")
+    .map((op) => (op.text || "").trim())
+    .filter(Boolean);
+
+  const title = (() => {
+    switch (category) {
+      case "policy_event":
+        return "策略审查草稿";
+      case "tool_event":
+        return "工具审查草稿";
+      case "needs_label":
+        return "归属待标注草稿";
+      case "skill_optimization":
+      default:
+        return `Skill 变更草稿：${edit.target_skill}`;
+    }
+  })();
+
+  const why = (() => {
+    if (category === "policy_event") {
+      return "系统发现一组与安全/审批策略相关的事件。这类问题不应该通过修改 SKILL.md 来处理，应该进入策略审查。";
+    }
+    if (category === "tool_event") {
+      return "系统发现一组与工具/能力相关的事件。这类问题应该在工具层处理，而不是通过 SKILL.md。";
+    }
+    if (category === "needs_label") {
+      return "本草稿对应的 cluster 还没有归属到真实 Skill，先不应自动晋升。";
+    }
+    return (
+      sanitizeBullets([edit.rationale]).join(" ")
+      || "系统在该 skill 上汇总了若干可复用的偏好/纠正证据，建议作为 Skill 规则沉淀。"
+    );
+  })();
+
+  const plannedContent = (() => {
+    if (category === "policy_event") {
+      return "**不生成 SKILL.md 补丁。** 建议进入策略审查，确认审批规则是否需要调整。";
+    }
+    if (category === "tool_event") {
+      return "**不生成 SKILL.md 补丁。** 建议进入工具审查，检查工具注册、权限或配置。";
+    }
+    if (category === "needs_label") {
+      return "**不生成 SKILL.md 补丁。** 请把来源 memory 的 Target Skill 改成真实 skill 名后重新扫描。";
+    }
+    return proposedRules.length
+      ? `拟新增/修改 ${proposedRules.length} 条规则到 ${edit.target_skill} 的 SKILL.md（已限定在 "## Memory-derived rules" 节内）。`
+      : "暂无可读规则，请展开技术细节查看 edit_ops。";
+  })();
+
+  const reviewRequirements = (() => {
+    if (category === "policy_event") {
+      return [
+        "不得绕过 ReviewQueue",
+        "不得放宽现有的 SafeHarness 安全策略",
+        "不得把安全事件写入普通 Skill 规则",
+      ];
+    }
+    if (category === "tool_event") {
+      return [
+        "不得通过 SKILL.md 掩盖工具层缺陷",
+        "不得放宽工具的默认审批策略",
+      ];
+    }
+    if (category === "needs_label") {
+      return ["先由人工把 Target Skill 标注到真实 skill"];
+    }
+    return [
+      "新增规则必须配套正/负回归 case",
+      "草稿必须经过 ReviewQueue 审批与人工 apply",
+      "不放宽既有的安全策略",
+    ];
+  })();
+
+  const copy = copyFor(category);
   return {
     id: edit.edit_id,
+    category,
+    categoryLabel: CATEGORY_LABEL[category],
+    categoryTone: CATEGORY_TONE[category],
+    title,
+    targetSubject: edit.target_skill || memberOpps[0]?.impactTarget || "—",
     status: edit.status,
-    targetSkill: edit.target_skill,
+    statusLabel: STATUS_LABEL[edit.status] || edit.status,
     sourceEvidenceCount:
-      (edit.source_signal_ids?.length || 0) +
-      (edit.source_promo_ids?.length || 0),
-    changeKind: proposedRules.length
-      ? removals.length
-        ? "新增 + 删除规则"
-        : "新增规则"
-      : removals.length
-      ? "删除规则"
-      : "修改规则",
-    risk: edit.risk_assessment || "—",
-    rationale: edit.rationale || "—",
-    expected: edit.expected_improvement || "—",
-    proposedRules,
-    removals,
-    requiredValidationCases: edit.required_validation_cases || [],
+      (edit.source_signal_ids?.length || 0) + (edit.source_promo_ids?.length || 0),
+    why,
+    plannedContent,
+    proposedRules: category === "skill_optimization" ? proposedRules : [],
+    removals: category === "skill_optimization" ? removals : [],
+    reviewRequirements,
     reviewId: edit.review_id || "",
+    canValidate: category === "skill_optimization"
+      && (edit.status === "proposed" || edit.status === "validated"),
+    whyLabel: copy.whyLabel,
+    planLabel: copy.planLabel,
+    regressionLabel: copy.regressionLabel,
+    categoryNotice: copy.notice,
+    recommendedActionList: copy.actionList,
     raw: edit,
   };
+}
+
+const STATUS_LABEL = {
+  proposed: "待审查",
+  validated: "已通过验证",
+  rejected: "已拒绝",
+  review_created: "已创建审查",
+  applied: "已应用",
+};
+
+// Per-category copy bundle. Skill items can talk about "建议这样改" /
+// proposed rules / regression cases; everything else uses neutral
+// "为什么需要关注 / 建议处理" wording so the UI never tells the user
+// to bake an event into SKILL.md.
+const CATEGORY_COPY = {
+  skill_optimization: {
+    whyLabel: "为什么建议这样改",
+    planLabel: "拟新增/修改的规则",
+    regressionLabel: "需要的回归 case",
+    notice: "",
+    actionList: [],
+  },
+  policy_event: {
+    whyLabel: "为什么需要关注",
+    planLabel: "建议处理",
+    regressionLabel: "审查要求",
+    notice: "该事件不属于 Skill 优化，不会生成 SKILL.md 补丁。",
+    actionList: ["进入策略审查", "继续观察", "忽略"],
+  },
+  tool_event: {
+    whyLabel: "为什么需要关注",
+    planLabel: "建议处理",
+    regressionLabel: "审查要求",
+    notice: "该事件属于工具/能力配置问题，不会生成 SKILL.md 补丁。",
+    actionList: ["创建工具审查", "检查工具注册或权限配置", "继续观察"],
+  },
+  needs_label: {
+    whyLabel: "为什么需要标注",
+    planLabel: "建议处理",
+    regressionLabel: "审查要求",
+    notice: "该 cluster 未归属到真实 Skill，先不会生成 SKILL.md 补丁。",
+    actionList: ["标注归属 Skill", "继续观察"],
+  },
+};
+
+function copyFor(category) {
+  return CATEGORY_COPY[category] || CATEGORY_COPY.skill_optimization;
 }
 
 export const CATEGORY_KEYS = [
@@ -245,3 +578,6 @@ export const CATEGORY_KEYS = [
 ];
 
 export { CATEGORY_LABEL, CATEGORY_TONE, LEVEL_LABEL };
+
+// Back-compat alias used by an earlier version of the page.
+export const buildEditView = mapEditToView;

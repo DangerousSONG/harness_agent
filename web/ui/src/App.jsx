@@ -908,13 +908,13 @@ export default function App() {
         kind: "chat_action",
         action,
         sourceMessage,
-        title: `Create ${skillName} skill review?`,
+        title: `创建 ${skillName} skill?`,
         message: [
-          `Skill: ${skillName}`,
-          "Operation: create skill review",
-          `Risk: ${riskLabel(action?.risk || sourceMessage?.risk || "safe_write_preview")}`,
-          "This will create a pending review. It will not write SKILL.md directly.",
+          `Skill：${skillName}`,
+          "操作：创建（系统会自动完成安全校验、风险分级和上架流转）",
+          "系统校验通过且风险低时自动上架；风险中/高时进入审查队列。",
         ].join("\n"),
+        confirmLabel: "创建",
         patch: JSON.stringify(payload, null, 2),
       });
       return;
@@ -926,13 +926,13 @@ export default function App() {
         kind: "chat_action",
         action,
         sourceMessage,
-        title: `Create ${toolName} tool?`,
+        title: `创建 ${toolName} 工具?`,
         message: [
-          `Tool: ${toolName}`,
-          "Operation: create tool files",
-          `Risk: ${riskLabel(action?.risk || sourceMessage?.risk || "safe_write_preview")}`,
-          "Preflight must pass before files are written.",
+          `Tool：${toolName}`,
+          "操作：创建（系统会自动完成安全校验、风险分级和上架流转）",
+          "系统校验通过且风险低时自动上架；写文件/Shell/高风险工具会进入审查队列。",
         ].join("\n"),
+        confirmLabel: "创建",
         patch: JSON.stringify(payload, null, 2),
       });
       return;

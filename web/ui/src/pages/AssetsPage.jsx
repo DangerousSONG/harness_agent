@@ -123,7 +123,7 @@ export default function AssetsPage({
                 key={skill.name}
                 title={skill.name}
                 description={skill.description || t("assets.skills.default_desc")}
-                status={assetStatus("skill", skill.name, reviews)}
+                status={assetStatus("skill", skill.name, reviews, skill)}
                 rows={assetRows({
                   assetType: "skill",
                   name: skill.name,
@@ -152,7 +152,13 @@ export default function AssetsPage({
                 key={tool.name}
                 title={tool.name}
                 description={tool.description || t("assets.tools.default_desc")}
-                status={pendingReview("tool", tool.name, reviews) !== "-" ? assetStatus("tool", tool.name, reviews) : tool.executable ? "executable" : "not executable"}
+                status={
+                  tool.lifecycle_status && tool.lifecycle_status !== "active"
+                    ? (LIFECYCLE_LABEL[tool.lifecycle_status] || tool.lifecycle_status)
+                    : pendingReview("tool", tool.name, reviews) !== "-"
+                      ? assetStatus("tool", tool.name, reviews, tool)
+                      : tool.executable ? "executable" : "not executable"
+                }
                 rows={assetRows({
                   assetType: "tool",
                   name: tool.name,
@@ -734,10 +740,25 @@ function pendingReview(assetType, name, reviews) {
   return filterByAsset(reviews, assetType, name).find((review) => ["pending", "approved"].includes(review.status))?.review_id || "-";
 }
 
-function assetStatus(assetType, name, reviews) {
+function assetStatus(assetType, name, reviews, asset) {
+  // 1) explicit lifecycle marker from the asset-creation pipeline
+  const lifecycle = asset?.lifecycle_status;
+  if (lifecycle && lifecycle !== "active") {
+    return LIFECYCLE_LABEL[lifecycle] || lifecycle;
+  }
+  // 2) otherwise fall back to the existing pending-review heuristic
   const review = filterByAsset(reviews, assetType, name).find((item) => ["pending", "approved"].includes(item.status));
   return review?.status || "active";
 }
+
+const LIFECYCLE_LABEL = {
+  draft: "草稿",
+  system_check: "系统校验中",
+  pending_review: "待审查",
+  active: "已上架",
+  rejected: "未通过",
+  archived: "已归档",
+};
 
 function filterByAsset(items, assetType, name) {
   return (items || []).filter((item) => {

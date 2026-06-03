@@ -126,6 +126,29 @@ class ToolRegistry:
 
     def run(self, tool_name: str, inputs: dict[str, Any] | None = None) -> dict[str, Any]:
         name = normalize_tool_name(tool_name)
+        # Lifecycle gate: ``draft`` / ``pending_review`` / ``rejected`` /
+        # ``archived`` tools must never execute, even if their handler
+        # and schema are otherwise wired up. Tools without a lifecycle
+        # marker stay loadable (back-compat with pre-pipeline tools).
+        try:
+            from .asset_lifecycle import LifecycleStore
+            lifecycle = LifecycleStore(self.project_root)
+        except Exception:
+            lifecycle = None
+        if lifecycle is not None and not lifecycle.is_loadable("tool", name):
+            record = lifecycle.read("tool", name)
+            return {
+                "ok": False,
+                "tool_name": name,
+                "error_code": "TOOL_NOT_ACTIVE",
+                "message": (
+                    f"{name} 工具尚未上架（lifecycle_status="
+                    f"{getattr(record, 'lifecycle_status', 'pending_review')}）；"
+                    "需通过系统校验或人工审查后才能调用。"
+                ),
+                "missing": [],
+                "suggested_actions": ["Wait for review", "Open tool details"],
+            }
         status = self.status(name)
         if not status["executable"]:
             return {

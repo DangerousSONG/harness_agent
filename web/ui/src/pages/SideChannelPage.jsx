@@ -16,7 +16,8 @@ import { api, getErrorMessage } from "../lib/api";
 import { useTranslate } from "../lib/i18n.jsx";
 import {
   buildOpportunityView,
-  buildEditView,
+  mapBatchToView,
+  mapEditToView,
   CATEGORY_KEYS,
 } from "../lib/scoutViewModel.js";
 
@@ -201,16 +202,19 @@ export default function SideChannelPage() {
         const memberOpps = (batch.opportunity_ids || [])
           .map((oid) => allViews.find((v) => v.id === oid))
           .filter(Boolean);
-        const category =
-          memberOpps[0]?.category || "skill_optimization";
-        return { batch, memberOpps, category };
+        return mapBatchToView(batch, memberOpps);
       }),
     [batches, allViews],
   );
 
+  const oppsById = useMemo(
+    () => Object.fromEntries(opportunities.map((o) => [o.opportunity_id, o])),
+    [opportunities],
+  );
+
   const draftViews = useMemo(
-    () => edits.map((edit) => buildEditView(edit)).filter(Boolean),
-    [edits],
+    () => edits.map((edit) => mapEditToView(edit, signalsById, oppsById)).filter(Boolean),
+    [edits, signalsById, oppsById],
   );
 
   const ignoredItems = useMemo(() => {
@@ -512,13 +516,10 @@ function FindingCard({ view, onIgnore, onGeneratePatch, busy }) {
           <FactGrid>
             <FactRow label="发生了什么">{view.whatHappened}</FactRow>
             <FactRow label="系统判断">{view.judgement}</FactRow>
-            <FactRow label="建议动作">{view.nextStep}</FactRow>
+            <FactRow label="建议处理">{view.recommendedAction}</FactRow>
           </FactGrid>
           {view.suggestions.length ? (
-            <Bullets label="可以改进的方向" values={view.suggestions} />
-          ) : null}
-          {view.guardrails.length ? (
-            <Bullets label="不允许动" values={view.guardrails} />
+            <Bullets label="可以沉淀的方向" values={view.suggestions} />
           ) : null}
         </div>
       </div>
@@ -686,66 +687,92 @@ function SuggestionsTab({ items, page, onPage, onGenerateDraft, busy }) {
   const { pageItems, total, pageCount, page: safePage } = paginate(items, page);
   return (
     <div className="space-y-3">
-      {pageItems.map(({ batch, memberOpps, category }) => {
-        const isSkillCategory = category === "skill_optimization";
-        return (
-          <article key={batch.batch_id} className="section-panel p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="inline-flex items-center gap-1 rounded-full border border-line bg-zinc-50 px-2 py-0.5 text-[11px] font-semibold text-zinc-700">
-                    <CategoryIcon category={category} className="h-3 w-3" />
-                    {memberOpps[0]?.categoryLabel || "Skill 优化"}
-                  </span>
-                  <span className="text-sm font-semibold text-zinc-900">
-                    {batch.target_skill}
-                  </span>
-                  <span className="text-xs text-zinc-500">
-                    汇总 {memberOpps.length || batch.opportunity_ids?.length || 0} 条发现
-                  </span>
-                  <span className="text-xs text-zinc-500">
-                    风险：{batch.risk_level || "—"}
-                  </span>
-                </div>
-                <FactGrid>
-                  <FactRow label="为什么建议这样改">{batch.merged_summary || "—"}</FactRow>
-                  {batch.should_improve?.length ? (
-                    <FactRow label="预期改进">
-                      <ul className="list-disc space-y-1 pl-5">
-                        {batch.should_improve.map((s, i) => (
-                          <li key={i}>{s}</li>
-                        ))}
-                      </ul>
-                    </FactRow>
-                  ) : null}
-                </FactGrid>
-              </div>
-              {isSkillCategory ? (
-                <button
-                  className="primary-button"
-                  onClick={() => onGenerateDraft(batch.batch_id)}
-                  disabled={busy}
+      {pageItems.map((view) => (
+        <article key={view.id} className="section-panel p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={[
+                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold",
+                    view.categoryTone,
+                  ].join(" ")}
                 >
-                  <Sparkles className="h-4 w-4" />
-                  生成变更草稿
-                </button>
-              ) : (
-                <span className="rounded-md border border-amber-200 bg-amber-50/60 px-2 py-1 text-[11px] text-amber-800">
-                  非 skill 优化类，不可直接生成 SKILL.md 补丁
+                  <CategoryIcon category={view.category} className="h-3 w-3" />
+                  {view.categoryLabel}
                 </span>
-              )}
+                <span className="rounded-full border border-line bg-white px-2 py-0.5 text-[11px] text-zinc-600">
+                  风险：{view.riskLabel}
+                </span>
+                <span className="text-xs text-zinc-500">
+                  目标对象：<span className="font-medium text-zinc-700">{view.targetSubject}</span>
+                </span>
+                <span className="text-xs text-zinc-500">
+                  来源证据：{view.evidenceCount} 条
+                </span>
+              </div>
+              <h3 className="mt-2 text-sm font-semibold text-zinc-950">{view.title}</h3>
+              {view.categoryNotice ? (
+                <p className="mt-2 rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-xs text-amber-800">
+                  {view.categoryNotice}
+                </p>
+              ) : null}
+              <FactGrid>
+                <FactRow label={view.whyLabel}>{view.why}</FactRow>
+                {view.canGenerateSkillDraft ? (
+                  <FactRow label={view.planLabel}>
+                    <span dangerouslySetInnerHTML={{ __html: emphasize(view.plannedContent) }} />
+                  </FactRow>
+                ) : (
+                  <FactRow label={view.planLabel}>
+                    <ul className="list-disc space-y-1 pl-5">
+                      {view.recommendedActionList.map((act, i) => (
+                        <li key={i}>{act}</li>
+                      ))}
+                    </ul>
+                  </FactRow>
+                )}
+                {view.canGenerateSkillDraft && view.reviewRequirements.length ? (
+                  <FactRow label={view.regressionLabel}>
+                    <ul className="list-disc space-y-1 pl-5">
+                      {view.reviewRequirements.map((req, i) => (
+                        <li key={i}>{req}</li>
+                      ))}
+                    </ul>
+                  </FactRow>
+                ) : null}
+              </FactGrid>
             </div>
-            <details className="mt-3 text-xs">
-              <summary className="cursor-pointer text-zinc-500">展开调试信息</summary>
-              <pre className="mt-2 overflow-x-auto rounded-md border border-line bg-zinc-50/60 p-2 text-[10.5px] text-zinc-600">
-{JSON.stringify(batch, null, 2)}
-              </pre>
-            </details>
-          </article>
-        );
-      })}
+            {view.canGenerateSkillDraft ? (
+              <button
+                className="primary-button"
+                onClick={() => onGenerateDraft(view.id)}
+                disabled={busy}
+              >
+                <Sparkles className="h-4 w-4" />
+                生成变更草稿
+              </button>
+            ) : null}
+          </div>
+          <details className="mt-3 text-xs">
+            <summary className="cursor-pointer text-zinc-500">展开技术细节</summary>
+            <pre className="mt-2 overflow-x-auto rounded-md border border-line bg-zinc-50/60 p-2 text-[10.5px] text-zinc-600">
+{JSON.stringify(view.raw, null, 2)}
+            </pre>
+          </details>
+        </article>
+      ))}
       <Paginator page={safePage} pageCount={pageCount} total={total} onPage={onPage} />
     </div>
+  );
+}
+
+// Lightweight emphasis: replace **text** with bold; safe because the
+// only callers feed view-model strings we control.
+function emphasize(text) {
+  return String(text || "").replace(
+    /\*\*(.+?)\*\*/g,
+    '<strong class="text-rose-700">$1</strong>',
   );
 }
 
@@ -763,43 +790,64 @@ function DraftsTab({ views, page, onPage, onValidate, busy }) {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-semibold text-zinc-900">
-                  {draft.targetSkill}
+                <span
+                  className={[
+                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold",
+                    draft.categoryTone,
+                  ].join(" ")}
+                >
+                  <CategoryIcon category={draft.category} className="h-3 w-3" />
+                  {draft.categoryLabel}
                 </span>
                 <span className="rounded-full border border-line bg-white px-2 py-0.5 text-[11px] text-zinc-600">
-                  状态：{draft.status}
+                  状态：{draft.statusLabel}
                 </span>
-                <span className="rounded-full border border-line bg-white px-2 py-0.5 text-[11px] text-zinc-600">
-                  变更类型：{draft.changeKind}
+                <span className="text-xs text-zinc-500">
+                  目标对象：<span className="font-medium text-zinc-700">{draft.targetSubject}</span>
                 </span>
                 <span className="text-xs text-zinc-500">
                   来源证据：{draft.sourceEvidenceCount} 条
                 </span>
-                {draft.reviewId ? (
-                  <span className="text-xs text-appleBlue">
-                    Review：<span className="font-mono">{draft.reviewId}</span>
-                  </span>
-                ) : null}
               </div>
+              <h3 className="mt-2 text-sm font-semibold text-zinc-950">{draft.title}</h3>
+              {draft.categoryNotice ? (
+                <p className="mt-2 rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-xs text-amber-800">
+                  {draft.categoryNotice}
+                </p>
+              ) : null}
               <FactGrid>
-                <FactRow label="为什么建议这样改">{draft.rationale}</FactRow>
-                <FactRow label="期望改进">{draft.expected}</FactRow>
-                <FactRow label="风险评估">{draft.risk}</FactRow>
+                <FactRow label={draft.whyLabel}>{draft.why}</FactRow>
+                {draft.category === "skill_optimization" ? (
+                  <FactRow label={draft.planLabel}>
+                    <span dangerouslySetInnerHTML={{ __html: emphasize(draft.plannedContent) }} />
+                  </FactRow>
+                ) : (
+                  <FactRow label={draft.planLabel}>
+                    <ul className="list-disc space-y-1 pl-5">
+                      {draft.recommendedActionList.map((act, i) => (
+                        <li key={i}>{act}</li>
+                      ))}
+                    </ul>
+                  </FactRow>
+                )}
+                {draft.category === "skill_optimization" && draft.reviewRequirements.length ? (
+                  <FactRow label={draft.regressionLabel}>
+                    <ul className="list-disc space-y-1 pl-5">
+                      {draft.reviewRequirements.map((req, i) => (
+                        <li key={i}>{req}</li>
+                      ))}
+                    </ul>
+                  </FactRow>
+                ) : null}
               </FactGrid>
-              {draft.proposedRules.length ? (
+              {draft.category === "skill_optimization" && draft.proposedRules.length ? (
                 <Bullets label="拟新增/修改的规则" values={draft.proposedRules} />
               ) : null}
-              {draft.removals.length ? (
+              {draft.category === "skill_optimization" && draft.removals.length ? (
                 <Bullets label="拟删除的规则" values={draft.removals} />
               ) : null}
-              {draft.requiredValidationCases.length ? (
-                <Bullets
-                  label="需要的回归 case"
-                  values={draft.requiredValidationCases}
-                />
-              ) : null}
             </div>
-            {draft.status === "proposed" || draft.status === "validated" ? (
+            {draft.canValidate ? (
               <button
                 className="primary-button"
                 onClick={() => onValidate(draft.id)}
@@ -811,7 +859,7 @@ function DraftsTab({ views, page, onPage, onValidate, busy }) {
           </div>
           <details className="mt-3 text-xs">
             <summary className="cursor-pointer text-zinc-500">
-              展开技术细节（原始 diff / edit_ops）
+              展开技术细节（原始 diff / edit_ops / OPP 引用）
             </summary>
             <ul className="mt-2 space-y-1">
               {(draft.raw.edit_ops || []).map((op, idx) => (

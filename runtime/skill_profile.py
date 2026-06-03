@@ -90,9 +90,20 @@ class SkillProfileStore:
     def list_profiles(self) -> list[SkillProfile]:
         if not self.skills_dir.exists():
             return []
+        # Lifecycle gate: skills that aren't ``active`` (e.g. ``draft`` /
+        # ``pending_review`` from the asset-creation pipeline) must not
+        # surface to the router. Assets with no lifecycle marker remain
+        # loadable for back-compat with the existing skill tree.
+        try:
+            from .asset_lifecycle import LifecycleStore
+            lifecycle = LifecycleStore(self.skills_dir.parent)
+        except Exception:
+            lifecycle = None
         out: list[SkillProfile] = []
         for child in sorted(self.skills_dir.iterdir()):
             if not child.is_dir():
+                continue
+            if lifecycle is not None and not lifecycle.is_loadable("skill", child.name):
                 continue
             profile = self.load(child.name)
             if profile is not None:
