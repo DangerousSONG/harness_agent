@@ -456,6 +456,20 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
             )
         return ok(result["data"], result["message"], result.get("next_actions", []))
 
+    @app.post("/api/skills/{skill}/archive")
+    def skill_archive(skill: str) -> JSONResponse:
+        result = _archive_asset(ctx, kind="skill", name=skill)
+        if not result["ok"]:
+            return fail(result["message"], status_code=result.get("status_code", 400))
+        return ok(result["data"], result["message"])
+
+    @app.post("/api/tools/{tool_name}/archive")
+    def tool_archive(tool_name: str) -> JSONResponse:
+        result = _archive_asset(ctx, kind="tool", name=tool_name)
+        if not result["ok"]:
+            return fail(result["message"], status_code=result.get("status_code", 400))
+        return ok(result["data"], result["message"])
+
     @app.get("/api/tools/{tool_name}")
     def tool_detail(tool_name: str) -> JSONResponse:
         tool = next((item for item in _tool_views(ctx) if item["name"] == tool_name), None)
@@ -1942,6 +1956,68 @@ def _tool_lifecycle_status(ctx: WebContext, tool_name: str) -> str:
     from runtime.asset_lifecycle import LifecycleStore
     record = LifecycleStore(ctx.project_root).read("tool", tool_name)
     return record.lifecycle_status if record else "active"
+
+
+def _archive_asset(ctx: WebContext, *, kind: str, name: str) -> dict[str, Any]:
+    """Soft-delete a Skill or Tool by flipping the lifecycle marker to
+    ``archived``. SkillProfileStore / ToolRegistry already gate
+    non-active assets, so the asset stops being loadable / executable
+    immediately. Files stay on disk so reviews, versions, and the
+    audit chain remain intact; a human can hard-delete later if they
+    really want to.
+    """
+    from runtime.asset_lifecycle import LifecycleStore
+    if kind not in {"skill", "tool"}:
+        return {"ok": False, "message": f"Unknown asset kind: {kind!r}", "status_code": 400}
+    normalized = normalize_name(name) if kind == "skill" else _extract_tool_name(name)
+    if not normalized:
+        return {"ok": False, "message": "Invalid asset name.", "status_code": 400}
+    asset_dir = ctx.project_root / ("skills" if kind == "skill" else "tools") / normalized
+    if not asset_dir.exists():
+        return {"ok": False, "message": f"Unknown {kind}: {normalized}", "status_code": 404}
+    store = LifecycleStore(ctx.project_root)
+    existing = store.read(kind, normalized)
+    previous = existing.lifecycle_status if existing else "active"
+    if previous == "archived":
+        return {
+            "ok": True,
+            "message": f"{kind} {normalized} 已经处于已归档状态。",
+            "data": {
+                "name": normalized,
+                "asset_type": kind,
+                "lifecycle_status": "archived",
+                "previous_status": previous,
+            },
+        }
+    record = store.write(
+        kind=kind,
+        name=normalized,
+        lifecycle_status="archived",
+        risk_level=getattr(existing, "risk_level", "low") if existing else "low",
+        review_id=getattr(existing, "review_id", "") if existing else "",
+    )
+    _write_operation_log(
+        ctx,
+        f"{kind}.archive",
+        {
+            "name": normalized,
+            "previous_status": previous,
+            "new_status": record.lifecycle_status,
+        },
+    )
+    return {
+        "ok": True,
+        "message": (
+            f"{normalized} 已归档，不再被加载或执行；"
+            "文件保留在磁盘以便审计与恢复。"
+        ),
+        "data": {
+            "name": normalized,
+            "asset_type": kind,
+            "lifecycle_status": record.lifecycle_status,
+            "previous_status": previous,
+        },
+    }
 
 
 def _first_existing(paths: Any) -> Path | None:

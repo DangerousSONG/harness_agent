@@ -132,6 +132,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body || {}),
     }),
+  archiveSkill: (name) =>
+    request(`/api/skills/${encodeURIComponent(name)}/archive`, {
+      method: "POST",
+    }),
+  archiveTool: (name) =>
+    request(`/api/tools/${encodeURIComponent(name)}/archive`, {
+      method: "POST",
+    }),
   memories: () => request("/api/memories"),
   promoteMemory: (id) =>
     request(`/api/memories/${encodeURIComponent(id)}/promote`, { method: "POST" }),
