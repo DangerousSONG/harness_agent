@@ -747,7 +747,7 @@ def call_openai_summary(query: str, markdown: str, api_key: str, model: str, fal
     payload = json.dumps({
         "model": model,
         "messages": [
-            {"role": "system", "content": "Summarize only from the provided Markdown. Cite source URLs. Do not use raw HTML or invent facts."},
+            {"role": "system", "content": "Summarize only from the provided Markdown. Cite source URLs. Do not use raw HTML or invent facts. 语言约束：除非用户明确要求使用其他语言，否则用户可见的摘要必须使用简体中文；代码、命令、变量名、URL、日志可保留英文原文。"},
             {"role": "user", "content": f"Question: {query}\n\nMarkdown sources:\n{markdown[:9000]}"},
         ],
         "temperature": 0.2,
@@ -781,7 +781,7 @@ def call_bailian_summary(query: str, markdown: str, api_key: str, fallback_summa
     payload = json.dumps({
         "model": model,
         "messages": [
-            {"role": "system", "content": "Summarize only from the provided Markdown. Cite source URLs. Do not use raw HTML or invent facts."},
+            {"role": "system", "content": "Summarize only from the provided Markdown. Cite source URLs. Do not use raw HTML or invent facts. 语言约束：除非用户明确要求使用其他语言，否则用户可见的摘要必须使用简体中文；代码、命令、变量名、URL、日志可保留英文原文。"},
             {"role": "user", "content": f"Question: {query}\n\nMarkdown sources:\n{markdown[:9000]}"},
         ],
         "temperature": 0.2,
