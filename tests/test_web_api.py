@@ -443,6 +443,58 @@ class WebApiTests(unittest.TestCase):
             self.assertNotIn("Used skill:", payload["message"])
             self.assertNotIn("Only command-mode", payload["message"])
 
+    def test_general_chat_life_advice_does_not_return_canned_english(self):
+        # "上班太困了怎么办" — typical life-advice / open-ended question.
+        # It should ride the general_chat lane. With OPENAI_MODEL not
+        # configured in tests, we must NOT see the legacy English canned
+        # "I can help with writing, explanation, workspace status…"
+        # answer; the Chinese fallback (and a model_call trace recording
+        # whether_llm_called / fallback_reason) must be returned instead.
+        import os
+        saved = {k: os.environ.pop(k, None) for k in ("OPENAI_API_KEY", "OPENAI_MODEL")}
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                write_skill(root)
+                client = self.make_client(root)
+                response = client.post(
+                    "/api/chat",
+                    json={"message": "上班太困了怎么办"},
+                )
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertTrue(payload["ok"])
+                # Routes to general_chat — never gets up-routed to a
+                # workspace / tool intent.
+                self.assertIntentPrimary(payload, "general_chat")
+                # The English canned text must not appear anywhere in
+                # the user-visible message.
+                self.assertNotIn(
+                    "I can help with writing, explanation",
+                    payload["message"],
+                )
+                # The Chinese fallback message is what shows up.
+                self.assertIn("我可以帮你", payload["message"])
+                self.assertIn("简体中文" if False else "Skill", payload["message"])
+                # Trace records the model_call attempt with the debug
+                # fields the user asked for: intent / route /
+                # whether_llm_called / model_name / fallback_reason.
+                model_calls = [
+                    step for step in payload.get("trace", [])
+                    if step.get("type") == "model_call"
+                ]
+                self.assertTrue(model_calls, "expected a model_call trace step")
+                step = model_calls[-1]
+                self.assertEqual(step.get("intent"), "general_chat")
+                self.assertEqual(step.get("route"), "general_chat_fallback")
+                self.assertEqual(step.get("whether_llm_called"), "false")
+                self.assertEqual(step.get("fallback_reason"), "no_api_key_or_model")
+                self.assertIn(step.get("status"), {"skipped", "failed"})
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
+
     def test_chat_greeting_is_direct_answer_without_skill_template(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

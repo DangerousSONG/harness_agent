@@ -707,9 +707,74 @@
     </div>
   </section>
 
+  <!-- ============ Asset creation pipeline ============ -->
+  <section>
+    <h2><span class="num">06</span>Skill / Tool 创建（系统校验 + 路由）</h2>
+    <p class="lead">用户只点「创建」；系统在后台完成草稿暂存、安全检查、风险分级、自动上架或进入 ReviewQueue。普通用户只看 5 个状态：草稿 / 系统校验中 / 待审查 / 已上架 / 未通过。</p>
+    <div class="flow">
+      <div class="step gate">
+        <div class="label">Stage 1</div>
+        <div class="name">create_draft_asset</div>
+        <div class="body">内存暂存提议内容，不写盘</div>
+      </div>
+      <div class="step">
+        <div class="label">Stage 2</div>
+        <div class="name">run_asset_safety_check</div>
+        <div class="body">扫描 rejection phrase / 高风险 phrase / 风险 entry_type / 缺失 schema · allowlist · 不安全 policy</div>
+      </div>
+      <div class="step">
+        <div class="label">Stage 3</div>
+        <div class="name">classify_asset_risk</div>
+        <div class="body">low / medium / high / blocked</div>
+      </div>
+      <div class="step">
+        <div class="label">Stage 4</div>
+        <div class="name">decide_lifecycle</div>
+        <div class="body">low → active；medium/high → pending_review；blocked → rejected</div>
+      </div>
+      <div class="step gate">
+        <div class="label">Stage 5</div>
+        <div class="name">runtime gate</div>
+        <div class="body">非 active 的 skill 不被 SkillRouter 加载；非 active 的 tool 返回 <code>TOOL_NOT_ACTIVE</code></div>
+      </div>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <h4><span class="dot"></span>Skill 检查 <code>runtime/asset_creation_pipeline.py</code></h4>
+        <p>rejection phrase（ignore previous instructions / bypass approval / disable safety / 忽略系统提示 / 绕过审批 …）→ blocked；high-risk phrase（secret / credential / api key / os.system / subprocess.* …）→ high；capability mention（tool / file / workspace / network …）→ medium；其余 → low。落到 <code>skills/&lt;name&gt;/.lifecycle.json</code>。</p>
+      </div>
+      <div class="card warn">
+        <h4><span class="dot"></span>Tool 检查 · 硬降级</h4>
+        <p>entry_type ∈ {shell, exec, subprocess, write_file, delete_file, fs_write, fs_delete, execute_command} → high；缺 inputs schema → medium；network-class 工具没 <code>network_domain_allowlist</code> → high；high-risk tool 的 <code>default_policy=allow</code> 自动降级为 <code>require_approval</code> 并写 issue。</p>
+      </div>
+      <div class="card indigo">
+        <h4><span class="dot"></span>Lifecycle 标记 <code>runtime/asset_lifecycle.py</code></h4>
+        <p><code>.lifecycle.json</code> 记 <code>lifecycle_status / risk_level / review_id / audit_ref</code>。<b>无 marker = active</b>（向后兼容已有 skill / tool）。安全检查详情进 audit log 和 review metadata，仅管理员可见。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ Side-Channel user-view ============ -->
+  <section>
+    <h2><span class="num">07</span>旁路进化 · 用户视图</h2>
+    <p class="lead">前端 <code>scoutViewModel.js</code> 把 raw opportunity / batch / edit 收敛成四个类别。非 Skill 类卡片永远不会显示「生成变更草稿」按钮，并明显标注「该事件不属于 Skill 优化，不会生成 SKILL.md 补丁」。</p>
+    <table class="dec">
+      <thead><tr><th>类别</th><th>触发</th><th>主按钮</th></tr></thead>
+      <tbody>
+        <tr><td><span class="dec-tag promote">Skill 优化</span></td><td class="cond">decision ∈ {promote, request_eval, defer} 且无 policy/tool 标记、非 self_improvement</td><td class="dec">生成回归测试 / 生成变更草稿 / 忽略</td></tr>
+        <tr><td><span class="dec-tag safety">策略 / 安全事件</span></td><td class="cond">policy_gate 命中 / decision ∈ {safety_review, quarantine} / 内容含 policy_block / approval_block / Tool Call Blocked / SafeHarness policy / protected file …</td><td class="dec">进入策略审查 / 继续观察 / 忽略</td></tr>
+        <tr><td><span class="dec-tag review">工具 / 能力问题</span></td><td class="cond">tag ∈ {tool_failure, capability_gap}；target_skill 以 <code>tool</code> 开头</td><td class="dec">创建工具审查 / 继续观察 / 忽略</td></tr>
+        <tr><td><span class="dec-tag defer">需人工标注</span></td><td class="cond">target_skill=self_improvement 或 reason 含 <code>needs_human_label=true</code></td><td class="dec">标注归属 Skill / 忽略</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:13px; color: var(--muted); margin-top: 10px;">
+      工程字段（OPP / SIG / BATCH / EDIT id、score、value/risk/evidence/testability、raw tags、edit_ops、must_not_regress、<code>add → ## Memory-derived rules</code>、<code>tag:foo|bar</code>、<code>reduce repetition of pattern</code> …）统一收到「展开技术细节」折叠区。Tab：发现的问题 / 建议处理 / 变更草稿 / 已忽略。
+    </p>
+  </section>
+
   <!-- ============ Safety boundaries ============ -->
   <section>
-    <h2><span class="num">06</span>硬安全边界</h2>
+    <h2><span class="num">08</span>硬安全边界</h2>
     <p class="lead">所有进化必须可追溯：<code>memory → PROMO → regression REV → skill patch REV → approve → apply → version</code>。下面这些规则在测试里被反复钉死。</p>
 
     <div class="guards">
@@ -719,12 +784,15 @@
       <div class="guard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><div><b>SkillRouter 默认从候选中排除 <code>self_improvement</code>。</b>低置信请求回落到现有 executor 逻辑，不会被强行绑定到自我改进通道。</div></div>
       <div class="guard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><div><b>secret / 注入 / bypass approval / disable safety 不沉淀为长期规则。</b>Skill Memory 入口脱敏 + 污染拦截；LLM 输出经 <code>redact_secrets</code> + <code>looks_like_memory_poisoning</code> 清洗，命中即回退 deterministic。</div></div>
       <div class="guard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><div><b>Optimizer 仅 <code>add/replace/delete</code> 在 <code>## Memory-derived rules</code>。</b>evaluator / scorer / regression gate 不能被 Scout 或 Optimizer 修改。</div></div>
+      <div class="guard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><div><b>资产创建管线硬规则。</b>含 rejection phrase 的 Skill 永远不 auto-activate；<code>shell / write_file / fs_delete</code> 等高风险 Tool 永远不 auto-activate；high-risk Tool 的 <code>default_policy=allow</code> 自动降级为 <code>require_approval</code>；<code>pending_review</code> 的 skill 不会被 SkillRouter 加载，<code>pending_review</code> 的 tool 不会被 ToolRegistry 执行。</div></div>
+      <div class="guard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><div><b>Optimizer policy_gate。</b>tag / content / source / <code>features.safety_type / error_type</code> 命中 <code>policy_block / approval_block / Tool Call Blocked / SafeHarness policy / protected file / policy_candidate / governance_related / tool_failure</code> 任一 → Optimizer 拒绝生成 <code>skill.bounded_edit</code> / <code>skill.promotion</code>，附 <code>requires_policy_review=true</code>。</div></div>
+      <div class="guard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><div><b>中文优先 + 模型可观测。</b>所有用户可见的 LLM prompt 都加了「除非用户明确要求其他语言，否则用户可见回答必须使用简体中文」；general_chat 回退时 trace 上附 <code>model_call</code> 步骤，区分「模型回答」和「兜底回答」并写出 <code>whether_llm_called / model_name / fallback_reason</code>。</div></div>
     </div>
   </section>
 
   <!-- ============ Quickstart ============ -->
   <section>
-    <h2><span class="num">07</span>快速开始</h2>
+    <h2><span class="num">09</span>快速开始</h2>
     <p class="lead">Python 3.10+。本地优先，所有产物都落到 <code>.gitignored</code> 的本地目录。</p>
 
     <pre><code>python -m venv .venv &amp;&amp; source .venv/bin/activate
@@ -763,7 +831,7 @@ cd web/ui &amp;&amp; npm run build</code></pre>
 
   <!-- ============ Project layout ============ -->
   <section>
-    <h2><span class="num">08</span>项目布局</h2>
+    <h2><span class="num">10</span>项目布局</h2>
     <pre><code>harness_agent/
 ├─ harness/      # REPL、主循环、prompt、任务、消息、teammate
 ├─ runtime/      # ReviewQueue · Skill 加载 · memory · 主链路进化 · chat
@@ -771,6 +839,7 @@ cd web/ui &amp;&amp; npm run build</code></pre>
 │                # 工具：skill_eval_runner · knowledge_base · kb_index · tool_registry
 │                # 观测：run_trace · credit_assignment · run_trace_scanner
 │                # 路由 &amp; 统计：skill_router · skill_profile · memory_utility
+│                # 资产创建：asset_creation_pipeline · asset_lifecycle
 ├─ safety/       # SafeHarness 事件 · 决策 · 策略 · guard · 审计
 ├─ tools/        # OpenAI tool schema + handler 分发
 ├─ skills/       # Skill 定义 · memory · eval cases · profile.json
@@ -784,13 +853,13 @@ cd web/ui &amp;&amp; npm run build</code></pre>
 
   <!-- ============ Web workbench ============ -->
   <section>
-    <h2><span class="num">09</span>Web 工作台</h2>
+    <h2><span class="num">11</span>Web 工作台</h2>
     <p class="lead">左侧导航 5 项，统一走 <code>Paginator</code> 分页（10/页），EN / 中文切换由 <code>LanguageProvider</code> 接管。</p>
     <div class="cards">
       <div class="card"><h4><span class="dot"></span>Chat</h4><p>自然语言入口，复用所有审批与版本规则；输入框带"📎 知识库 N/3"选择器。</p></div>
       <div class="card"><h4><span class="dot"></span>Workspace</h4><p>文件读写、命令运行。</p></div>
       <div class="card"><h4><span class="dot"></span>Assets</h4><p>Skills / Tools / Workflows / Memories / Knowledge bases / Eval cases。</p></div>
-      <div class="card indigo"><h4><span class="dot"></span>Self-Evolution</h4><p>5 个 tab：候选 PROMO / 审批队列 / 版本与回滚 / 旁路进化 / <b>Runs</b>。顶部常驻 3 张 metric 卡。</p></div>
+      <div class="card indigo"><h4><span class="dot"></span>Self-Evolution</h4><p>5 个 tab：候选 PROMO / 审批队列 / 版本与回滚 / <b>旁路进化（问题发现与处理工作台）</b> / <b>Runs</b>。旁路进化界面把发现分成 Skill 优化 / 策略 · 安全事件 / 工具 · 能力问题 / 需人工标注 四类，工程字段折叠在「展开技术细节」里。</p></div>
       <div class="card"><h4><span class="dot"></span>Settings</h4><p>Provider 配置 + 模型连接（写入 <code>.env</code> 并 in-process 生效）。</p></div>
     </div>
   </section>

@@ -59,21 +59,96 @@ class Executor:
         if primary == "knowledge_question":
             return self._knowledge_answer(message, safety, task_mode, intent, asset_route, capability, risk, prefix_trace)
         if primary == "general_chat":
-            llm_answer = _llm_free_form_answer(message)
-            if llm_answer:
+            llm_result = _llm_free_form_answer(message)
+            if llm_result["text"]:
+                # Live model answer — stamp the trace with the model
+                # identity so users can see who answered.
                 return self.composer.compose(
                     response_type="answer",
-                    message=llm_answer,
+                    message=llm_result["text"],
                     safety=safety,
                     task_mode=task_mode,
                     intent=intent,
                     asset_route=asset_route,
                     capability=capability,
                     risk=risk,
-                    traces=prefix_trace + [trace("model_call", "Model fallback", status="completed", summary="Used configured OPENAI_MODEL for the conversational answer.")],
+                    traces=prefix_trace + [trace(
+                        "model_call",
+                        "模型回答",
+                        status="completed",
+                        intent="general_chat",
+                        route="general_chat_llm",
+                        whether_llm_called="true",
+                        model_name=llm_result["model"],
+                        fallback_reason="",
+                        summary=f"使用 OPENAI_MODEL={llm_result['model']} 生成回答。",
+                    )],
                 )
+            # LLM unavailable. Fall through to the legacy handler when
+            # one is wired (the web orchestrator's ``_handle_chat`` will
+            # re-classify and may resolve to a more specific intent
+            # like ``workspace_status_query``). Only when there is no
+            # legacy handler do we return the Chinese fallback — never
+            # the old English canned message.
+            self._last_llm_fallback_reason = llm_result["reason"] or "unknown"
+            self._last_llm_model = llm_result["model"] or ""
         if self.legacy_handler:
-            return self.legacy_handler(ctx, message, context)
+            response = self.legacy_handler(ctx, message, context)
+            # When we tried the LLM and fell through here, stamp the
+            # legacy response's trace with the model_call debug step so
+            # the user can still see whether LLM was called, the model
+            # name, and the fallback reason.
+            if primary == "general_chat" and isinstance(response, dict):
+                model_call = trace(
+                    "model_call",
+                    "兜底回答",
+                    status=(
+                        "skipped"
+                        if getattr(self, "_last_llm_fallback_reason", "") == "no_api_key_or_model"
+                        else "failed"
+                    ),
+                    intent="general_chat",
+                    route="general_chat_fallback",
+                    whether_llm_called="false",
+                    model_name=getattr(self, "_last_llm_model", "") or "-",
+                    fallback_reason=getattr(self, "_last_llm_fallback_reason", "unknown"),
+                    summary=(
+                        "未调用 LLM。原因:"
+                        f"{getattr(self, '_last_llm_fallback_reason', 'unknown')}"
+                    ),
+                )
+                existing_trace = response.get("trace")
+                if isinstance(existing_trace, list):
+                    response["trace"] = [*existing_trace, model_call]
+                else:
+                    response["trace"] = [model_call]
+            return response
+        if primary == "general_chat":
+            return self.composer.compose(
+                response_type="answer",
+                message=self.GENERAL_CHAT_FALLBACK_MESSAGE,
+                safety=safety,
+                task_mode=task_mode,
+                intent=intent,
+                asset_route=asset_route,
+                capability=capability,
+                risk=risk,
+                traces=prefix_trace + [trace(
+                    "model_call",
+                    "兜底回答",
+                    status=(
+                        "skipped"
+                        if getattr(self, "_last_llm_fallback_reason", "") == "no_api_key_or_model"
+                        else "failed"
+                    ),
+                    intent="general_chat",
+                    route="general_chat_fallback",
+                    whether_llm_called="false",
+                    model_name=getattr(self, "_last_llm_model", "") or "-",
+                    fallback_reason=getattr(self, "_last_llm_fallback_reason", "unknown"),
+                    summary=f"未调用 LLM。原因:{getattr(self, '_last_llm_fallback_reason', 'unknown')}",
+                )],
+            )
         return self.composer.compose(
             response_type="answer",
             message="我可以帮你处理这个请求。请补充目标、输入材料，或说明你希望我现在完成哪一步。",
@@ -85,6 +160,13 @@ class Executor:
             risk=risk,
             traces=prefix_trace,
         )
+
+    # Surfaced last so the public-facing fallback message lives next to
+    # the place that uses it.
+    GENERAL_CHAT_FALLBACK_MESSAGE = (
+        "我可以帮你进行写作、解释、工作区状态查询、Skill 记忆、晋升候选、"
+        "审查和版本化自进化相关操作。"
+    )
 
     def _kb_qa(
         self,
@@ -131,7 +213,8 @@ class Executor:
             f"User question:\n{message}\n\n"
             f"Knowledge-base excerpts:\n{bundle['context']}"
         )
-        answer = _llm_free_form_answer(prompt) or (
+        kb_result = _llm_free_form_answer(prompt)
+        answer = kb_result["text"] or (
             "当前配置的 OPENAI_MODEL 没有返回可用答案；"
             "上方内容是本次已检索到、原本会用于回答的原始上下文。"
         )
@@ -262,9 +345,9 @@ class Executor:
         if "渐进式 api" in message.lower() or "progressive api" in message.lower():
             answer = "渐进式 API 是一种先提供简单入口、再按需要逐步暴露高级能力的接口设计方式。新手可以用最少参数完成常见任务，进阶用户再打开配置、插件、回调或底层对象来处理复杂场景。"
         else:
-            llm_answer = _llm_free_form_answer(message)
-            if llm_answer:
-                answer = llm_answer
+            llm_result = _llm_free_form_answer(message)
+            if llm_result["text"]:
+                answer = llm_result["text"]
                 used_llm = True
             else:
                 answer = "这是一个知识型问题，我会直接解释概念，不创建工具或写入 workspace。你可以继续给我具体术语或上下文。"
@@ -582,11 +665,21 @@ def _is_greeting(message: str) -> bool:
     return message.strip().lower() in {"你好", "您好", "hi", "hello", "hey"}
 
 
-def _llm_free_form_answer(message: str) -> str:
+def _llm_free_form_answer(message: str) -> dict[str, str]:
+    """Try the configured OPENAI_MODEL for a free-form answer.
+
+    Returns a small structured payload so the caller can record on
+    the RunTrace whether the LLM was actually consulted, which model
+    was used, and — when fallback was used — exactly why:
+
+      {"text": <model output>, "model": <model name>, "reason": ""}
+      {"text": "", "model": "",     "reason": "no_api_key_or_model"}
+      {"text": "", "model": <name>, "reason": "call_failed: <ExcType>"}
+    """
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     model = os.environ.get("OPENAI_MODEL", "").strip()
     if not api_key or not model:
-        return ""
+        return {"text": "", "model": "", "reason": "no_api_key_or_model"}
     base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     payload = json.dumps(
         {
@@ -617,6 +710,9 @@ def _llm_free_form_answer(message: str) -> str:
         )
         with urlopen(request, timeout=20) as response:
             body = json.loads(response.read().decode("utf-8"))
-        return str((((body.get("choices") or [{}])[0].get("message") or {}).get("content") or "")).strip()
-    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, KeyError):
-        return ""
+        text = str((((body.get("choices") or [{}])[0].get("message") or {}).get("content") or "")).strip()
+        if not text:
+            return {"text": "", "model": model, "reason": "empty_model_output"}
+        return {"text": text, "model": model, "reason": ""}
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, KeyError) as exc:
+        return {"text": "", "model": model, "reason": f"call_failed: {type(exc).__name__}"}

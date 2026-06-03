@@ -96,6 +96,25 @@ cd web/ui && npm install && npm run dev                           # Web 前端
 
 **Skill Evolution Registry** — `skill.promotion` apply 成功后写 `.skills_versions/<skill>/`：`versions.jsonl` + `<version>/{SKILL.md, patch.diff, eval_result.json}`。**Runtime 加载源始终是 `skills/<skill>/SKILL.md`**；`.skills_versions/` 仅用于审计与回滚（rollback 也走 review）。
 
+## Skill / Tool 创建（系统校验 + 路由）
+
+新增 / 注册资产走统一的 `runtime/asset_creation_pipeline.py`：用户只点「创建」，系统自动完成草稿生成 → 安全检查 → 风险分级 → 自动上架或进入 ReviewQueue。
+
+| 阶段 | 做什么 |
+|---|---|
+| draft | 在内存中暂存提议内容，不写盘 |
+| system_check | `run_skill_safety_check` / `run_tool_safety_check` 扫描风险 phrase / tag / source / `features.safety_type` |
+| risk classify | low / medium / high / blocked |
+| route | low → `active`（写盘 + lifecycle 标记）；medium/high → `pending_review`（创建 review，写盘但不可用）；blocked → `rejected`（不写盘） |
+
+**Skill 安全检查**：rejection phrase（`ignore previous instructions / bypass approval / bypass ReviewQueue / disable safety / 忽略系统提示 / 绕过审批 / 关闭安全 …`）→ `blocked`；high-risk phrase（`secret / credential / api key / rm -rf / os.system / subprocess.* …`）→ `high`；提到 capability 词（tool / file / workspace / network …）→ `medium`；其他 → `low`。Skill 默认走 review，状态字段附在 review metadata + audit log。
+
+**Tool 安全检查**：entry_type ∈ {`shell, exec, subprocess, write_file, delete_file, fs_write, fs_delete, execute_command`} → `high`；permissions 含 `write_file / shell / network` 但缺 `network_domain_allowlist` → `high`；`high-risk tool` 的 `default_policy=allow` 自动降级为 `require_approval` 并记 issue；缺 inputs schema → `medium`。
+
+**Lifecycle 标记**：`skills/<name>/.lifecycle.json` / `tools/<name>/.lifecycle.json` 记录 `lifecycle_status / risk_level / review_id / audit_ref`。SkillProfileStore 跳过非 `active` 的 skill（router 不会选）；ToolRegistry.run 对非 `active` 直接返回 `TOOL_NOT_ACTIVE`，handler / provider 检查都不走。**无 marker 视为 active**（向后兼容已有 skill/tool）。
+
+**用户可见状态（不暴露安全检查细节）**：`草稿 / 系统校验中 / 待审查 / 已上架 / 未通过 / 已归档`。Audit log 落到 `tool.create` / `skill.create.review` / `skill.create.rejected`，review metadata 含 `safety_check`，只在管理员视图展示。
+
 ## 旁路 Scout + Optimizer
 
 旁路是主链路的**离线批量补丁**通道。三层硬约束：
@@ -262,6 +281,21 @@ REST：
 
 **outcome 回写**：`pending → optimizer_proposed → review_created → approved / rejected → applied_eval_passed / applied_eval_failed / apply_failed`，新决策出现 → 老记录 `superseded`。通过 `review.metadata.source_opportunity_ids` 把 review 链路绑回 scout，无需改 ReviewQueue 核心 API。
 
+### 用户视图（旁路进化 · 问题发现与处理工作台）
+
+前端层在 `web/ui/src/lib/scoutViewModel.js` 上做了一层映射，把 raw opportunity / batch / edit 收敛成 4 个类别：
+
+| 类别 | 触发 | 卡片标题 | 主按钮 |
+|---|---|---|---|
+| Skill 优化 | decision ∈ {promote, request_eval, defer} + 无 policy/tool 标记 + 非 self_improvement | `<skill> · 可考虑沉淀的 Skill 优化` | 生成回归测试 / 生成变更草稿 / 忽略 |
+| 策略 / 安全事件 | policy_gate 命中 / decision ∈ {safety_review, quarantine} / 含 `policy_block / approval_block / Tool Call Blocked / SafeHarness policy / protected file` | `命中安全/审批策略，需要人工策略审查` | 进入策略审查 / 继续观察 / 忽略 |
+| 工具 / 能力问题 | tag ∈ {tool_failure, capability_gap} / target_skill 以 `tool` 开头 | `<tool> · 工具或能力配置需要核对` | 创建工具审查 / 继续观察 / 忽略 |
+| 需人工标注 | target_skill=self_improvement / reason 含 `needs_human_label=true` | `需要人工标注归属 Skill` | 标注归属 Skill / 忽略 |
+
+非 Skill 类卡片永远不显示「生成变更草稿」；标题 / 文案 / 按钮使用「为什么需要关注 / 建议处理」，并展示「该事件不属于 Skill 优化，不会生成 SKILL.md 补丁」醒目提示。`OPP- / SIG- / BATCH- / EDIT- / score / value_score / risk_score / testability / must_not_regress / add → ## Memory-derived rules / tag:foo|bar / reduce repetition of pattern …` 等工程字段统一移到「展开技术细节」折叠区。
+
+Tab 文案：发现的问题（findings） / 建议处理（suggestions） / 变更草稿（drafts） / 已忽略（ignored，含本地忽略 + 后端 rejected_edits）。
+
 ### Side-Channel REST API
 
 | Method | Path | 作用 |
@@ -282,6 +316,8 @@ UI：**Self-Evolution → Side-Channel** tab，含 Opportunities / Batches / Edi
 ## Chat / 实时查询
 
 `runtime/chat_orchestrator.py` + `chat_intent.py` + `chat_executor.py` 把自然语言路由到 skill / tool / workspace 或实时查询。
+
+**通用对话（`general_chat`）**：默认走 `OPENAI_MODEL`。`_llm_free_form_answer` 返回 `{text, model, reason}`；trace 上会追加一条 `model_call` 步骤，标题为「模型回答」或「兜底回答」，字段含 `intent / route / whether_llm_called / model_name / fallback_reason`。LLM 不可用时（`no_api_key_or_model` / `call_failed:…` / `empty_model_output`）回落到 Chinese 兜底文案，**不**返回英文 canned 回答。所有用户可见 prompt（Chat 系统提示词 / KB Q&A / 实时摘要 / Scout enrichment / Optimizer bullet writer / Validation gate）都加了「除非用户明确要求其他语言，否则用户可见回答必须使用简体中文」约束；JSON key、enum value、section heading 等内部字段保持英文。
 
 实时查询路径（`web_research_query / financial_research_query / news_query`）：
 
@@ -321,6 +357,7 @@ harness_agent/
 │                # 工具：skill_eval_runner · knowledge_base · kb_index · web_search_provider · tool_registry
 │                # 观测：run_trace · credit_assignment · run_trace_scanner
 │                # 路由 & 统计：skill_router · skill_profile · memory_utility
+│                # 资产创建：asset_creation_pipeline · asset_lifecycle
 ├─ safety/       # SafeHarness 事件、决策、策略、guard、审计
 ├─ tools/        # OpenAI tool schema + handler 分发
 ├─ skills/       # Skill 定义、memory、eval cases
@@ -331,7 +368,7 @@ harness_agent/
 
 ## 本地运行产物（建议加入 `.gitignore`）
 
-`.tasks/` · `.team/` · `.transcripts/` · `.audit/`（含 `runs/RUN-*.json`） · `.reviews/` · `.skills_memory/`（全局 memory + `utility.jsonl` + scanner 状态）· `.skills_versions/` · `.evolution/` · `skills/*/memory/` · `skills/*/profile.json`。也别提交 `.env`。
+`.tasks/` · `.team/` · `.transcripts/` · `.audit/`（含 `runs/RUN-*.json` + `tool.create` / `skill.create.*` 操作日志） · `.reviews/` · `.skills_memory/`（全局 memory + `utility.jsonl` + scanner 状态）· `.skills_versions/` · `.evolution/` · `skills/*/memory/` · `skills/*/profile.json` · `skills/*/.lifecycle.json` · `tools/*/.lifecycle.json`。也别提交 `.env`。
 
 ## 安全边界
 
@@ -342,6 +379,8 @@ harness_agent/
 - 工具失败 / 环境问题 / 审批拦截**不会被错误沉淀为 skill 更新**：`should_generate_learning_signal` 在 RunTrace → LearningSignal 转换前拦截；`RunTraceScanner` / `SkillProfileStore.update_from_run` / `MemoryUtilityStore.update_from_run` 都再加一层（`tool_failure / environment / policy_block` 不进 Scout opportunity、不计 skill failure、不计 memory failure）。
 - Scout `policy_gate`：cluster 命中 `policy_block / approval_block / Tool Call Blocked / Policy Enforcement Triggered / SafeHarness policy / protected file / policy_candidate / safety` 等 phrase/tag/source_type → 强制 `safety_review`，再高的 value/testability 也不能 promote。
 - SkillRouter 默认从候选中排除 `self_improvement`：低置信请求回落到现有 executor 逻辑，不会被强行绑定。
+- **资产创建管线**：高风险 / 含 rejection phrase 的 Skill 永远不能 auto-activate；`shell / write_file / fs_delete` 等高风险 Tool 永远不能 auto-activate；高风险 Tool 的 `default_policy=allow` 自动降级为 `require_approval`；`pending_review` 的 skill 不会被 SkillRouter 加载，`pending_review` 的 tool 不会被 ToolRegistry 执行。
+- **Optimizer policy_gate**：tag / content / source / `features.safety_type / features.error_type` 命中 `policy_block / approval_block / Tool Call Blocked / SafeHarness policy / protected file / safety / policy_candidate / governance_related / tool_failure` 等任意一项 → Optimizer 拒绝生成 `skill.bounded_edit` / `skill.promotion`，错误信息附 `requires_policy_review=true`。
 - 所有 `SKILL.md` 进化必须可追溯：`memory → PROMO → regression REV → skill patch REV → approve → apply → version`。
 
 ## 常用验证
