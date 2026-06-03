@@ -217,10 +217,27 @@ POLICY_GATE_CONTENT_PHRASES: tuple[str, ...] = (
     "policy enforcement triggered",
     "safeharness policy",
     "protected file",
+    "protected_file",
     "safety",
 )
 
 POLICY_GATE_SOURCE_HINTS: tuple[str, ...] = ("policy_candidate",)
+
+# Features assigned by Stage 1's lexicon scan that also block promote.
+# A signal can reach Scout with the right features but without the
+# matching phrase in its truncated content (e.g. a ``safety_type=
+# approval_block`` feature on a memory whose user-visible body only
+# mentions "the request was held"). Treat those as policy-gated too.
+POLICY_GATE_FEATURE_SAFETY_TYPES: frozenset[str] = frozenset({
+    "approval_block",
+    "secret_leak",
+    "injection",
+    "policy_violation",
+})
+
+POLICY_GATE_FEATURE_ERROR_TYPES: frozenset[str] = frozenset({
+    "policy_block",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -760,6 +777,12 @@ class EvolutionScout:
         )
         if policy_gate and "requires_policy_review=true" not in reason:
             reason = f"{reason} requires_policy_review=true"
+        if (
+            target_skill == "self_improvement"
+            and decision in {"request_eval", "defer"}
+            and "needs_human_label=true" not in reason
+        ):
+            reason = f"{reason} needs_human_label=true"
         breakdown = _score_breakdown(decision, components, value_score, risk_score, evidence_quality)
         related_promos = sorted({m["source_ref"] for m in members if m["source_type"] == "promo"})
 
@@ -1212,6 +1235,16 @@ def _decide(
     return decision, opp_type, priority, risk_level, confidence
 
 
+def detect_policy_gate(
+    members: list[dict[str, Any]],
+    tags: set[str],
+) -> tuple[bool, list[str]]:
+    """Public alias of ``_detect_policy_gate`` for cross-module reuse
+    (e.g. the SkillOptimizer's defence-in-depth check). Behaviour is
+    identical; see ``_detect_policy_gate`` for the trigger list."""
+    return _detect_policy_gate(members, tags)
+
+
 def _detect_policy_gate(
     members: list[dict[str, Any]],
     tags: set[str],
@@ -1223,6 +1256,12 @@ def _detect_policy_gate(
       - any member's source_type carries a POLICY_GATE_SOURCE_HINT
         (e.g. ``skill_memory.policy_candidate``)
       - any member's content contains one of POLICY_GATE_CONTENT_PHRASES
+      - any member's ``features.safety_type`` is in
+        POLICY_GATE_FEATURE_SAFETY_TYPES (catches signals where the
+        Stage 1 lexicon classified safety_type without the matching
+        phrase surviving in the truncated content)
+      - any member's ``features.error_type`` is in
+        POLICY_GATE_FEATURE_ERROR_TYPES (same idea for error_type)
 
     Reasons are kept compact so they can be plumbed into the decision
     log without leaking redacted content.
@@ -1242,7 +1281,24 @@ def _detect_policy_gate(
             if phrase in content_lower:
                 reasons.append(f"phrase:{phrase}")
                 break
-    return (bool(reasons), reasons[:5])
+        features = m.get("features") or {}
+        if isinstance(features, dict):
+            safety_type = str(features.get("safety_type") or "").lower()
+            if safety_type in POLICY_GATE_FEATURE_SAFETY_TYPES:
+                reasons.append(f"safety_type:{safety_type}")
+            error_type = str(features.get("error_type") or "").lower()
+            if error_type in POLICY_GATE_FEATURE_ERROR_TYPES:
+                reasons.append(f"error_type:{error_type}")
+    # De-dup while preserving order; cap to 5 so the decision log row
+    # stays human-readable.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for r in reasons:
+        if r in seen:
+            continue
+        seen.add(r)
+        ordered.append(r)
+    return (bool(ordered), ordered[:5])
 
 
 def _decide_explained(

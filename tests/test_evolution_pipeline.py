@@ -1219,6 +1219,58 @@ class ScoutPolicyGateTests(unittest.TestCase):
             self.assertNotEqual(opp["decision"], "promote", opp)
             self.assertIn(opp["decision"], {"defer", "request_eval"})
             self.assertIn("self_improvement", opp["reason"])
+            self.assertIn("needs_human_label=true", opp["reason"], opp)
+
+    # ----------------------------------------------------- governance/policy
+
+    def test_governance_related_signal_does_not_promote(self):
+        # 普通治理词 (审批 / approval) 触发 governance_related 标签 →
+        # policy_gate 拦截，强制 safety_review，绝不能 promote。
+        self._write_record(
+            "report_writer", "LEARNINGS.md", "LRN-GV1",
+            "approval review notes",
+            "From now on remember the approval review workflow. "
+            "审批拦截 / review queue, default to retry.",
+            occurrence=4, priority="high",
+        )
+        self._write_record(
+            "report_writer", "LEARNINGS.md", "LRN-GV2",
+            "approval review notes again",
+            "From now on remember the approval workflow. 审批 default behavior.",
+            occurrence=3, priority="high",
+        )
+        self.scout.scan()
+        opps = self._opps_for("report_writer")
+        self.assertTrue(opps)
+        for opp in opps:
+            self.assertNotEqual(opp["decision"], "promote", opp)
+        gated = [o for o in opps if o["decision"] == "safety_review"]
+        self.assertTrue(gated, "governance_related should land in safety_review")
+        self.assertIn("requires_policy_review=true", gated[0]["reason"])
+
+    def test_protected_file_signal_does_not_promote(self):
+        # protected file 是 SafeHarness 拒绝写盘时的典型文案；任何提及该
+        # 短语的聚类必须进 safety_review，而不是 promote。
+        self._write_record(
+            "report_writer", "ERRORS.md", "ERR-PF1",
+            "Write refused: protected file",
+            "From now on remember: edit refused, target is a protected file. "
+            "default to retry with safer args.",
+            occurrence=4, priority="high",
+        )
+        self._write_record(
+            "report_writer", "ERRORS.md", "ERR-PF2",
+            "Write refused: protected file again",
+            "From now on remember: protected file path; default to safer args.",
+            occurrence=3, priority="high",
+        )
+        self.scout.scan()
+        opps = self._opps_for("report_writer")
+        self.assertTrue(opps)
+        for opp in opps:
+            self.assertNotEqual(opp["decision"], "promote", opp)
+        gated = [o for o in opps if o["decision"] == "safety_review"]
+        self.assertTrue(gated, "protected_file should land in safety_review")
 
     # ------------------------------------ baseline: markdown still promotes
 
@@ -1311,6 +1363,192 @@ class ScoutRunTraceFailureSourceGuardTests(unittest.TestCase):
         self.scout.scan()
         rt = [s for s in self.stores.signals.list() if s["source_type"] == "run_trace"]
         self.assertEqual(rt, [])
+
+
+class OptimizerPolicyGateTests(unittest.TestCase):
+    """The Optimizer must refuse to generate skill.bounded_edit /
+    skill.promotion proposals for opportunities whose tags / content /
+    source carry policy / approval / SafeHarness markers — even if
+    the upstream Scout decision somehow leaked through as promote /
+    request_eval / defer.
+
+    Belt-and-braces: Scout's ``policy_gate`` already routes those
+    clusters to ``safety_review``, but this layer makes the
+    optimizer enforce the same invariant independently."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        (self.root / "skills").mkdir(parents=True)
+        (self.root / ".skills_memory").mkdir(parents=True)
+        # Minimal markdown_writer skill so target_skill resolves.
+        skill_dir = self.root / "skills" / "markdown_writer"
+        (skill_dir / "memory").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(SAFE_SKILL_BODY, encoding="utf-8")
+
+        self.skill_memory = SkillMemoryManager(
+            self.root / "skills", self.root / ".skills_memory"
+        )
+        self.review_store = LocalReviewStore(
+            self.root / ".reviews",
+            self.root,
+            skill_loader=SkillLoader(self.root / "skills"),
+            skill_memory=self.skill_memory,
+        )
+        self.promotions = PromotionBrowser(
+            skills_dir=self.root / "skills",
+            global_memory_dir=self.root / ".skills_memory",
+            project_root=self.root,
+        )
+        self.stores = EvolutionStores(self.root)
+        self.optimizer = SkillOptimizer(
+            project_root=self.root,
+            stores=self.stores,
+            review_store=self.review_store,
+        )
+
+    def _seed_signal_and_opp(
+        self,
+        *,
+        opp_id: str,
+        signal_id: str,
+        content: str,
+        tags: list[str],
+        decision: str = "request_eval",
+    ) -> dict:
+        # Hand-seed a signal that looks like a policy-marked cluster.
+        from runtime.evolution_stores import (
+            EvolutionOpportunity,
+            LearningSignal,
+        )
+        self.stores.signals.save(LearningSignal(
+            signal_id=signal_id,
+            source_type="learning",
+            source_path=".skills_memory/GLOBAL_LEARNINGS.md",
+            source_ref=signal_id,
+            observed_skill="markdown_writer",
+            content=content,
+            tags=tags,
+            frequency=3,
+            severity="medium",
+            quarantined=False,
+            attack_type="",
+            redacted=False,
+            correction_strength=0.9,
+            features={},
+        ))
+        opp = EvolutionOpportunity(
+            opportunity_id=opp_id,
+            signal_ids=[signal_id],
+            target_skill="markdown_writer",
+            opportunity_type="promote",
+            summary="seeded policy-marked opportunity",
+            decision=decision,
+            evolution_score=0.75,
+            priority="medium",
+            risk_level="low",
+            confidence="medium",
+            reason="seeded for optimizer gate test",
+            should_improve=["pin a rule"],
+            must_not_regress=["不放宽安全策略"],
+            value_score=0.75,
+            risk_score=0.20,
+            evidence_quality=0.7,
+            testability=0.8,
+            observed_skills=["markdown_writer"],
+        )
+        self.stores.opportunities.save(opp)
+        return opp.to_dict()
+
+    def test_policy_block_phrase_refuses_optimization(self):
+        # request_eval decision, but content carries policy_block.
+        self._seed_signal_and_opp(
+            opp_id="OPP-POL-1",
+            signal_id="SIG-POL-1",
+            content="From now on retry. Edit refused: policy_block on protected file.",
+            tags=["learning"],
+        )
+        result = self.optimizer.propose(opportunity_id="OPP-POL-1")
+        self.assertFalse(result.ok)
+        self.assertIn("policy", result.message.lower())
+        self.assertIn("requires_policy_review=true", result.message)
+
+    def test_approval_block_phrase_refuses_optimization(self):
+        self._seed_signal_and_opp(
+            opp_id="OPP-APR-1",
+            signal_id="SIG-APR-1",
+            content="approval_block hit on the writer tool. From now on default to safer args.",
+            tags=["learning"],
+        )
+        result = self.optimizer.propose(opportunity_id="OPP-APR-1")
+        self.assertFalse(result.ok)
+        self.assertIn("requires_policy_review=true", result.message)
+
+    def test_tool_call_blocked_phrase_refuses_optimization(self):
+        self._seed_signal_and_opp(
+            opp_id="OPP-TCB-1",
+            signal_id="SIG-TCB-1",
+            content="Tool Call Blocked by SafeHarness policy on the writer tool.",
+            tags=["learning"],
+        )
+        result = self.optimizer.propose(opportunity_id="OPP-TCB-1")
+        self.assertFalse(result.ok)
+        self.assertIn("requires_policy_review=true", result.message)
+
+    def test_protected_file_phrase_refuses_optimization(self):
+        self._seed_signal_and_opp(
+            opp_id="OPP-PF-1",
+            signal_id="SIG-PF-1",
+            content="Edit refused: target is a protected file path.",
+            tags=["learning"],
+        )
+        result = self.optimizer.propose(opportunity_id="OPP-PF-1")
+        self.assertFalse(result.ok)
+        self.assertIn("requires_policy_review=true", result.message)
+
+    def test_governance_tag_refuses_optimization(self):
+        # No phrase in content, but the cluster carries governance_related
+        # — should still be rejected by the optimizer gate.
+        self._seed_signal_and_opp(
+            opp_id="OPP-GOV-1",
+            signal_id="SIG-GOV-1",
+            content="general note about workflow",
+            tags=["learning", "governance_related"],
+        )
+        result = self.optimizer.propose(opportunity_id="OPP-GOV-1")
+        self.assertFalse(result.ok)
+        self.assertIn("requires_policy_review=true", result.message)
+
+    def test_clean_format_preference_still_proposes(self):
+        # Sanity floor: an opportunity without any policy markers must
+        # still pass the optimizer. Uses promote decision so the existing
+        # decision filter doesn't block it.
+        self._seed_signal_and_opp(
+            opp_id="OPP-OK-1",
+            signal_id="SIG-OK-1",
+            content="From now on always use markdown headings for report titles.",
+            tags=["learning", "format_preference"],
+            decision="promote",
+        )
+        result = self.optimizer.propose(opportunity_id="OPP-OK-1")
+        self.assertTrue(result.ok, f"clean cluster should propose: {result.message}")
+
+    def test_no_skill_bounded_edit_artifact_for_policy_gated(self):
+        # The refusal must leave no edit JSON / no rejected_edits row
+        # behind — those are reserved for validated/validated-then-
+        # rejected proposals, not for ones that never qualified.
+        self._seed_signal_and_opp(
+            opp_id="OPP-POL-NO-ARTIFACT",
+            signal_id="SIG-POL-NO-ARTIFACT",
+            content="SafeHarness policy denied the write to a protected file.",
+            tags=["learning"],
+        )
+        result = self.optimizer.propose(opportunity_id="OPP-POL-NO-ARTIFACT")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.edit_id, "")
+        self.assertEqual(self.stores.skill_edits.list(), [])
+        self.assertEqual(self.stores.rejected_edits.list(), [])
 
 
 if __name__ == "__main__":

@@ -125,12 +125,15 @@ class Executor:
             "Answer the user's question using ONLY the knowledge-base excerpts "
             "below. Cite the file paths you used. If the answer is not in the "
             "excerpts, say so plainly — do not invent facts.\n\n"
+            "语言约束：除非用户明确要求使用其他语言，否则回答必须使用简体中文，"
+            "基于下方知识库摘录作答；摘录不足以回答时请明确说明，不要编造。"
+            "代码、命令、变量名、日志、错误信息可保留英文原文。\n\n"
             f"User question:\n{message}\n\n"
             f"Knowledge-base excerpts:\n{bundle['context']}"
         )
         answer = _llm_free_form_answer(prompt) or (
-            "Configured OPENAI_MODEL did not return a usable answer; "
-            "the excerpts above are the raw context that would have been used."
+            "当前配置的 OPENAI_MODEL 没有返回可用答案；"
+            "上方内容是本次已检索到、原本会用于回答的原始上下文。"
         )
         retrieval_mode = bundle.get("retrieval", "naive_concat")
         if retrieval_mode == "bm25":
@@ -594,7 +597,10 @@ def _llm_free_form_answer(message: str) -> str:
                     "content": (
                         "You are a helpful workspace chat assistant. Answer conversationally and concisely. "
                         "If the user asks about realtime facts (news, prices, weather, scores) and you do not have "
-                        "verified sources, say you are not sure and recommend a web search rather than inventing facts."
+                        "verified sources, say you are not sure and recommend a web search rather than inventing facts.\n\n"
+                        "语言约束：除非用户明确要求使用其他语言，否则所有用户可见回答必须使用简体中文。"
+                        "代码、命令、变量名、日志、错误信息可保留英文原文。"
+                        "如果是新对话的开场白，最开始的一句话使用：\"您好，有什么可以帮您\"。"
                     ),
                 },
                 {"role": "user", "content": message},

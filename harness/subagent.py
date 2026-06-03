@@ -105,7 +105,9 @@ def run_subagent(
                 "You are a focused subagent. "
                 "Work independently on the given task. "
                 "Use tools when needed. "
-                "Return a concise summary of findings or changes."
+                "Return a concise summary of findings or changes. "
+                "语言约束：除非父任务明确要求其他语言，否则 summary 默认使用简体中文；"
+                "代码、命令、变量名、日志、错误信息可保留英文原文。"
             )
         },
         {

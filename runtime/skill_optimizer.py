@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from .evolution_scout import detect_policy_gate
 from .evolution_stores import (
     EvolutionStores,
     RejectedEdit,
@@ -159,6 +160,39 @@ class SkillOptimizer:
                     False,
                     f"refusing to optimize: signal {signal_id} is quarantined "
                     f"(attack_type={signal.get('attack_type', 'unknown')}).",
+                )
+
+        # Defence-in-depth #2: scan each opportunity's actual tag set +
+        # source signal content for the same policy / approval /
+        # SafeHarness markers the Scout's policy_gate uses. Even if a
+        # decision somehow reached us as promote / request_eval / defer
+        # while still carrying policy_block / approval_block /
+        # Tool Call Blocked / Policy Enforcement Triggered / SafeHarness
+        # policy / protected file / safety markers in its tags or
+        # member content, we refuse here and steer to policy_review /
+        # tool_review. ``requires_policy_review=true`` is surfaced in
+        # the message so the UI / CLI can route accordingly.
+        for opp in opportunities:
+            members: list[dict[str, Any]] = []
+            for signal_id in opp.get("signal_ids", []):
+                signal = self.stores.signals.get(signal_id)
+                if signal:
+                    members.append(signal)
+            tag_set: set[str] = set()
+            for member in members:
+                for tag in (member.get("tags") or []):
+                    bare = str(tag).split(":", 1)[0]
+                    if bare:
+                        tag_set.add(bare)
+            triggered, reasons = detect_policy_gate(members, tag_set)
+            if triggered:
+                joined = ", ".join(reasons) or "policy_gate=True"
+                return OptimizerResult(
+                    False,
+                    f"refusing to optimize: opportunity '{opp.get('opportunity_id')}' "
+                    f"carries policy / approval / SafeHarness markers ({joined}). "
+                    "requires_policy_review=true — route to policy_review / tool_review "
+                    "instead of skill.bounded_edit / skill.promotion.",
                 )
 
         edit_ops = _build_edit_ops(opportunities, self.stores)

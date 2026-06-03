@@ -206,7 +206,9 @@ class TeammateManager:
 
         system_prompt = (
             f"You are '{name}', role: {role}, team: {team_name}, at {self.workdir}. "
-            f"Use idle when done with current work. You may auto-claim tasks."
+            f"Use idle when done with current work. You may auto-claim tasks. "
+            "语言约束：除非用户明确要求使用其他语言，否则用户可见回答默认使用简体中文；"
+            "代码、命令、变量名、日志、错误信息可保留英文原文。"
         )
 
         messages = [
