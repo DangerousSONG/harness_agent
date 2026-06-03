@@ -1,4 +1,4 @@
-import { BookOpen, Boxes, GitPullRequest, Hammer, Play, Plus, Trash2, Workflow, Wrench, X } from "lucide-react";
+import { Archive, BookOpen, Boxes, ChevronDown, ChevronRight, GitPullRequest, Hammer, Play, Plus, RotateCcw, Trash2, Workflow, Wrench, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
@@ -40,42 +40,81 @@ export default function AssetsPage({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [creationKind, setCreationKind] = useState(null); // "skill" | "tool" | null
-  const [archiveTarget, setArchiveTarget] = useState(null); // { kind, name }
-  const [archiveBusy, setArchiveBusy] = useState(false);
+  // pendingAction: {kind: skill|tool, name, action: archive|hard_delete}
+  const [pendingAction, setPendingAction] = useState(null);
+  const [actionBusy, setActionBusy] = useState(false);
   const [toast, setToast] = useState({ tone: "info", message: "" });
+  const [archiveOpen, setArchiveOpen] = useState({ skills: false, tools: false });
   const tab = controlledTab || localTab;
   const setTab = onTabChange || setLocalTab;
 
-  const requestDelete = (kind, name) => setArchiveTarget({ kind, name });
-  const cancelDelete = () => {
-    if (!archiveBusy) setArchiveTarget(null);
+  const requestArchive = (kind, name) =>
+    setPendingAction({ kind, name, action: "archive" });
+  const requestHardDelete = (kind, name) =>
+    setPendingAction({ kind, name, action: "hard_delete" });
+  const cancelPending = () => {
+    if (!actionBusy) setPendingAction(null);
   };
-  const confirmDelete = async () => {
-    if (!archiveTarget) return;
-    setArchiveBusy(true);
+  const confirmPending = async () => {
+    if (!pendingAction) return;
+    setActionBusy(true);
     try {
-      if (archiveTarget.kind === "skill") {
-        await api.archiveSkill(archiveTarget.name);
+      const { kind, name, action } = pendingAction;
+      let payload;
+      if (action === "archive") {
+        payload = kind === "skill" ? await api.archiveSkill(name) : await api.archiveTool(name);
       } else {
-        await api.archiveTool(archiveTarget.name);
+        payload = kind === "skill" ? await api.hardDeleteSkill(name) : await api.hardDeleteTool(name);
       }
       setToast({
         tone: "success",
-        message: `${archiveTarget.name} 已归档，不再被加载或执行。`,
+        message: payload?.message
+          || (action === "archive"
+              ? `${name} 已归档，不再被加载或执行。`
+              : `${name} 已永久删除。`),
       });
-      setArchiveTarget(null);
+      setPendingAction(null);
       onAssetCreated?.();
     } catch (err) {
       setToast({ tone: "error", message: getErrorMessage(err) });
     } finally {
-      setArchiveBusy(false);
+      setActionBusy(false);
     }
   };
+
+  const restoreAsset = async (kind, name) => {
+    setActionBusy(true);
+    try {
+      const payload = kind === "skill" ? await api.restoreSkill(name) : await api.restoreTool(name);
+      setToast({
+        tone: "success",
+        message: payload?.message || `${name} 已恢复，重新可被加载/执行。`,
+      });
+      onAssetCreated?.();
+    } catch (err) {
+      setToast({ tone: "error", message: getErrorMessage(err) });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!toast.message) return;
     const timer = setTimeout(() => setToast({ tone: "info", message: "" }), 3500);
     return () => clearTimeout(timer);
   }, [toast.message]);
+
+  const partitionByArchive = (items) => {
+    const active = [];
+    const archived = [];
+    for (const item of items || []) {
+      if (item?.lifecycle_status === "archived") archived.push(item);
+      else active.push(item);
+    }
+    return { active, archived };
+  };
+  const skillBuckets = useMemo(() => partitionByArchive(skills), [skills]);
+  const toolBuckets = useMemo(() => partitionByArchive(tools), [tools]);
   const evalCards = useMemo(
     () => (skills || []).filter((skill) => skill.has_eval_cases),
     [skills],
@@ -152,87 +191,111 @@ export default function AssetsPage({
         </div>
 
         {tab === "skills" ? (
-          <AssetGrid
-            items={skills}
-            empty={t("assets.skills.empty")}
-            leading={
-              <CreateEntryCard
-                key="__create_skill__"
-                title="创建 Skill"
-                description="通过自然语言描述能力需求，生成 Skill 草稿并完成系统校验。"
-                onClick={() => setCreationKind("skill")}
-              />
-            }
-            render={(skill) => (
-              <AssetCard
-                key={skill.name}
-                title={skill.name}
-                description={skill.description || "暂无描述"}
-                status={assetStatus("skill", skill.name, reviews, skill)}
-                rows={assetRows({
-                  assetType: "skill",
-                  name: skill.name,
-                  currentVersion: skill.latest_version || "active",
-                  evalStatus: skill.has_eval_cases ? "present" : "missing",
-                  latestChange: latestChange("skill", skill.name, changes),
-                  pendingReview: pendingReview("skill", skill.name, reviews),
-                })}
-                metrics={[
-                  [t("assets.skills.metric.memory"), skill.memory_count],
-                  [t("assets.skills.metric.promo"), skill.promotion_count],
-                  [t("assets.skills.metric.versions"), (versions || []).filter((item) => item.skill === skill.name).length],
-                ]}
-                onClick={() => openAsset("skill", skill)}
-                onDelete={() => requestDelete("skill", skill.name)}
-                deleteBusy={archiveBusy && archiveTarget?.name === skill.name}
-              />
-            )}
-          />
+          <>
+            <AssetGrid
+              items={skillBuckets.active}
+              empty={t("assets.skills.empty")}
+              leading={
+                <CreateEntryCard
+                  key="__create_skill__"
+                  title="创建 Skill"
+                  description="通过自然语言描述能力需求，生成 Skill 草稿并完成系统校验。"
+                  onClick={() => setCreationKind("skill")}
+                />
+              }
+              render={(skill) => (
+                <AssetCard
+                  key={skill.name}
+                  title={skill.name}
+                  description={skill.description || "暂无描述"}
+                  status={assetStatus("skill", skill.name, reviews, skill)}
+                  rows={assetRows({
+                    assetType: "skill",
+                    name: skill.name,
+                    currentVersion: skill.latest_version || "active",
+                    evalStatus: skill.has_eval_cases ? "present" : "missing",
+                    latestChange: latestChange("skill", skill.name, changes),
+                    pendingReview: pendingReview("skill", skill.name, reviews),
+                  })}
+                  metrics={[
+                    [t("assets.skills.metric.memory"), skill.memory_count],
+                    [t("assets.skills.metric.promo"), skill.promotion_count],
+                    [t("assets.skills.metric.versions"), (versions || []).filter((item) => item.skill === skill.name).length],
+                  ]}
+                  onClick={() => openAsset("skill", skill)}
+                  onDelete={() => requestArchive("skill", skill.name)}
+                  deleteBusy={actionBusy && pendingAction?.name === skill.name}
+                />
+              )}
+            />
+            <ArchiveSection
+              kind="skill"
+              items={skillBuckets.archived}
+              open={archiveOpen.skills}
+              onToggle={() => setArchiveOpen({ ...archiveOpen, skills: !archiveOpen.skills })}
+              onRestore={(name) => restoreAsset("skill", name)}
+              onHardDelete={(name) => requestHardDelete("skill", name)}
+              actionBusy={actionBusy}
+              pendingName={pendingAction?.name}
+            />
+          </>
         ) : null}
 
         {tab === "tools" ? (
-          <AssetGrid
-            items={tools}
-            empty={t("assets.tools.empty")}
-            leading={
-              <CreateEntryCard
-                key="__create_tool__"
-                title="注册 Tool"
-                description="注册一个可被 Skill 调用的工具，配置入口、参数和安全策略。"
-                onClick={() => setCreationKind("tool")}
-              />
-            }
-            render={(tool) => (
-              <AssetCard
-                key={tool.name}
-                title={tool.name}
-                description={tool.description || "暂无描述"}
-                status={
-                  tool.lifecycle_status && tool.lifecycle_status !== "active"
-                    ? (LIFECYCLE_LABEL[tool.lifecycle_status] || tool.lifecycle_status)
-                    : pendingReview("tool", tool.name, reviews) !== "-"
-                      ? assetStatus("tool", tool.name, reviews, tool)
-                      : tool.executable ? "executable" : "not executable"
-                }
-                rows={assetRows({
-                  assetType: "tool",
-                  name: tool.name,
-                  currentVersion: tool.status || "draft",
-                  evalStatus: tool.eval_cases_count ? `${tool.eval_cases_count} cases` : "missing",
-                  latestChange: latestChange("tool", tool.name, changes),
-                  pendingReview: pendingReview("tool", tool.name, reviews),
-                })}
-                metrics={[
-                  [t("assets.tools.metric.provider"), compact(tool.provider_requirements, t("common.none"))],
-                  [t("assets.tools.metric.handler"), tool.handler_available ? t("common.yes") : t("common.no")],
-                  [t("assets.tools.metric.executable"), tool.executable ? t("common.yes") : t("common.no")],
-                ]}
-                onClick={() => openAsset("tool", tool)}
-                onDelete={() => requestDelete("tool", tool.name)}
-                deleteBusy={archiveBusy && archiveTarget?.name === tool.name}
-              />
-            )}
-          />
+          <>
+            <AssetGrid
+              items={toolBuckets.active}
+              empty={t("assets.tools.empty")}
+              leading={
+                <CreateEntryCard
+                  key="__create_tool__"
+                  title="注册 Tool"
+                  description="注册一个可被 Skill 调用的工具，配置入口、参数和安全策略。"
+                  onClick={() => setCreationKind("tool")}
+                />
+              }
+              render={(tool) => (
+                <AssetCard
+                  key={tool.name}
+                  title={tool.name}
+                  description={tool.description || "暂无描述"}
+                  status={
+                    tool.lifecycle_status && tool.lifecycle_status !== "active"
+                      ? (LIFECYCLE_LABEL[tool.lifecycle_status] || tool.lifecycle_status)
+                      : pendingReview("tool", tool.name, reviews) !== "-"
+                        ? assetStatus("tool", tool.name, reviews, tool)
+                        : tool.executable ? "executable" : "not executable"
+                  }
+                  rows={assetRows({
+                    assetType: "tool",
+                    name: tool.name,
+                    currentVersion: tool.status || "draft",
+                    evalStatus: tool.eval_cases_count ? `${tool.eval_cases_count} cases` : "missing",
+                    latestChange: latestChange("tool", tool.name, changes),
+                    pendingReview: pendingReview("tool", tool.name, reviews),
+                  })}
+                  metrics={[
+                    [t("assets.tools.metric.provider"), compact(tool.provider_requirements, t("common.none"))],
+                    [t("assets.tools.metric.handler"), tool.handler_available ? t("common.yes") : t("common.no")],
+                    [t("assets.tools.metric.executable"), tool.executable ? t("common.yes") : t("common.no")],
+                  ]}
+                  onClick={() => openAsset("tool", tool)}
+                  onDelete={() => requestArchive("tool", tool.name)}
+                  deleteBusy={actionBusy && pendingAction?.name === tool.name}
+                />
+              )}
+            />
+            <ArchiveSection
+              kind="tool"
+              items={toolBuckets.archived}
+              open={archiveOpen.tools}
+              onToggle={() => setArchiveOpen({ ...archiveOpen, tools: !archiveOpen.tools })}
+              onRestore={(name) => restoreAsset("tool", name)}
+              onHardDelete={(name) => requestHardDelete("tool", name)}
+              actionBusy={actionBusy}
+              pendingName={pendingAction?.name}
+            />
+          </>
         ) : null}
 
         {tab === "workflows" ? (
@@ -346,11 +409,11 @@ export default function AssetsPage({
         onClose={() => setCreationKind(null)}
         onCreated={() => onAssetCreated?.()}
       />
-      <ArchiveConfirmDialog
-        target={archiveTarget}
-        busy={archiveBusy}
-        onCancel={cancelDelete}
-        onConfirm={confirmDelete}
+      <DangerConfirmDialog
+        target={pendingAction}
+        busy={actionBusy}
+        onCancel={cancelPending}
+        onConfirm={confirmPending}
       />
       {toast.message ? (
         <div
@@ -368,8 +431,40 @@ export default function AssetsPage({
   );
 }
 
-function ArchiveConfirmDialog({ target, busy, onCancel, onConfirm }) {
+function DangerConfirmDialog({ target, busy, onCancel, onConfirm }) {
   if (!target) return null;
+  const isHard = target.action === "hard_delete";
+  const assetLabel = target.kind === "skill" ? "Skill" : "Tool";
+  const title = isHard
+    ? `永久删除 ${assetLabel}：`
+    : `归档 ${assetLabel}：`;
+  const detail = isHard ? (
+    <>
+      <p className="mt-2 text-sm leading-6 text-zinc-700">
+        此操作将<span className="font-semibold text-rose-700">永久删除</span>
+        资产文件夹，无法恢复。请确认你只想删除这一项。
+      </p>
+      <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-zinc-600">
+        <li>
+          将移除：
+          <span className="font-mono">
+            {target.kind === "skill" ? "skills" : "tools"}/{target.name}/
+          </span>
+        </li>
+        <li>不会改动 .reviews / .skills_versions / 审计日志</li>
+        <li>不会去触发 ReviewQueue</li>
+      </ul>
+    </>
+  ) : (
+    <p className="mt-2 text-sm leading-6 text-zinc-600">
+      归档后该资产不会被加载或执行
+      {target.kind === "skill"
+        ? "（SkillRouter 跳过）"
+        : "（ToolRegistry 跳过）"}
+      ，文件保留在磁盘。可以在「已归档」列表里恢复或永久删除。
+    </p>
+  );
+  const buttonLabel = isHard ? "确认永久删除" : "确认归档";
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/40 p-4"
@@ -380,31 +475,118 @@ function ArchiveConfirmDialog({ target, busy, onCancel, onConfirm }) {
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="text-base font-semibold text-zinc-950">
-          确认删除 {target.kind === "skill" ? "Skill" : "Tool"}：
+          {title}
           <span className="ml-1 font-mono text-rose-700">{target.name}</span>?
         </h3>
-        <p className="mt-2 text-sm leading-6 text-zinc-600">
-          删除后该资产会被标记为「已归档」，
-          {target.kind === "skill"
-            ? "SkillRouter 不会再选择它"
-            : "ToolRegistry 不会再执行它"}
-          。文件保留在磁盘以便审计与恢复，可由管理员后续处理。
-        </p>
+        {detail}
         <div className="mt-5 flex justify-end gap-2">
           <button className="secondary-button" onClick={onCancel} disabled={busy}>
             取消
           </button>
           <button
             className="primary-button"
-            style={{ background: "#dc2626" }}
+            style={{ background: isHard ? "#b91c1c" : "#dc2626" }}
             onClick={onConfirm}
             disabled={busy}
           >
-            {busy ? "处理中…" : "确认删除"}
+            {busy ? "处理中…" : buttonLabel}
           </button>
         </div>
       </div>
     </div>
+  );
+}
+
+function ArchiveSection({
+  kind,
+  items,
+  open,
+  onToggle,
+  onRestore,
+  onHardDelete,
+  actionBusy,
+  pendingName,
+}) {
+  const count = items?.length || 0;
+  return (
+    <div className="mt-6 rounded-xl border border-line bg-zinc-50/60">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between rounded-t-xl px-4 py-3 text-left transition hover:bg-zinc-100"
+        onClick={onToggle}
+      >
+        <span className="flex items-center gap-2 text-sm font-semibold text-zinc-800">
+          <Archive className="h-4 w-4" />
+          已归档（{count}）
+          <span className="ml-1 text-xs font-normal text-zinc-500">
+            {count
+              ? "已停用的资产留在这里，可以恢复或永久删除"
+              : "尚无已归档资产"}
+          </span>
+        </span>
+        {open ? (
+          <ChevronDown className="h-4 w-4 text-zinc-500" />
+        ) : (
+          <ChevronRight className="h-4 w-4 text-zinc-500" />
+        )}
+      </button>
+      {open && count ? (
+        <div className="grid gap-3 border-t border-line p-4 xl:grid-cols-2 2xl:grid-cols-3">
+          {items.map((item) => (
+            <ArchivedCard
+              key={item.name}
+              item={item}
+              kind={kind}
+              busy={actionBusy && pendingName === item.name}
+              onRestore={() => onRestore(item.name)}
+              onHardDelete={() => onHardDelete(item.name)}
+            />
+          ))}
+        </div>
+      ) : null}
+      {open && !count ? (
+        <p className="border-t border-line p-4 text-sm text-zinc-500">
+          暂无已归档资产。
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function ArchivedCard({ item, kind, busy, onRestore, onHardDelete }) {
+  return (
+    <article className="rounded-lg border border-line bg-white p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h4 className="truncate text-sm font-semibold text-zinc-900">{item.name}</h4>
+          <p className="mt-1 line-clamp-2 text-xs text-zinc-500">
+            {item.description || "暂无描述"}
+          </p>
+        </div>
+        <StatusPill status="已归档" />
+      </div>
+      <div className="mt-3 flex gap-2">
+        <button
+          className="secondary-button flex-1 justify-center"
+          onClick={onRestore}
+          disabled={busy}
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+          恢复
+        </button>
+        <button
+          className="secondary-button flex-1 justify-center text-rose-700 hover:bg-rose-50"
+          onClick={onHardDelete}
+          disabled={busy}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+          永久删除
+        </button>
+      </div>
+      <p className="mt-2 text-[11px] text-zinc-500">
+        路径：<span className="font-mono">{kind === "skill" ? "skills" : "tools"}/{item.name}/</span>
+      </p>
+    </article>
   );
 }
 

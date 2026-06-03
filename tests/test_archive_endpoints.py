@@ -133,6 +133,95 @@ class ArchiveEndpointTests(unittest.TestCase):
                     break
         self.assertTrue(found, "expected skill.archive audit entry")
 
+    # ----------------------------------------------------------- restore
+
+    def test_restore_brings_skill_back_to_active(self) -> None:
+        from runtime.skill_profile import SkillProfileStore
+
+        _seed_skill(self.root, "markdown_writer")
+        self.client.post("/api/skills/markdown_writer/archive")
+        response = self.client.post("/api/skills/markdown_writer/restore")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["lifecycle_status"], "active")
+
+        record = LifecycleStore(self.root).read("skill", "markdown_writer")
+        self.assertEqual(record.lifecycle_status, "active")
+
+        names = {p.skill_name for p in SkillProfileStore(self.root / "skills").list_profiles()}
+        self.assertIn("markdown_writer", names)
+
+    def test_restore_unknown_skill_returns_404(self) -> None:
+        response = self.client.post("/api/skills/missing/restore")
+        self.assertEqual(response.status_code, 404)
+
+    def test_double_restore_is_idempotent(self) -> None:
+        _seed_skill(self.root, "report_writer")
+        self.client.post("/api/skills/report_writer/archive")
+        first = self.client.post("/api/skills/report_writer/restore").json()
+        second = self.client.post("/api/skills/report_writer/restore").json()
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertIn("已经处于已上架", second["message"])
+
+    # ------------------------------------------------------- hard delete
+
+    def test_hard_delete_archived_skill_removes_files(self) -> None:
+        _seed_skill(self.root, "obsolete_skill")
+        self.client.post("/api/skills/obsolete_skill/archive")
+        response = self.client.delete("/api/skills/obsolete_skill")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertFalse(
+            (self.root / "skills" / "obsolete_skill").exists(),
+            "asset directory must be removed by hard delete",
+        )
+        # Lifecycle marker also gone (it lived inside the removed dir).
+        self.assertIsNone(LifecycleStore(self.root).read("skill", "obsolete_skill"))
+
+    def test_hard_delete_refuses_active_asset(self) -> None:
+        _seed_skill(self.root, "still_in_use")
+        response = self.client.delete("/api/skills/still_in_use")
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue((self.root / "skills" / "still_in_use").exists())
+
+    def test_hard_delete_tool_blocks_execution(self) -> None:
+        from runtime.tool_registry import ToolRegistry
+
+        _seed_tool(self.root, "deprecated_tool")
+        self.client.post("/api/tools/deprecated_tool/archive")
+        self.client.delete("/api/tools/deprecated_tool")
+        self.assertFalse((self.root / "tools" / "deprecated_tool").exists())
+
+        # And the tool registry status check now reports it as missing.
+        registry = ToolRegistry(
+            self.root,
+            handlers={"deprecated_tool": lambda inputs: {"ok": True}},
+        )
+        result = registry.run("deprecated_tool", {})
+        self.assertFalse(result["ok"])
+
+    def test_hard_delete_does_not_touch_reviews_or_versions(self) -> None:
+        _seed_skill(self.root, "delete_me")
+        # Stage a fake review + version snapshot so we can assert they
+        # survive the destructive delete.
+        reviews_dir = self.root / ".reviews"
+        reviews_dir.mkdir(parents=True, exist_ok=True)
+        (reviews_dir / "REV-keepme.json").write_text(
+            json.dumps({"target_skill": "delete_me"}), encoding="utf-8",
+        )
+        versions_dir = self.root / ".skills_versions" / "delete_me"
+        versions_dir.mkdir(parents=True, exist_ok=True)
+        (versions_dir / "v1.json").write_text("{}", encoding="utf-8")
+
+        self.client.post("/api/skills/delete_me/archive")
+        self.client.delete("/api/skills/delete_me")
+
+        self.assertTrue((reviews_dir / "REV-keepme.json").exists())
+        self.assertTrue((versions_dir / "v1.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
