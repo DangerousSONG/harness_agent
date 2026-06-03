@@ -379,6 +379,7 @@ export function mapBatchToView(batch, memberOpps = []) {
     }
   })();
 
+  const copy = copyFor(firstCategory);
   return {
     id: batch?.batch_id || "",
     category: firstCategory,
@@ -393,6 +394,11 @@ export function mapBatchToView(batch, memberOpps = []) {
     plannedContent,
     reviewRequirements,
     canGenerateSkillDraft: firstCategory === "skill_optimization",
+    whyLabel: copy.whyLabel,
+    planLabel: copy.planLabel,
+    regressionLabel: copy.regressionLabel,
+    categoryNotice: copy.notice,
+    recommendedActionList: copy.actionList,
     raw: batch,
   };
 }
@@ -488,6 +494,7 @@ export function mapEditToView(edit, signalsById = {}, oppsById = {}) {
     ];
   })();
 
+  const copy = copyFor(category);
   return {
     id: edit.edit_id,
     category,
@@ -507,6 +514,11 @@ export function mapEditToView(edit, signalsById = {}, oppsById = {}) {
     reviewId: edit.review_id || "",
     canValidate: category === "skill_optimization"
       && (edit.status === "proposed" || edit.status === "validated"),
+    whyLabel: copy.whyLabel,
+    planLabel: copy.planLabel,
+    regressionLabel: copy.regressionLabel,
+    categoryNotice: copy.notice,
+    recommendedActionList: copy.actionList,
     raw: edit,
   };
 }
@@ -518,6 +530,45 @@ const STATUS_LABEL = {
   review_created: "已创建审查",
   applied: "已应用",
 };
+
+// Per-category copy bundle. Skill items can talk about "建议这样改" /
+// proposed rules / regression cases; everything else uses neutral
+// "为什么需要关注 / 建议处理" wording so the UI never tells the user
+// to bake an event into SKILL.md.
+const CATEGORY_COPY = {
+  skill_optimization: {
+    whyLabel: "为什么建议这样改",
+    planLabel: "拟新增/修改的规则",
+    regressionLabel: "需要的回归 case",
+    notice: "",
+    actionList: [],
+  },
+  policy_event: {
+    whyLabel: "为什么需要关注",
+    planLabel: "建议处理",
+    regressionLabel: "审查要求",
+    notice: "该事件不属于 Skill 优化，不会生成 SKILL.md 补丁。",
+    actionList: ["进入策略审查", "继续观察", "忽略"],
+  },
+  tool_event: {
+    whyLabel: "为什么需要关注",
+    planLabel: "建议处理",
+    regressionLabel: "审查要求",
+    notice: "该事件属于工具/能力配置问题，不会生成 SKILL.md 补丁。",
+    actionList: ["创建工具审查", "检查工具注册或权限配置", "继续观察"],
+  },
+  needs_label: {
+    whyLabel: "为什么需要标注",
+    planLabel: "建议处理",
+    regressionLabel: "审查要求",
+    notice: "该 cluster 未归属到真实 Skill，先不会生成 SKILL.md 补丁。",
+    actionList: ["标注归属 Skill", "继续观察"],
+  },
+};
+
+function copyFor(category) {
+  return CATEGORY_COPY[category] || CATEGORY_COPY.skill_optimization;
+}
 
 export const CATEGORY_KEYS = [
   "skill_optimization",

@@ -712,13 +712,28 @@ function SuggestionsTab({ items, page, onPage, onGenerateDraft, busy }) {
                 </span>
               </div>
               <h3 className="mt-2 text-sm font-semibold text-zinc-950">{view.title}</h3>
+              {view.categoryNotice ? (
+                <p className="mt-2 rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-xs text-amber-800">
+                  {view.categoryNotice}
+                </p>
+              ) : null}
               <FactGrid>
-                <FactRow label="为什么建议这样处理">{view.why}</FactRow>
-                <FactRow label="拟处理内容">
-                  <span dangerouslySetInnerHTML={{ __html: emphasize(view.plannedContent) }} />
-                </FactRow>
-                {view.reviewRequirements.length ? (
-                  <FactRow label="审查/回归要求">
+                <FactRow label={view.whyLabel}>{view.why}</FactRow>
+                {view.canGenerateSkillDraft ? (
+                  <FactRow label={view.planLabel}>
+                    <span dangerouslySetInnerHTML={{ __html: emphasize(view.plannedContent) }} />
+                  </FactRow>
+                ) : (
+                  <FactRow label={view.planLabel}>
+                    <ul className="list-disc space-y-1 pl-5">
+                      {view.recommendedActionList.map((act, i) => (
+                        <li key={i}>{act}</li>
+                      ))}
+                    </ul>
+                  </FactRow>
+                )}
+                {view.canGenerateSkillDraft && view.reviewRequirements.length ? (
+                  <FactRow label={view.regressionLabel}>
                     <ul className="list-disc space-y-1 pl-5">
                       {view.reviewRequirements.map((req, i) => (
                         <li key={i}>{req}</li>
@@ -737,11 +752,7 @@ function SuggestionsTab({ items, page, onPage, onGenerateDraft, busy }) {
                 <Sparkles className="h-4 w-4" />
                 生成变更草稿
               </button>
-            ) : (
-              <span className="rounded-md border border-amber-200 bg-amber-50/60 px-2 py-1 text-[11px] text-amber-800">
-                非 Skill 优化，不可直接生成 SKILL.md 补丁
-              </span>
-            )}
+            ) : null}
           </div>
           <details className="mt-3 text-xs">
             <summary className="cursor-pointer text-zinc-500">展开技术细节</summary>
@@ -799,13 +810,28 @@ function DraftsTab({ views, page, onPage, onValidate, busy }) {
                 </span>
               </div>
               <h3 className="mt-2 text-sm font-semibold text-zinc-950">{draft.title}</h3>
+              {draft.categoryNotice ? (
+                <p className="mt-2 rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-xs text-amber-800">
+                  {draft.categoryNotice}
+                </p>
+              ) : null}
               <FactGrid>
-                <FactRow label="为什么建议这样处理">{draft.why}</FactRow>
-                <FactRow label="拟处理内容">
-                  <span dangerouslySetInnerHTML={{ __html: emphasize(draft.plannedContent) }} />
-                </FactRow>
-                {draft.reviewRequirements.length ? (
-                  <FactRow label="审查/回归要求">
+                <FactRow label={draft.whyLabel}>{draft.why}</FactRow>
+                {draft.category === "skill_optimization" ? (
+                  <FactRow label={draft.planLabel}>
+                    <span dangerouslySetInnerHTML={{ __html: emphasize(draft.plannedContent) }} />
+                  </FactRow>
+                ) : (
+                  <FactRow label={draft.planLabel}>
+                    <ul className="list-disc space-y-1 pl-5">
+                      {draft.recommendedActionList.map((act, i) => (
+                        <li key={i}>{act}</li>
+                      ))}
+                    </ul>
+                  </FactRow>
+                )}
+                {draft.category === "skill_optimization" && draft.reviewRequirements.length ? (
+                  <FactRow label={draft.regressionLabel}>
                     <ul className="list-disc space-y-1 pl-5">
                       {draft.reviewRequirements.map((req, i) => (
                         <li key={i}>{req}</li>
@@ -814,10 +840,10 @@ function DraftsTab({ views, page, onPage, onValidate, busy }) {
                   </FactRow>
                 ) : null}
               </FactGrid>
-              {draft.proposedRules.length ? (
-                <Bullets label="拟新增的 Skill 规则" values={draft.proposedRules} />
+              {draft.category === "skill_optimization" && draft.proposedRules.length ? (
+                <Bullets label="拟新增/修改的规则" values={draft.proposedRules} />
               ) : null}
-              {draft.removals.length ? (
+              {draft.category === "skill_optimization" && draft.removals.length ? (
                 <Bullets label="拟删除的规则" values={draft.removals} />
               ) : null}
             </div>
