@@ -1235,6 +1235,16 @@ def _decide(
     return decision, opp_type, priority, risk_level, confidence
 
 
+def detect_policy_gate(
+    members: list[dict[str, Any]],
+    tags: set[str],
+) -> tuple[bool, list[str]]:
+    """Public alias of ``_detect_policy_gate`` for cross-module reuse
+    (e.g. the SkillOptimizer's defence-in-depth check). Behaviour is
+    identical; see ``_detect_policy_gate`` for the trigger list."""
+    return _detect_policy_gate(members, tags)
+
+
 def _detect_policy_gate(
     members: list[dict[str, Any]],
     tags: set[str],
