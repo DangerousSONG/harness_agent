@@ -148,11 +148,12 @@ cd web/ui && npm install && npm run dev                           # Web 前端
 | 触发条件 | 决策 |
 |---|---|
 | `security_incident` 标签 | `safety_review` |
+| **policy_gate**：tag ∈ {policy_related, policy_candidate, governance_related, tool_failure}，或 content 含 `policy_block / approval_block / Tool Call Blocked / Policy Enforcement Triggered / SafeHarness policy / protected file / policy_candidate / safety` | `safety_review`（reason 标 `requires_policy_review=true`） |
 | `value ≥ 0.60 ∧ risk ≤ 0.35 ∧ testability ≥ 0.70` | `promote` |
 | `value ≥ 0.55 ∧ (testability < 0.70 ∨ risk > 0.35)` | `request_eval` |
 | `value ≥ 0.40 ∧ evidence < 0.50` | `defer` |
 | `overfitting ≥ 0.5 ∧ Σf < 3` | `reject` |
-| `target_skill = self_improvement` 非 security | `defer` |
+| `target_skill = self_improvement` 非 security | `defer`（reason 提示 `request_human_label`） |
 | `value ≥ 0.30` | `defer` |
 | 其他 | `reject` |
 
@@ -193,38 +194,63 @@ quarantine 桶在 Stage 1 单独处理，固定 `decision=quarantine`、优先�
 
 追溯链：`LearningSignal.source_path:source_ref` → `Opportunity.signal_ids` → `Batch.opportunity_ids + promo_ids` → `SkillEditProposal.source_*_ids` → `review.metadata.source_edit_id`。
 
-### 运行级归因（RunTrace + CreditAssignment）
+### 运行级归因（SkillRouter → RunTrace → CreditAssignment → Utility）
 
-每次 `ChatOrchestrator.handle` 生成一条 `RUN-xxxxxxxx`，落盘 `.audit/runs/<run_id>.json`：
+围绕 `ChatOrchestrator.handle` 的一条 observability 链。每个环节都只读 / 只补统计，不改 `SKILL.md`、不改 memory 文件、不绕 ReviewQueue。
+
+```text
+message ─► SkillRouter (deterministic, keyword-based)
+        ├─ 记 RunTrace.router_decision
+        └─ 若 top1 confidence ≥ medium → 预填 selected_skill
+   │
+   ▼
+inner pipeline (safety / intent / capability / planner / executor)
+   │
+   ▼
+populate_from_response → RunTrace
+   │
+   ▼
+assign_credit → credit_assignment
+   ├─ should_generate_learning_signal 闸：tool/env/policy 单独 → False
+   ├─ SkillProfileStore.update_from_run（success / failure_skill / blocked）
+   └─ MemoryUtilityStore.update_from_run（retrieved_memories 非空才更新）
+   │
+   ▼
+RunTraceScanner（旁路按需）→ candidate signals → EvolutionScout
+```
+
+**RunTrace 字段（`.audit/runs/<run_id>.json`）**：
 
 | 字段 | 含义 |
 |---|---|
 | `task / intent / selected_skill` | 输入 + 意图 + 最终 skill |
+| `router_decision` | `ranked_skills / selected_skill / confidence / matched_reasons` |
 | `retrieved_memories / applied_rules` | 命中的 memory / rule |
 | `tool_calls[]` | `tool_name / status / error / error_class` |
 | `policy_decisions[]` | SafeHarness 决策 + 工具注册检查 |
 | `final_output_summary` / `outcome` | 输出前 240 字符；`success / failure / partial / blocked / unknown` |
 | `credit_assignment` | 见下 |
 
-**Credit assignment**（`runtime/credit_assignment.py`，deterministic）— 8 类 `failure_source`：`environment / policy_block / tool_failure / rule_not_applied / bad_skill_selection / bad_retrieval / skill_gap / user_requirement_change`。成功运行同时记录 4 类 `positive_credit`：`skill_selected_correctly / memory_helpful / rule_effective / tool_successful`。
+**SkillRouter（`runtime/skill_router.py`，deterministic）** — `rank_skills(message, profiles)` 按 keyword/tag/name 匹配 + 历史成功率 + positive_credit 加成 − failure 惩罚 给出分数与 categorical confidence；置信度强依赖 keyword 命中，历史数据单独不能绑定无关请求。`self_improvement` 默认从候选中排除——低置信请求**回落到现有 executor 逻辑**，不强行绑定。
 
-**关键护栏 `should_generate_learning_signal(credit)`** —— 只有满足以下任一才允许把 RunTrace 转 LearningSignal：
+**SkillProfile（`runtime/skill_profile.py`）** — `skills/<skill>/profile.json` 持久化每个 skill 的 `success_count / failure_count / blocked_count / positive_credit_count / negative_credit_count / avg_eval_score / last_used_at` 加上路由用的 `tags / input_patterns / tool_dependencies`。缺失时从 SKILL.md 首段 + 名字 token 合成 fallback。`failure_source ∈ {skill_gap, rule_not_applied}` 才计 failure，其他失败源不动 counter。
 
-- skill-side blame（`skill_gap / bad_skill_selection / rule_not_applied / bad_retrieval`）置信度 ≥ medium
-- 任一 `positive_credit` 命中
+**CreditAssignment（`runtime/credit_assignment.py`，deterministic）** — 8 类 `failure_source`：`environment / policy_block / tool_failure / rule_not_applied / bad_skill_selection / bad_retrieval / skill_gap / user_requirement_change`。成功运行同时记 4 类 `positive_credit`：`skill_selected_correctly / memory_helpful / rule_effective / tool_successful`。
 
-`tool_failure / environment / policy_block` 单独存在时一律 False —— 工具/环境/审批问题不会被错误沉淀为 skill 更新。
+> 关键护栏 `should_generate_learning_signal(credit)` —— skill-side blame ≥ medium 或任一 positive_credit 才返回 True；`tool_failure / environment / policy_block` 单独存在时一律 False。
 
-**接入 Scout（`runtime/run_trace_scanner.py`）** — 把符合上述护栏 + 主因 `∈ {skill_gap, rule_not_applied}` 或 positive_credit + 用户偏好短语（"以后这样" / "固定这样" / "记住这个格式" / "以后都按这个"）的 run 转成候选 signal，`source_type=run_trace`、`source_ref=RUN-xxxxxxxx`。injection 类内容 → `quarantined=True`；`skill_gap` 且无 `selected_skill` → `target_skill=self_improvement` + `needs_human_label=true`，触发 `self_improvement_gate` 永远拒绝 promote。
+**MemoryUtility（`runtime/memory_utility.py`）** — `.skills_memory/utility.jsonl` 累计每条 memory 的 `used / success / failure / positive_feedback / negative_feedback`。失败仅算 `bad_retrieval / rule_not_applied`；用户偏好短语 `以后这样 / 固定这样 / 记住` 计 positive，`不是这样 / 不要这样 / 错了` 计 negative。`utility_score = 0.40·success_rate + 0.30·positive_feedback_rate + 0.10·freshness − 0.20·failure_rate`，clamp 到 [0,1]。当前只产 stat，retrieval 路径未改。
+
+**RunTraceScanner（`runtime/run_trace_scanner.py`，接入 Scout）** — 把符合上述护栏 + 主因 `∈ {skill_gap, rule_not_applied}`，或 positive_credit + 用户偏好短语的 run 转成候选 signal：`source_type=run_trace`、`source_ref=RUN-xxxxxxxx`。injection 类内容 → `quarantined=True`；`skill_gap` 且无 `selected_skill` → `target_skill=self_improvement` + `needs_human_label=true`，触发 `self_improvement_gate` 永远拒绝 promote。
 
 REST：
 
 | Method | Path | 作用 |
 |---|---|---|
 | GET | `/api/runs?limit=20&outcome=&intent=&should_emit=` | 倒序列出 run 摘要（含 `primary_failure_source` / `should_emit_learning_signal` / `credit recommended_action`）。支持按 outcome、intent 子串、should_emit 过滤 |
-| GET | `/api/runs/{run_id}` | 完整 trace + credit_assignment |
+| GET | `/api/runs/{run_id}` | 完整 trace + credit_assignment + router_decision |
 
-前端：`Self-Evolution → Runs` 选项卡（`web/ui/src/pages/RunsPage.jsx`）以表格呈现，点击一行展开完整 trace JSON。只读视图，不会触发任何 PROMO 或 skill 改动。
+前端：`Self-Evolution → Runs` 选项卡（`web/ui/src/pages/RunsPage.jsx`）以表格呈现，点击一行展开完整 trace JSON。只读视图，不触发任何 PROMO 或 skill 改动。
 
 ### 决策可观测（Scout decision log）
 
@@ -292,6 +318,7 @@ harness_agent/
 │                # 旁路：evolution_scout · evolution_stores · skill_optimizer · evolution_llm · scout_decisions
 │                # 工具：skill_eval_runner · knowledge_base · kb_index · web_search_provider · tool_registry
 │                # 观测：run_trace · credit_assignment · run_trace_scanner
+│                # 路由 & 统计：skill_router · skill_profile · memory_utility
 ├─ safety/       # SafeHarness 事件、决策、策略、guard、审计
 ├─ tools/        # OpenAI tool schema + handler 分发
 ├─ skills/       # Skill 定义、memory、eval cases
@@ -302,7 +329,7 @@ harness_agent/
 
 ## 本地运行产物（建议加入 `.gitignore`）
 
-`.tasks/` · `.team/` · `.transcripts/` · `.audit/`（含 `runs/RUN-*.json`） · `.reviews/` · `.skills_memory/` · `.skills_versions/` · `.evolution/` · `skills/*/memory/`。也别提交 `.env`。
+`.tasks/` · `.team/` · `.transcripts/` · `.audit/`（含 `runs/RUN-*.json`） · `.reviews/` · `.skills_memory/`（全局 memory + `utility.jsonl` + scanner 状态）· `.skills_versions/` · `.evolution/` · `skills/*/memory/` · `skills/*/profile.json`。也别提交 `.env`。
 
 ## 安全边界
 
@@ -310,7 +337,9 @@ harness_agent/
 - `policy_candidate` 不直接写入 `SKILL.md`；secret / prompt injection / bypass approval / disable safety 不沉淀为长期规则。
 - Scout 只读；Optimizer 仅 `add/replace/delete` 在 `## Memory-derived rules`；evaluator / scorer / regression gate 不能被 Scout 或 Optimizer 修改。
 - LLM 输出经脱敏 + 注入检测，命中即回退 deterministic。
-- 工具失败 / 环境问题 / 审批拦截**不会被错误沉淀为 skill 更新**：`should_generate_learning_signal` 在 RunTrace → LearningSignal 转换前拦截。同样的护栏在 `RunTraceScanner` 上再加一层（`tool_failure / environment / policy_block / unknown` 不进 Scout opportunity）。
+- 工具失败 / 环境问题 / 审批拦截**不会被错误沉淀为 skill 更新**：`should_generate_learning_signal` 在 RunTrace → LearningSignal 转换前拦截；`RunTraceScanner` / `SkillProfileStore.update_from_run` / `MemoryUtilityStore.update_from_run` 都再加一层（`tool_failure / environment / policy_block` 不进 Scout opportunity、不计 skill failure、不计 memory failure）。
+- Scout `policy_gate`：cluster 命中 `policy_block / approval_block / Tool Call Blocked / Policy Enforcement Triggered / SafeHarness policy / protected file / policy_candidate / safety` 等 phrase/tag/source_type → 强制 `safety_review`，再高的 value/testability 也不能 promote。
+- SkillRouter 默认从候选中排除 `self_improvement`：低置信请求回落到现有 executor 逻辑，不会被强行绑定。
 - 所有 `SKILL.md` 进化必须可追溯：`memory → PROMO → regression REV → skill patch REV → approve → apply → version`。
 
 ## 常用验证
