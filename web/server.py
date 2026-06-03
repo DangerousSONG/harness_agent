@@ -1475,6 +1475,8 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
 
 
 def _skills(ctx: WebContext) -> list[dict[str, Any]]:
+    from runtime.asset_lifecycle import LifecycleStore
+    lifecycle = LifecycleStore(ctx.project_root)
     skills = []
     for path in sorted(ctx.skills_dir.glob("*/SKILL.md")):
         skill_name = path.parent.name
@@ -1487,6 +1489,8 @@ def _skills(ctx: WebContext) -> list[dict[str, Any]]:
             if promo.target_skill == skill_name
         ]
         latest = versions[-1].get("version") if versions else ""
+        record = lifecycle.read("skill", skill_name)
+        lifecycle_status = record.lifecycle_status if record else "active"
         skills.append(
             {
                 "name": skill_name,
@@ -1499,6 +1503,7 @@ def _skills(ctx: WebContext) -> list[dict[str, Any]]:
                 "memory_count": sum(item["count"] for item in memory_summary.values()),
                 "promotion_count": len(promotions),
                 "updated_at": _mtime(path),
+                "lifecycle_status": lifecycle_status,
             }
         )
     return skills
@@ -1927,9 +1932,16 @@ def _tool_asset_views(ctx: WebContext) -> list[dict[str, Any]]:
                 "asset_path": _display_path(ctx, tool_dir),
                 "asset_type": "tool",
                 "risk_level": "medium",
+                "lifecycle_status": _tool_lifecycle_status(ctx, tool_name),
             }
         )
     return assets
+
+
+def _tool_lifecycle_status(ctx: WebContext, tool_name: str) -> str:
+    from runtime.asset_lifecycle import LifecycleStore
+    record = LifecycleStore(ctx.project_root).read("tool", tool_name)
+    return record.lifecycle_status if record else "active"
 
 
 def _first_existing(paths: Any) -> Path | None:
@@ -2605,6 +2617,20 @@ def _create_tool_asset(
             },
             "next_actions": ["/api/tools/create"],
         }
+    # Asset-creation pipeline: run safety check + risk classification
+    # on the proposed tool.yaml. Verdict drives lifecycle status.
+    from runtime.asset_creation_pipeline import run_tool_pipeline
+    from runtime.asset_lifecycle import LifecycleStore
+    from runtime.tool_registry import parse_simple_yaml as _parse_yaml
+
+    tool_yaml_path = f"tools/{normalized}/tool.yaml"
+    tool_yaml_text = proposed_files.get(tool_yaml_path, "")
+    try:
+        parsed_schema = _parse_yaml(tool_yaml_text) if tool_yaml_text else {}
+    except Exception:
+        parsed_schema = {}
+    pipeline_verdict = run_tool_pipeline(parsed_schema)
+
     created_files = []
     for item in missing:
         path = _safe_project_path(ctx, item["path"])
@@ -2613,25 +2639,71 @@ def _create_tool_asset(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(proposed_files[item["path"]], encoding="utf-8")
         created_files.append(item["path"])
+
+    # Audit log: full safety-check detail (only admin / debug surfaces
+    # read this; the public API response stays minimal).
     _write_operation_log(
         ctx,
         "tool.create",
         {
             "tool_name": normalized,
             "created_files": created_files,
-            "risk": preflight.get("risk", "medium"),
+            "risk": pipeline_verdict.check_result.risk_level,
+            "lifecycle_status": pipeline_verdict.lifecycle_status,
+            "safety_check": pipeline_verdict.check_result.to_dict(),
+            "preflight": preflight,
         },
     )
+
+    # If the pipeline routes to ReviewQueue, create a tool.creation
+    # review carrying the safety-check detail so administrators can
+    # see why it was held. Public response keeps the same minimal
+    # shape regardless of risk level.
+    review_id = ""
+    if pipeline_verdict.requires_review:
+        try:
+            review = ctx.review_store.create_review(
+                type="tool.creation",
+                source="asset_creation_pipeline",
+                target_skill=normalized,
+                target_files=created_files,
+                severity=(
+                    "high"
+                    if pipeline_verdict.check_result.risk_level == "high"
+                    else "medium"
+                ),
+                reason=f"Tool {normalized} created via pipeline; awaiting human review.",
+                risk_type="safe_write_preview",
+                proposed_change=f"Auto-create tool {normalized}",
+                evaluation_plan="Review tool schema, default_policy, and entry_type before activating.",
+                rollback_plan=f"Remove tools/{normalized} or downgrade lifecycle to archived.",
+                metadata={
+                    "operation": "tool_create",
+                    "lifecycle_status": pipeline_verdict.lifecycle_status,
+                    "safety_check": pipeline_verdict.check_result.to_dict(),
+                },
+            )
+            review_id = review.get("review_id", "")
+        except Exception:
+            review_id = ""
+
+    LifecycleStore(ctx.project_root).write(
+        kind="tool",
+        name=normalized,
+        lifecycle_status=pipeline_verdict.lifecycle_status,
+        risk_level=pipeline_verdict.check_result.risk_level,
+        review_id=review_id,
+    )
+
     return {
         "ok": True,
-        "message": (
-            f"Created {normalized} tool asset. Creating tool files does not automatically provide realtime access; "
-            "the tool still needs an executable handler, provider configuration, and a passing test before Chat can call it."
-        ),
+        "message": pipeline_verdict.message_user,
         "data": {
             "tool_name": normalized,
             "asset_type": "tool",
             "status": "created",
+            "lifecycle_status": pipeline_verdict.lifecycle_status,
+            "review_id": review_id,
             "runtime_note": "Tool Asset created; executable runtime still depends on handler_available, provider_configured, and executable status.",
             "created_files": created_files,
             "preflight": preflight,
@@ -3313,12 +3385,55 @@ def _create_skill_creation_review(
     proposed_files = _normalize_proposed_skill_files(normalized, description, files)
     skill_content = proposed_files[skill_file]
     eval_content = proposed_files[eval_file]
+
+    from runtime.asset_creation_pipeline import run_skill_pipeline
+    from runtime.asset_lifecycle import LifecycleStore
+
+    pipeline_verdict = run_skill_pipeline(skill_content)
+
+    # Hard-rejection path: never write files, never create a review.
+    if pipeline_verdict.lifecycle_status == "rejected":
+        _write_operation_log(
+            ctx,
+            "skill.create.rejected",
+            {
+                "skill_name": normalized,
+                "lifecycle_status": "rejected",
+                "safety_check": pipeline_verdict.check_result.to_dict(),
+            },
+        )
+        LifecycleStore(ctx.project_root).write(
+            kind="skill",
+            name=normalized,
+            lifecycle_status="rejected",
+            risk_level=pipeline_verdict.check_result.risk_level,
+        )
+        return {
+            "ok": False,
+            "message": pipeline_verdict.message_user,
+            "status_code": 400,
+            "data": {
+                "skill_name": normalized,
+                "lifecycle_status": "rejected",
+            },
+        }
+
+    review_id = ""
+    severity = (
+        "high"
+        if pipeline_verdict.check_result.risk_level == "high"
+        else "medium"
+    )
+    # All non-rejected skills still go through ReviewQueue (skills are
+    # agent-influencing code; defaulting to review is the conservative
+    # boundary even for low-risk content). The pipeline verdict steers
+    # the user-facing message and the severity on the review.
     review = ctx.review_store.create_review(
         type="skill.creation",
         source="chat_runtime",
         target_skill=normalized,
         target_files=[skill_file, eval_file],
-        severity="medium",
+        severity=severity,
         reason=f"Create new skill {normalized} through review.",
         risk_type="safe_write_preview",
         proposed_change=f"Create {skill_file} and {eval_file}.",
@@ -3327,19 +3442,42 @@ def _create_skill_creation_review(
         metadata={
             "operation": "skill_create",
             "proposed_files": proposed_files,
+            "lifecycle_status": pipeline_verdict.lifecycle_status,
+            "safety_check": pipeline_verdict.check_result.to_dict(),
         },
     )
+    review_id = review["review_id"]
+
+    _write_operation_log(
+        ctx,
+        "skill.create.review",
+        {
+            "skill_name": normalized,
+            "review_id": review_id,
+            "lifecycle_status": pipeline_verdict.lifecycle_status,
+            "safety_check": pipeline_verdict.check_result.to_dict(),
+        },
+    )
+    LifecycleStore(ctx.project_root).write(
+        kind="skill",
+        name=normalized,
+        lifecycle_status=pipeline_verdict.lifecycle_status,
+        risk_level=pipeline_verdict.check_result.risk_level,
+        review_id=review_id,
+    )
+
     return {
         "ok": True,
-        "message": f"Created skill creation review {review['review_id']} for {normalized}. No skill files were written.",
+        "message": pipeline_verdict.message_user,
         "data": {
-            "review_id": review["review_id"],
+            "review_id": review_id,
             "review": review,
             "skill_name": normalized,
+            "lifecycle_status": pipeline_verdict.lifecycle_status,
             "target_files": [skill_file, eval_file],
             "preview_files": {skill_file: skill_content, eval_file: eval_content},
         },
-        "next_actions": [f"/api/reviews/{review['review_id']}", f"/api/reviews/{review['review_id']}/approve"],
+        "next_actions": [f"/api/reviews/{review_id}", f"/api/reviews/{review_id}/approve"],
     }
 
 
