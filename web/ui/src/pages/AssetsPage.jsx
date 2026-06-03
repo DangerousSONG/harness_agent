@@ -223,7 +223,12 @@ export default function AssetsPage({
                     [t("assets.skills.metric.versions"), (versions || []).filter((item) => item.skill === skill.name).length],
                   ]}
                   onClick={() => openAsset("skill", skill)}
-                  onDelete={() => requestArchive("skill", skill.name)}
+                  onDelete={
+                    skill.is_built_in
+                      ? null
+                      : () => requestArchive("skill", skill.name)
+                  }
+                  builtIn={skill.is_built_in}
                   deleteBusy={actionBusy && pendingAction?.name === skill.name}
                 />
               )}
@@ -280,7 +285,12 @@ export default function AssetsPage({
                     [t("assets.tools.metric.executable"), tool.executable ? t("common.yes") : t("common.no")],
                   ]}
                   onClick={() => openAsset("tool", tool)}
-                  onDelete={() => requestArchive("tool", tool.name)}
+                  onDelete={
+                    tool.is_built_in
+                      ? null
+                      : () => requestArchive("tool", tool.name)
+                  }
+                  builtIn={tool.is_built_in}
                   deleteBusy={actionBusy && pendingAction?.name === tool.name}
                 />
               )}
@@ -619,12 +629,22 @@ function CreateEntryCard({ title, description, onClick }) {
   );
 }
 
-function AssetCard({ title, description, status, rows, metrics, children, onClick, onDelete, deleteBusy }) {
+function AssetCard({ title, description, status, rows, metrics, children, onClick, onDelete, deleteBusy, builtIn }) {
   return (
     <article className="section-panel cursor-pointer p-4 transition hover:border-zinc-300" onClick={onClick}>
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h2 className="truncate text-base font-semibold text-zinc-950">{title}</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="truncate text-base font-semibold text-zinc-950">{title}</h2>
+            {builtIn ? (
+              <span
+                className="inline-flex flex-shrink-0 items-center gap-1 rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[10px] font-semibold text-zinc-600"
+                title="系统内置资产，不能归档或删除"
+              >
+                内置
+              </span>
+            ) : null}
+          </div>
           {description ? <p className="mt-1 line-clamp-2 text-sm leading-6 text-zinc-500">{description}</p> : null}
         </div>
         <div className="flex items-center gap-2">

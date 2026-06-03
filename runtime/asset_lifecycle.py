@@ -59,6 +59,12 @@ class LifecycleRecord:
     review_id: str = ""
     audit_ref: str = ""
     risk_level: str = "low"
+    # ``built_in`` is the safe default for any asset that pre-dates the
+    # asset-creation pipeline (the existing skills/ and tools/ trees in
+    # the repo). The pipeline stamps ``user_created`` when it writes a
+    # marker, which is the only flag that lets the archive / restore /
+    # hard-delete endpoints touch the asset.
+    provenance: str = "built_in"
     created_at: str = field(default_factory=_utc_now)
     updated_at: str = field(default_factory=_utc_now)
 
@@ -94,15 +100,26 @@ class LifecycleStore:
         if not isinstance(raw, dict):
             return None
         try:
-            return LifecycleRecord(**{
-                k: raw.get(k, "")
-                for k in (
-                    "lifecycle_status", "review_id", "audit_ref",
-                    "risk_level", "created_at", "updated_at",
-                )
-            })
+            return LifecycleRecord(
+                lifecycle_status=raw.get("lifecycle_status", "") or "active",
+                review_id=raw.get("review_id", "") or "",
+                audit_ref=raw.get("audit_ref", "") or "",
+                risk_level=raw.get("risk_level", "") or "low",
+                provenance=raw.get("provenance", "") or "built_in",
+                created_at=raw.get("created_at", "") or _utc_now(),
+                updated_at=raw.get("updated_at", "") or _utc_now(),
+            )
         except TypeError:
             return None
+
+    def is_user_created(self, kind: str, name: str) -> bool:
+        """True iff the asset was created through the user-facing
+        pipeline (the only path that's allowed to archive / restore /
+        hard-delete). An asset with no marker counts as built-in for
+        back-compat with everything that shipped in the repo before
+        the pipeline existed."""
+        record = self.read(kind, name)
+        return bool(record and record.provenance == "user_created")
 
     def is_loadable(self, kind: str, name: str) -> bool:
         record = self.read(kind, name)
@@ -123,16 +140,26 @@ class LifecycleStore:
         risk_level: str = "low",
         review_id: str = "",
         audit_ref: str = "",
+        provenance: str | None = None,
     ) -> LifecycleRecord:
         directory = self._skill_dir(name) if kind == "skill" else self._tool_dir(name)
         directory.mkdir(parents=True, exist_ok=True)
         existing = self.read(kind, name)
+        # Provenance is sticky once set: archive / restore won't change
+        # whether the asset is built-in or user-created. Only the
+        # creation pipeline gets to set it explicitly.
+        resolved_provenance = (
+            provenance
+            if provenance is not None
+            else (existing.provenance if existing else "built_in")
+        )
         now = _utc_now()
         record = LifecycleRecord(
             lifecycle_status=lifecycle_status,
             review_id=review_id,
             audit_ref=audit_ref,
             risk_level=risk_level,
+            provenance=resolved_provenance,
             created_at=existing.created_at if existing else now,
             updated_at=now,
         )

@@ -1519,6 +1519,7 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
 def _skills(ctx: WebContext) -> list[dict[str, Any]]:
     from runtime.asset_lifecycle import LifecycleStore
     lifecycle = LifecycleStore(ctx.project_root)
+    user_created_check = lifecycle.is_user_created
     skills = []
     for path in sorted(ctx.skills_dir.glob("*/SKILL.md")):
         skill_name = path.parent.name
@@ -1546,6 +1547,7 @@ def _skills(ctx: WebContext) -> list[dict[str, Any]]:
                 "promotion_count": len(promotions),
                 "updated_at": _mtime(path),
                 "lifecycle_status": lifecycle_status,
+                "is_built_in": not user_created_check("skill", skill_name),
             }
         )
     return skills
@@ -1914,6 +1916,7 @@ def _tool_views(ctx: WebContext) -> list[dict[str, Any]]:
             "asset_path": "",
             "asset_type": "registered_tool",
             "safety_policy": policy,
+            "is_built_in": True,
         }
     for asset in _tool_asset_views(ctx):
         existing = tools_by_name.get(asset["name"], {})
@@ -1975,9 +1978,15 @@ def _tool_asset_views(ctx: WebContext) -> list[dict[str, Any]]:
                 "asset_type": "tool",
                 "risk_level": "medium",
                 "lifecycle_status": _tool_lifecycle_status(ctx, tool_name),
+                "is_built_in": not _tool_is_user_created(ctx, tool_name),
             }
         )
     return assets
+
+
+def _tool_is_user_created(ctx: WebContext, tool_name: str) -> bool:
+    from runtime.asset_lifecycle import LifecycleStore
+    return LifecycleStore(ctx.project_root).is_user_created("tool", tool_name)
 
 
 def _tool_lifecycle_status(ctx: WebContext, tool_name: str) -> str:
@@ -2004,6 +2013,15 @@ def _archive_asset(ctx: WebContext, *, kind: str, name: str) -> dict[str, Any]:
     if not asset_dir.exists():
         return {"ok": False, "message": f"Unknown {kind}: {normalized}", "status_code": 404}
     store = LifecycleStore(ctx.project_root)
+    if not store.is_user_created(kind, normalized):
+        return {
+            "ok": False,
+            "message": (
+                f"{normalized} 是系统内置{('Skill' if kind == 'skill' else 'Tool')}，"
+                "不能归档。仅用户通过创建流程产生的资产才可以归档或删除。"
+            ),
+            "status_code": 403,
+        }
     existing = store.read(kind, normalized)
     previous = existing.lifecycle_status if existing else "active"
     if previous == "archived":
@@ -2062,6 +2080,15 @@ def _restore_asset(ctx: WebContext, *, kind: str, name: str) -> dict[str, Any]:
     if not asset_dir.exists():
         return {"ok": False, "message": f"Unknown {kind}: {normalized}", "status_code": 404}
     store = LifecycleStore(ctx.project_root)
+    if not store.is_user_created(kind, normalized):
+        return {
+            "ok": False,
+            "message": (
+                f"{normalized} 是系统内置{('Skill' if kind == 'skill' else 'Tool')}，"
+                "不能恢复或修改归档状态。"
+            ),
+            "status_code": 403,
+        }
     existing = store.read(kind, normalized)
     previous = existing.lifecycle_status if existing else "active"
     if previous == "active":
@@ -2133,6 +2160,15 @@ def _hard_delete_asset(ctx: WebContext, *, kind: str, name: str) -> dict[str, An
     if not asset_dir.exists():
         return {"ok": False, "message": f"Unknown {kind}: {normalized}", "status_code": 404}
     store = LifecycleStore(ctx.project_root)
+    if not store.is_user_created(kind, normalized):
+        return {
+            "ok": False,
+            "message": (
+                f"{normalized} 是系统内置{('Skill' if kind == 'skill' else 'Tool')}，"
+                "不能永久删除。"
+            ),
+            "status_code": 403,
+        }
     existing = store.read(kind, normalized)
     if not existing or existing.lifecycle_status != "archived":
         return {
@@ -2934,6 +2970,7 @@ def _create_tool_asset(
         lifecycle_status=pipeline_verdict.lifecycle_status,
         risk_level=pipeline_verdict.check_result.risk_level,
         review_id=review_id,
+        provenance="user_created",
     )
 
     return {
@@ -3648,6 +3685,7 @@ def _create_skill_creation_review(
             name=normalized,
             lifecycle_status="rejected",
             risk_level=pipeline_verdict.check_result.risk_level,
+            provenance="user_created",
         )
         return {
             "ok": False,
@@ -3705,6 +3743,7 @@ def _create_skill_creation_review(
         lifecycle_status=pipeline_verdict.lifecycle_status,
         risk_level=pipeline_verdict.check_result.risk_level,
         review_id=review_id,
+        provenance="user_created",
     )
 
     return {
