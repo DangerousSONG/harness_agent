@@ -1243,6 +1243,7 @@ export default function App() {
             versions={versions}
             onOpenReview={openReview}
             onOpenVersions={() => setPage("versions")}
+            onAssetCreated={refresh}
             tab={assetTab}
             onTabChange={setLibraryTab}
           />
