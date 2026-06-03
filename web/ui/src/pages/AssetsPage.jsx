@@ -44,7 +44,16 @@ export default function AssetsPage({
   const [pendingAction, setPendingAction] = useState(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [toast, setToast] = useState({ tone: "info", message: "" });
-  const [archiveOpen, setArchiveOpen] = useState({ skills: false, tools: false });
+  // Track whether the user has overridden the auto-open behavior. When
+  // unset (false), the section opens whenever there's at least one
+  // archived item so the user can see where their delete went; the
+  // first manual toggle pins their preference.
+  const [archiveOpen, setArchiveOpen] = useState({
+    skills: { user: false, value: false },
+    tools: { user: false, value: false },
+  });
+  const setArchivePref = (key, value) =>
+    setArchiveOpen((prev) => ({ ...prev, [key]: { user: true, value } }));
   const tab = controlledTab || localTab;
   const setTab = onTabChange || setLocalTab;
 
@@ -68,11 +77,17 @@ export default function AssetsPage({
       }
       setToast({
         tone: "success",
-        message: payload?.message
-          || (action === "archive"
-              ? `${name} 已归档，不再被加载或执行。`
-              : `${name} 已永久删除。`),
+        message: action === "archive"
+          ? `${name} 已移至下方「已归档」区，可恢复或永久删除。`
+          : (payload?.message || `${name} 已永久删除。`),
       });
+      // If the user just archived, make sure the archive section is
+      // visible so they can see where it went — even if they had
+      // previously collapsed the section by hand.
+      if (action === "archive") {
+        const key = kind === "skill" ? "skills" : "tools";
+        setArchivePref(key, true);
+      }
       setPendingAction(null);
       onAssetCreated?.();
     } catch (err) {
@@ -115,6 +130,15 @@ export default function AssetsPage({
   };
   const skillBuckets = useMemo(() => partitionByArchive(skills), [skills]);
   const toolBuckets = useMemo(() => partitionByArchive(tools), [tools]);
+  // Compute the effective open/closed state: respect the user's
+  // explicit choice, otherwise auto-open whenever there's anything
+  // to show.
+  const skillsArchiveOpen = archiveOpen.skills.user
+    ? archiveOpen.skills.value
+    : skillBuckets.archived.length > 0;
+  const toolsArchiveOpen = archiveOpen.tools.user
+    ? archiveOpen.tools.value
+    : toolBuckets.archived.length > 0;
   const evalCards = useMemo(
     () => (skills || []).filter((skill) => skill.has_eval_cases),
     [skills],
@@ -223,7 +247,12 @@ export default function AssetsPage({
                     [t("assets.skills.metric.versions"), (versions || []).filter((item) => item.skill === skill.name).length],
                   ]}
                   onClick={() => openAsset("skill", skill)}
-                  onDelete={() => requestArchive("skill", skill.name)}
+                  onDelete={
+                    skill.is_built_in
+                      ? null
+                      : () => requestArchive("skill", skill.name)
+                  }
+                  builtIn={skill.is_built_in}
                   deleteBusy={actionBusy && pendingAction?.name === skill.name}
                 />
               )}
@@ -231,8 +260,8 @@ export default function AssetsPage({
             <ArchiveSection
               kind="skill"
               items={skillBuckets.archived}
-              open={archiveOpen.skills}
-              onToggle={() => setArchiveOpen({ ...archiveOpen, skills: !archiveOpen.skills })}
+              open={skillsArchiveOpen}
+              onToggle={() => setArchivePref("skills", !skillsArchiveOpen)}
               onRestore={(name) => restoreAsset("skill", name)}
               onHardDelete={(name) => requestHardDelete("skill", name)}
               actionBusy={actionBusy}
@@ -280,7 +309,12 @@ export default function AssetsPage({
                     [t("assets.tools.metric.executable"), tool.executable ? t("common.yes") : t("common.no")],
                   ]}
                   onClick={() => openAsset("tool", tool)}
-                  onDelete={() => requestArchive("tool", tool.name)}
+                  onDelete={
+                    tool.is_built_in
+                      ? null
+                      : () => requestArchive("tool", tool.name)
+                  }
+                  builtIn={tool.is_built_in}
                   deleteBusy={actionBusy && pendingAction?.name === tool.name}
                 />
               )}
@@ -288,8 +322,8 @@ export default function AssetsPage({
             <ArchiveSection
               kind="tool"
               items={toolBuckets.archived}
-              open={archiveOpen.tools}
-              onToggle={() => setArchiveOpen({ ...archiveOpen, tools: !archiveOpen.tools })}
+              open={toolsArchiveOpen}
+              onToggle={() => setArchivePref("tools", !toolsArchiveOpen)}
               onRestore={(name) => restoreAsset("tool", name)}
               onHardDelete={(name) => requestHardDelete("tool", name)}
               actionBusy={actionBusy}
@@ -508,19 +542,40 @@ function ArchiveSection({
   pendingName,
 }) {
   const count = items?.length || 0;
+  const hasItems = count > 0;
   return (
-    <div className="mt-6 rounded-xl border border-line bg-zinc-50/60">
+    <div
+      className={[
+        "mt-6 rounded-xl border",
+        hasItems
+          ? "border-amber-200 bg-amber-50/40"
+          : "border-line bg-zinc-50/60",
+      ].join(" ")}
+    >
       <button
         type="button"
-        className="flex w-full items-center justify-between rounded-t-xl px-4 py-3 text-left transition hover:bg-zinc-100"
+        className={[
+          "flex w-full items-center justify-between rounded-t-xl px-4 py-3 text-left transition",
+          hasItems ? "hover:bg-amber-50" : "hover:bg-zinc-100",
+        ].join(" ")}
         onClick={onToggle}
       >
         <span className="flex items-center gap-2 text-sm font-semibold text-zinc-800">
-          <Archive className="h-4 w-4" />
-          已归档（{count}）
+          <Archive className={["h-4 w-4", hasItems ? "text-amber-700" : "text-zinc-500"].join(" ")} />
+          归档区
+          <span
+            className={[
+              "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+              hasItems
+                ? "bg-amber-100 text-amber-800"
+                : "bg-zinc-100 text-zinc-500",
+            ].join(" ")}
+          >
+            {count}
+          </span>
           <span className="ml-1 text-xs font-normal text-zinc-500">
-            {count
-              ? "已停用的资产留在这里，可以恢复或永久删除"
+            {hasItems
+              ? `已停用的 ${kind === "skill" ? "Skill" : "Tool"} 留在这里，可恢复或永久删除`
               : "尚无已归档资产"}
           </span>
         </span>
@@ -619,12 +674,22 @@ function CreateEntryCard({ title, description, onClick }) {
   );
 }
 
-function AssetCard({ title, description, status, rows, metrics, children, onClick, onDelete, deleteBusy }) {
+function AssetCard({ title, description, status, rows, metrics, children, onClick, onDelete, deleteBusy, builtIn }) {
   return (
     <article className="section-panel cursor-pointer p-4 transition hover:border-zinc-300" onClick={onClick}>
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h2 className="truncate text-base font-semibold text-zinc-950">{title}</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="truncate text-base font-semibold text-zinc-950">{title}</h2>
+            {builtIn ? (
+              <span
+                className="inline-flex flex-shrink-0 items-center gap-1 rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[10px] font-semibold text-zinc-600"
+                title="系统内置资产，不能归档或删除"
+              >
+                内置
+              </span>
+            ) : null}
+          </div>
           {description ? <p className="mt-1 line-clamp-2 text-sm leading-6 text-zinc-500">{description}</p> : null}
         </div>
         <div className="flex items-center gap-2">

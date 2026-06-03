@@ -21,22 +21,32 @@ from runtime.asset_lifecycle import LifecycleStore
 from web.server import create_app
 
 
-def _seed_skill(root: Path, name: str = "markdown_writer") -> None:
+def _seed_skill(root: Path, name: str = "markdown_writer", *, user_created: bool = True) -> None:
     skill_dir = root / "skills" / name
     (skill_dir / "memory").mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         "---\nname: " + name + "\n---\n\n# " + name + "\n",
         encoding="utf-8",
     )
+    if user_created:
+        LifecycleStore(root).write(
+            kind="skill", name=name, lifecycle_status="active",
+            provenance="user_created",
+        )
 
 
-def _seed_tool(root: Path, name: str = "weather_query") -> None:
+def _seed_tool(root: Path, name: str = "weather_query", *, user_created: bool = True) -> None:
     tool_dir = root / "tools" / name
     tool_dir.mkdir(parents=True)
     (tool_dir / "tool.yaml").write_text(
         "name: " + name + "\nentry_type: http_get\n",
         encoding="utf-8",
     )
+    if user_created:
+        LifecycleStore(root).write(
+            kind="tool", name=name, lifecycle_status="active",
+            provenance="user_created",
+        )
 
 
 class ArchiveEndpointTests(unittest.TestCase):
@@ -202,6 +212,44 @@ class ArchiveEndpointTests(unittest.TestCase):
         )
         result = registry.run("deprecated_tool", {})
         self.assertFalse(result["ok"])
+
+    # ----------------------------------------------- built-in protection
+
+    def test_archive_refuses_built_in_skill(self) -> None:
+        # Skill seeded without the user_created marker = built-in.
+        _seed_skill(self.root, "system_skill", user_created=False)
+        response = self.client.post("/api/skills/system_skill/archive")
+        self.assertEqual(response.status_code, 403)
+        # Files untouched.
+        self.assertTrue((self.root / "skills" / "system_skill" / "SKILL.md").exists())
+        # And lifecycle marker is still missing / built-in.
+        store = LifecycleStore(self.root)
+        self.assertFalse(store.is_user_created("skill", "system_skill"))
+
+    def test_archive_refuses_built_in_tool(self) -> None:
+        _seed_tool(self.root, "system_tool", user_created=False)
+        response = self.client.post("/api/tools/system_tool/archive")
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue((self.root / "tools" / "system_tool" / "tool.yaml").exists())
+
+    def test_restore_refuses_built_in_skill(self) -> None:
+        _seed_skill(self.root, "system_skill", user_created=False)
+        response = self.client.post("/api/skills/system_skill/restore")
+        self.assertEqual(response.status_code, 403)
+
+    def test_hard_delete_refuses_built_in_skill(self) -> None:
+        _seed_skill(self.root, "system_skill", user_created=False)
+        response = self.client.delete("/api/skills/system_skill")
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue((self.root / "skills" / "system_skill" / "SKILL.md").exists())
+
+    def test_user_created_marker_exposes_is_built_in_false(self) -> None:
+        _seed_skill(self.root, "user_skill", user_created=True)
+        _seed_skill(self.root, "system_skill", user_created=False)
+        skills = self.client.get("/api/skills").json()["data"]
+        by_name = {s["name"]: s for s in skills}
+        self.assertFalse(by_name["user_skill"]["is_built_in"])
+        self.assertTrue(by_name["system_skill"]["is_built_in"])
 
     def test_hard_delete_does_not_touch_reviews_or_versions(self) -> None:
         _seed_skill(self.root, "delete_me")
