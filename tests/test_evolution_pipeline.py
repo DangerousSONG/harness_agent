@@ -1074,6 +1074,245 @@ class EvolutionLLMTestCase(unittest.TestCase):
         self.assertIn("refused", result.message)
 
 
+class ScoutPolicyGateTests(unittest.TestCase):
+    """Hard promote gate: policy / approval / SafeHarness fingerprints
+    must never bake into a skill rule — they have to route to
+    safety_review (or, if target_skill=self_improvement, to a deferred
+    human-attribution decision).
+
+    Mirrors the same ``_write_record`` / ``_scan`` plumbing as the
+    ScoutFourStage suite so the inputs look like real memory."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        (self.root / "skills").mkdir()
+        (self.root / ".skills_memory").mkdir()
+        self.promotions = PromotionBrowser(
+            skills_dir=self.root / "skills",
+            global_memory_dir=self.root / ".skills_memory",
+            project_root=self.root,
+        )
+        self.stores = EvolutionStores(self.root)
+        self.scout = EvolutionScout(
+            project_root=self.root,
+            stores=self.stores,
+            promotions=self.promotions,
+        )
+
+    def _write_record(
+        self, skill, filename, record_id, title, details, *,
+        occurrence=3, priority="high",
+    ):
+        memory_dir = self.root / "skills" / skill / "memory"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        path = memory_dir / filename
+        existing = path.read_text(encoding="utf-8") if path.exists() else "# Memory\n\n"
+        block = (
+            f"## {record_id} - {title}\n"
+            f"- Time: 2024-01-01\n"
+            f"- Priority: {priority}\n"
+            f"- Status: open\n"
+            f"- Occurrence Count: {occurrence}\n"
+            f"- Target Skill: {skill}\n"
+            f"\n### Details\n{details}\n\n"
+        )
+        path.write_text(existing + block, encoding="utf-8")
+
+    def _opps_for(self, skill):
+        return [o for o in self.stores.opportunities.list()
+                if o["target_skill"] == skill]
+
+    # ---------------------------------------------------- gate triggers
+
+    def test_policy_block_signal_does_not_promote(self):
+        self._write_record(
+            "report_writer", "ERRORS.md", "ERR-PB1",
+            "Edit refused: policy_block",
+            "From now on always retry. The edit was refused: policy_block on "
+            "skills/report_writer/SKILL.md (protected file). default to retry.",
+            occurrence=4, priority="high",
+        )
+        self._write_record(
+            "report_writer", "ERRORS.md", "ERR-PB2",
+            "Edit refused: policy_block again",
+            "From now on always retry. Same policy_block hit while editing the "
+            "protected file. default to retry.",
+            occurrence=3, priority="high",
+        )
+        self.scout.scan()
+        opps = self._opps_for("report_writer")
+        self.assertTrue(opps)
+        for opp in opps:
+            self.assertNotEqual(opp["decision"], "promote", opp)
+            self.assertIn(opp["decision"], {"safety_review", "defer", "request_eval"})
+
+    def test_safeharness_policy_signal_does_not_promote(self):
+        self._write_record(
+            "report_writer", "LEARNINGS.md", "LRN-SH1",
+            "SafeHarness policy enforcement",
+            "From now on remember: SafeHarness policy enforcement triggered. "
+            "Tool Call Blocked. Default to retry with safer args.",
+            occurrence=4, priority="high",
+        )
+        self._write_record(
+            "report_writer", "LEARNINGS.md", "LRN-SH2",
+            "Tool Call Blocked again",
+            "From now on remember: SafeHarness policy block. Tool Call Blocked. "
+            "Default to retry.",
+            occurrence=3, priority="high",
+        )
+        self.scout.scan()
+        opps = self._opps_for("report_writer")
+        self.assertTrue(opps)
+        for opp in opps:
+            self.assertNotEqual(opp["decision"], "promote", opp)
+        triggered = [o for o in opps if o["decision"] == "safety_review"]
+        self.assertTrue(triggered)
+        self.assertIn("requires_policy_review=true", triggered[0]["reason"])
+
+    def test_approval_block_phrase_does_not_promote(self):
+        self._write_record(
+            "report_writer", "LEARNINGS.md", "LRN-AB1",
+            "approval_block on tool call",
+            "From now on always default to safer args; approval_block hit "
+            "on the writer tool. default this behavior.",
+            occurrence=4, priority="high",
+        )
+        self._write_record(
+            "report_writer", "LEARNINGS.md", "LRN-AB2",
+            "approval_block again",
+            "From now on default to safer args; approval_block hit again on "
+            "the writer. default behavior.",
+            occurrence=3, priority="high",
+        )
+        self.scout.scan()
+        for opp in self._opps_for("report_writer"):
+            self.assertNotEqual(opp["decision"], "promote", opp)
+
+    # ----------------------------------------- self_improvement → no promote
+
+    def test_self_improvement_signal_does_not_promote(self):
+        # No "Target Skill:" line maps to observed_skill=self_improvement.
+        memory_dir = self.root / ".skills_memory"
+        memory_dir.mkdir(exist_ok=True)
+        (memory_dir / "GLOBAL_LEARNINGS.md").write_text(
+            "# Global Learnings\n\n"
+            "## LRN-SI1 - From now on default to markdown headings\n"
+            "- Time: 2024-01-01\n- Priority: high\n- Status: open\n"
+            "- Occurrence Count: 4\n"
+            "\n### Details\nFrom now on default to markdown headings. "
+            "always use ATX headings.\n\n"
+            "## LRN-SI2 - From now on default to markdown\n"
+            "- Time: 2024-01-02\n- Priority: high\n- Status: open\n"
+            "- Occurrence Count: 3\n"
+            "\n### Details\nFrom now on default to markdown headings. "
+            "always use ATX headings.\n\n",
+            encoding="utf-8",
+        )
+        self.scout.scan()
+        opps = [o for o in self.stores.opportunities.list()
+                if o["target_skill"] == "self_improvement"]
+        self.assertTrue(opps)
+        for opp in opps:
+            self.assertNotEqual(opp["decision"], "promote", opp)
+            self.assertIn(opp["decision"], {"defer", "request_eval"})
+            self.assertIn("self_improvement", opp["reason"])
+
+    # ------------------------------------ baseline: markdown still promotes
+
+    def test_clean_format_preference_still_promotes(self):
+        self._write_record(
+            "markdown_writer", "LEARNINGS.md", "LRN-MD1",
+            "Prefer markdown headings",
+            "From now on always use markdown headings for report titles. "
+            "Default to ATX-style headings in every report.",
+            occurrence=3, priority="high",
+        )
+        self._write_record(
+            "markdown_writer", "LEARNINGS.md", "LRN-MD2",
+            "Plain text reports must not be used",
+            "Reports must not be plain text. From now on the structure is fixed.",
+            occurrence=2, priority="high",
+        )
+        self.scout.scan()
+        promotes = [o for o in self._opps_for("markdown_writer")
+                    if o["decision"] == "promote"]
+        self.assertTrue(promotes, "clean format_preference cluster must still promote")
+
+
+class ScoutRunTraceFailureSourceGuardTests(unittest.TestCase):
+    """tool_failure / environment / policy_block runs must never appear
+    as a skill opportunity, even when fed through the Scout."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        (self.root / "skills").mkdir()
+        (self.root / ".skills_memory").mkdir()
+        self.promotions = PromotionBrowser(
+            skills_dir=self.root / "skills",
+            global_memory_dir=self.root / ".skills_memory",
+            project_root=self.root,
+        )
+        self.stores = EvolutionStores(self.root)
+        from runtime.run_trace_scanner import RunTraceScanner
+        self.scout = EvolutionScout(
+            project_root=self.root,
+            stores=self.stores,
+            promotions=self.promotions,
+            run_trace_scanner=RunTraceScanner(self.root),
+        )
+
+    def _write_run(self, run_id, source):
+        runs = self.root / ".audit" / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "run_id": run_id,
+            "started_at": "2026-06-01T00:00:00+00:00",
+            "completed_at": "2026-06-01T00:00:01+00:00",
+            "task": "do the thing",
+            "intent": "general_chat",
+            "selected_skill": "markdown_writer",
+            "tool_calls": [],
+            "policy_decisions": [],
+            "final_output_summary": "ok",
+            "outcome": "failure",
+            "credit_assignment": {
+                "run_id": run_id,
+                "outcome": "failure",
+                "failure_sources": [{"source": source, "confidence": "high"}],
+                "positive_credits": [],
+                "recommended_action": "review_environment",
+                "confidence": "medium",
+                "evaluator": "deterministic_rules",
+            },
+        }
+        (runs / f"{run_id}.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+
+    def test_tool_failure_run_produces_no_skill_opportunity(self):
+        self._write_run("RUN-TF000001", "tool_failure")
+        self.scout.scan()
+        rt = [s for s in self.stores.signals.list() if s["source_type"] == "run_trace"]
+        self.assertEqual(rt, [])
+        self.assertEqual(
+            [o for o in self.stores.opportunities.list()
+             if any(s.startswith("SIG-") and s in [r["signal_id"] for r in rt]
+                    for s in o["signal_ids"])],
+            [],
+        )
+
+    def test_environment_run_produces_no_skill_opportunity(self):
+        self._write_run("RUN-EN000001", "environment")
+        self.scout.scan()
+        rt = [s for s in self.stores.signals.list() if s["source_type"] == "run_trace"]
+        self.assertEqual(rt, [])
+
+
 if __name__ == "__main__":
     import os  # ensure available even when running this case alone
 
