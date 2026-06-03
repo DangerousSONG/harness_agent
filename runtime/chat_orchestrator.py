@@ -9,6 +9,7 @@ from runtime.chat_planner import ActionPlanner, ClarificationPlanner, RiskClassi
 from runtime.chat_response import ResponseComposer, normalize_legacy_response, trace
 from runtime.chat_safety import InputSafetyGate
 from runtime.credit_assignment import assign_credit
+from runtime.memory_utility import MemoryUtilityStore
 from runtime.run_trace import RunTraceStore, mark_exception, populate_from_response
 from runtime.skill_profile import SkillProfileStore
 from runtime.skill_router import SkillRouter
@@ -60,6 +61,7 @@ class ChatOrchestrator:
         *,
         skill_router: SkillRouter | None = None,
         skill_profile_store: SkillProfileStore | None = None,
+        memory_utility_store: MemoryUtilityStore | None = None,
     ):
         self.ctx = ctx
         self.safety_gate = InputSafetyGate()
@@ -86,6 +88,11 @@ class ChatOrchestrator:
             skill_profile_store = SkillProfileStore(project_root / "skills")
         self.skill_profile_store = skill_profile_store
         self.skill_router = skill_router or SkillRouter()
+        # Per-memory utility tracking. Advisory only — no effect on
+        # retrieval ordering yet; just accumulates stats for future use.
+        if memory_utility_store is None and project_root is not None:
+            memory_utility_store = MemoryUtilityStore(project_root)
+        self.memory_utility_store = memory_utility_store
 
     def handle(self, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
         run_trace = (
@@ -117,6 +124,7 @@ class ChatOrchestrator:
                 credit = assign_credit(run_trace).to_dict()
                 self.run_trace_store.save(run_trace, credit_assignment=credit)
                 self._update_skill_profile(run_trace, credit)
+                self._update_memory_utility(run_trace, credit, message)
                 if isinstance(response.get("data"), dict):
                     response["data"]["run_id"] = run_trace.run_id
             except Exception:
@@ -183,6 +191,34 @@ class ChatOrchestrator:
             )
         except Exception:
             # Profile is purely observational; never break a response.
+            pass
+
+    def _update_memory_utility(
+        self,
+        run_trace: Any,
+        credit: dict[str, Any],
+        message: str,
+    ) -> None:
+        """Bump per-memory utility counters from the final RunTrace.
+
+        No-op when no memories were retrieved — keeps the store from
+        accumulating empty rows on general_chat runs.
+        """
+        if self.memory_utility_store is None:
+            return
+        retrieved = getattr(run_trace, "retrieved_memories", None) or []
+        if not retrieved:
+            return
+        try:
+            self.memory_utility_store.update_from_run(
+                retrieved_memories=list(retrieved),
+                outcome=getattr(run_trace, "outcome", ""),
+                failure_sources=credit.get("failure_sources") or [],
+                user_feedback=message or "",
+                target_skill=getattr(run_trace, "selected_skill", "") or "",
+            )
+        except Exception:
+            # Utility is purely observational; never break a response.
             pass
 
     def _handle_inner(self, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
