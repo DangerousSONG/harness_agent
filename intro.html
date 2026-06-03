@@ -521,46 +521,67 @@
       </div>
     </div>
 
-    <h3>决策矩阵</h3>
+    <h3>决策矩阵（硬闸优先，promote 之前）</h3>
     <table class="dec">
       <thead>
-        <tr><th style="width:70%">触发条件</th><th>决策</th></tr>
+        <tr><th style="width:5%">#</th><th style="width:65%">触发条件</th><th>决策</th></tr>
       </thead>
       <tbody>
         <tr>
+          <td class="dec">0</td>
+          <td class="cond">攻击载荷 / <code>quarantined=True</code>（Stage 1 单独成桶）</td>
+          <td class="dec"><span class="dec-tag quar">quarantine</span></td>
+        </tr>
+        <tr>
+          <td class="dec">1</td>
           <td class="cond"><code>security_incident</code> 标签</td>
           <td class="dec"><span class="dec-tag safety">safety_review</span></td>
         </tr>
         <tr>
-          <td class="cond"><b>policy_gate</b>：tag ∈ {policy_related, policy_candidate, governance_related, tool_failure}，或 content 含 <code>policy_block / approval_block / Tool Call Blocked / SafeHarness policy / protected file …</code></td>
+          <td class="dec">2</td>
+          <td class="cond"><b>policy_gate</b>：tag ∈ {policy_related, policy_candidate, governance_related, tool_failure}，或 content 含 <code>policy_block / approval_block / Tool Call Blocked / SafeHarness policy / protected file / policy_candidate / safety …</code>，或 <code>features.safety_type ∈ {approval_block, secret_leak, injection, policy_violation}</code>，或 <code>features.error_type = policy_block</code></td>
           <td class="dec"><span class="dec-tag safety">safety_review</span><br><small style="color:var(--muted)">requires_policy_review=true</small></td>
         </tr>
         <tr>
+          <td class="dec">3</td>
+          <td class="cond"><code>target_skill = self_improvement</code>，<code>value ≥ 0.55</code></td>
+          <td class="dec"><span class="dec-tag review">request_eval</span><br><small style="color:var(--muted)">needs_human_label=true</small></td>
+        </tr>
+        <tr>
+          <td class="dec">4</td>
+          <td class="cond"><code>target_skill = self_improvement</code>，<code>value &lt; 0.55</code></td>
+          <td class="dec"><span class="dec-tag defer">defer</span><br><small style="color:var(--muted)">needs_human_label=true</small></td>
+        </tr>
+        <tr>
+          <td class="dec">5</td>
           <td class="cond"><code>value ≥ 0.60 ∧ risk ≤ 0.35 ∧ testability ≥ 0.70</code></td>
           <td class="dec"><span class="dec-tag promote">promote</span></td>
         </tr>
         <tr>
+          <td class="dec">6</td>
           <td class="cond"><code>value ≥ 0.55</code> 且（<code>testability &lt; 0.70</code> 或 <code>risk &gt; 0.35</code>）</td>
           <td class="dec"><span class="dec-tag review">request_eval</span></td>
         </tr>
         <tr>
+          <td class="dec">7</td>
           <td class="cond"><code>value ≥ 0.40 ∧ evidence &lt; 0.50</code></td>
           <td class="dec"><span class="dec-tag defer">defer</span></td>
         </tr>
         <tr>
+          <td class="dec">8</td>
           <td class="cond"><code>overfitting ≥ 0.5 ∧ Σf &lt; 3</code></td>
           <td class="dec"><span class="dec-tag reject">reject</span></td>
         </tr>
         <tr>
-          <td class="cond"><code>target_skill = self_improvement</code>，非 security</td>
-          <td class="dec"><span class="dec-tag defer">defer</span><br><small style="color:var(--muted)">request_human_label</small></td>
-        </tr>
-        <tr>
-          <td class="cond">攻击载荷（Stage 1 单独处理）</td>
-          <td class="dec"><span class="dec-tag quar">quarantine</span></td>
+          <td class="dec">9</td>
+          <td class="cond"><code>value ≥ 0.30</code> / 其他</td>
+          <td class="dec"><span class="dec-tag defer">defer</span> / <span class="dec-tag reject">reject</span></td>
         </tr>
       </tbody>
     </table>
+    <p style="font-size:13px; color: var(--muted); margin-top: 10px;">
+      硬闸（0–4）排在 promote（5）之前——任何 security / policy / governance / approval / protected_file / self_improvement 信号在到达 promote 规则之前就被拦下。<code>policy_review</code> / <code>request_human_label</code> 当前不是独立的 decision 枚举值，落在 <code>safety_review</code> / <code>defer</code> 上，再用 <code>reason</code> 里的 <code>requires_policy_review=true</code> / <code>needs_human_label=true</code> 标记。
+    </p>
   </section>
 
   <!-- ============ Observability stack ============ -->

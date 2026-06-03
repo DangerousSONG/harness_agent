@@ -143,21 +143,23 @@ cd web/ui && npm install && npm run dev                           # Web 前端
 - `risk_score`      = 0.25·回归 + 0.20·{过拟合, 策略} + 0.15·范围 + 0.10·{成本, 不确定性}
 - `testability`     复合分（非元标签 0.20 + safety/governance 0.15 + 0.30·correction + format/capability 0.25 + 可复现 tool_failure 0.20 + PROMO 背书 0.10）
 
-**Stage 5 决策矩阵**（自顶向下，先匹配先用）：
+**Stage 5 决策矩阵**（自顶向下，先匹配先用；硬闸优先，promote 之前）：
 
-| 触发条件 | 决策 |
-|---|---|
-| `security_incident` 标签 | `safety_review` |
-| **policy_gate**：tag ∈ {policy_related, policy_candidate, governance_related, tool_failure}，或 content 含 `policy_block / approval_block / Tool Call Blocked / Policy Enforcement Triggered / SafeHarness policy / protected file / policy_candidate / safety` | `safety_review`（reason 标 `requires_policy_review=true`） |
-| `value ≥ 0.60 ∧ risk ≤ 0.35 ∧ testability ≥ 0.70` | `promote` |
-| `value ≥ 0.55 ∧ (testability < 0.70 ∨ risk > 0.35)` | `request_eval` |
-| `value ≥ 0.40 ∧ evidence < 0.50` | `defer` |
-| `overfitting ≥ 0.5 ∧ Σf < 3` | `reject` |
-| `target_skill = self_improvement` 非 security | `defer`（reason 提示 `request_human_label`） |
-| `value ≥ 0.30` | `defer` |
-| 其他 | `reject` |
+| # | 触发条件 | 决策 |
+|---|---|---|
+| 0 | `quarantined=True`（Stage 1 单独成桶，不进入此矩阵） | `quarantine` |
+| 1 | `security_incident` 标签 | `safety_review` |
+| 2 | **policy_gate**：tag ∈ {policy_related, policy_candidate, governance_related, tool_failure}，或 content 含 `policy_block / approval_block / Tool Call Blocked / Policy Enforcement Triggered / SafeHarness policy / protected file / policy_candidate / safety`，或 `features.safety_type ∈ {approval_block, secret_leak, injection, policy_violation}`，或 `features.error_type = policy_block` | `safety_review`（reason 加 `requires_policy_review=true`） |
+| 3 | `target_skill = self_improvement`，value ≥ 0.55 | `request_eval`（reason 加 `needs_human_label=true`） |
+| 4 | `target_skill = self_improvement`，value < 0.55 | `defer`（reason 加 `needs_human_label=true`） |
+| 5 | `value ≥ 0.60 ∧ risk ≤ 0.35 ∧ testability ≥ 0.70` | `promote` |
+| 6 | `value ≥ 0.55 ∧ (testability < 0.70 ∨ risk > 0.35)` | `request_eval` |
+| 7 | `value ≥ 0.40 ∧ evidence < 0.50` | `defer` |
+| 8 | `overfitting ≥ 0.5 ∧ Σf < 3` | `reject` |
+| 9 | `value ≥ 0.30` | `defer` |
+| 10 | 其他 | `reject` |
 
-quarantine 桶在 Stage 1 单独处理，固定 `decision=quarantine`、优先级 high，`must_not_regress` 写明"禁止把攻击载荷沉淀进 skill rule"。
+> 硬闸（0–4）必须排在 promote（5）之前。代码顺序：`if has_security → if policy_gate → if target_skill==self_improvement → if value ≥ 0.60 …`。`policy_review` / `request_human_label` 不是独立的枚举值；落到 `safety_review` / `defer` 上，并用 `reason` 中的 `requires_policy_review=true` / `needs_human_label=true` 标记，方便 grep 与 UI 显示。
 
 **派生字段** — `should_improve` 按 tag 类型生成具体表述；`must_not_regress` 默认两条（不放宽安全策略、不绕 ReviewQueue），按 tag 追加。Batch 合并必须同 skill；跨 skill 抛 `ValueError`。
 

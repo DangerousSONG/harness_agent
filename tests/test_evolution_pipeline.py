@@ -1219,6 +1219,58 @@ class ScoutPolicyGateTests(unittest.TestCase):
             self.assertNotEqual(opp["decision"], "promote", opp)
             self.assertIn(opp["decision"], {"defer", "request_eval"})
             self.assertIn("self_improvement", opp["reason"])
+            self.assertIn("needs_human_label=true", opp["reason"], opp)
+
+    # ----------------------------------------------------- governance/policy
+
+    def test_governance_related_signal_does_not_promote(self):
+        # 普通治理词 (审批 / approval) 触发 governance_related 标签 →
+        # policy_gate 拦截，强制 safety_review，绝不能 promote。
+        self._write_record(
+            "report_writer", "LEARNINGS.md", "LRN-GV1",
+            "approval review notes",
+            "From now on remember the approval review workflow. "
+            "审批拦截 / review queue, default to retry.",
+            occurrence=4, priority="high",
+        )
+        self._write_record(
+            "report_writer", "LEARNINGS.md", "LRN-GV2",
+            "approval review notes again",
+            "From now on remember the approval workflow. 审批 default behavior.",
+            occurrence=3, priority="high",
+        )
+        self.scout.scan()
+        opps = self._opps_for("report_writer")
+        self.assertTrue(opps)
+        for opp in opps:
+            self.assertNotEqual(opp["decision"], "promote", opp)
+        gated = [o for o in opps if o["decision"] == "safety_review"]
+        self.assertTrue(gated, "governance_related should land in safety_review")
+        self.assertIn("requires_policy_review=true", gated[0]["reason"])
+
+    def test_protected_file_signal_does_not_promote(self):
+        # protected file 是 SafeHarness 拒绝写盘时的典型文案；任何提及该
+        # 短语的聚类必须进 safety_review，而不是 promote。
+        self._write_record(
+            "report_writer", "ERRORS.md", "ERR-PF1",
+            "Write refused: protected file",
+            "From now on remember: edit refused, target is a protected file. "
+            "default to retry with safer args.",
+            occurrence=4, priority="high",
+        )
+        self._write_record(
+            "report_writer", "ERRORS.md", "ERR-PF2",
+            "Write refused: protected file again",
+            "From now on remember: protected file path; default to safer args.",
+            occurrence=3, priority="high",
+        )
+        self.scout.scan()
+        opps = self._opps_for("report_writer")
+        self.assertTrue(opps)
+        for opp in opps:
+            self.assertNotEqual(opp["decision"], "promote", opp)
+        gated = [o for o in opps if o["decision"] == "safety_review"]
+        self.assertTrue(gated, "protected_file should land in safety_review")
 
     # ------------------------------------ baseline: markdown still promotes
 
