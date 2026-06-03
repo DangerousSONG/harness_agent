@@ -1411,8 +1411,18 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
         ))
 
     @app.get("/api/runs")
-    def runs_list(limit: int = 50) -> JSONResponse:
-        return ok(ctx.run_traces.list(limit=limit))
+    def runs_list(
+        limit: int = 20,
+        outcome: str | None = None,
+        intent: str | None = None,
+        should_emit: bool | None = None,
+    ) -> JSONResponse:
+        return ok(ctx.run_traces.list(
+            limit=limit,
+            outcome=outcome,
+            intent=intent,
+            should_emit=should_emit,
+        ))
 
     @app.get("/api/runs/{run_id}")
     def runs_detail(run_id: str) -> JSONResponse:

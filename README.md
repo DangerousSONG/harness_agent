@@ -497,8 +497,10 @@ REST：
 
 | Method | Path | 作用 |
 |---|---|---|
-| GET | `/api/runs?limit=50` | 按时间倒序列出 run 摘要（含 outcome / credit recommended_action） |
+| GET | `/api/runs?limit=20&outcome=&intent=&should_emit=` | 按时间倒序列出 run 摘要（含 outcome / primary_failure_source / should_emit_learning_signal / credit recommended_action）。支持按 outcome、intent 子串、should_emit 过滤 |
 | GET | `/api/runs/{run_id}` | 完整 trace + credit_assignment |
+
+前端：`Self-Evolution → Runs` 选项卡（`web/ui/src/pages/RunsPage.jsx`）以表格呈现以上字段，点击任一行展开完整 trace JSON。只读视图，不会触发任何 PROMO 或 skill 改动。
 
 ### 决策可观测（Scout decision log）
 

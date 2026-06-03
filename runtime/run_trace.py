@@ -121,16 +121,50 @@ class RunTraceStore:
         except json.JSONDecodeError:
             return None
 
-    def list(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        """Newest-first compact list (one row = task + outcome + counts)."""
+    def list(
+        self,
+        *,
+        limit: int = 50,
+        outcome: str | None = None,
+        intent: str | None = None,
+        should_emit: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        """Newest-first compact list.
+
+        Each row exposes the fields the Runs UI needs:
+        run_id, created_at (= started_at), intent, selected_skill,
+        outcome, primary_failure_source, should_emit_learning_signal.
+        Plus a few counts useful for at-a-glance filtering.
+
+        Optional filters (applied before the limit):
+        - outcome: exact match against ``success / failure / partial /
+          blocked / unknown``
+        - intent: case-insensitive substring match
+        - should_emit: True/False on the should_generate_learning_signal
+          gate
+        """
+        from .credit_assignment import should_generate_learning_signal
+
         rows: list[dict[str, Any]] = []
         for path in self.root.glob("RUN-*.json"):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 continue
-            rows.append({
+            credit = payload.get("credit_assignment") or {}
+            failure_sources = credit.get("failure_sources") or []
+            primary_failure = ""
+            if failure_sources:
+                # Pick highest confidence; ties keep file order.
+                rank = {"high": 0, "medium": 1, "low": 2}
+                primary_failure = sorted(
+                    failure_sources,
+                    key=lambda f: rank.get(f.get("confidence", "low"), 3),
+                )[0].get("source", "")
+            should_emit_flag = bool(should_generate_learning_signal(credit))
+            row = {
                 "run_id": payload.get("run_id", ""),
+                "created_at": payload.get("started_at", ""),
                 "started_at": payload.get("started_at", ""),
                 "completed_at": payload.get("completed_at", ""),
                 "task": payload.get("task", "")[:120],
@@ -142,11 +176,20 @@ class RunTraceStore:
                     1 for d in (payload.get("policy_decisions") or [])
                     if d.get("decision") == "block"
                 ),
-                "credit_recommended_action": (
-                    (payload.get("credit_assignment") or {}).get("recommended_action", "")
-                ),
-            })
+                "primary_failure_source": primary_failure,
+                "should_emit_learning_signal": should_emit_flag,
+                "credit_recommended_action": credit.get("recommended_action", ""),
+                "credit_confidence": credit.get("confidence", ""),
+            }
+            rows.append(row)
         rows.sort(key=lambda row: row.get("started_at", ""), reverse=True)
+        if outcome:
+            rows = [r for r in rows if r["outcome"] == outcome]
+        if intent:
+            needle = intent.lower()
+            rows = [r for r in rows if needle in r["intent"].lower()]
+        if should_emit is not None:
+            rows = [r for r in rows if r["should_emit_learning_signal"] is should_emit]
         return rows[:max(0, limit)]
 
 

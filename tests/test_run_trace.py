@@ -302,5 +302,86 @@ class OrchestratorIntegrationTests(unittest.TestCase):
         self.assertEqual(response.get("data", {}).get("run_id"), payload["run_id"])
 
 
+class RunsListEnrichmentTests(unittest.TestCase):
+    """The /api/runs row shape must include primary_failure_source and
+    should_emit_learning_signal so the Runs UI can render and filter
+    without re-fetching each detail."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.store = RunTraceStore(self.root)
+
+    def _save(self, **overrides) -> str:
+        trace = self.store.new_trace(
+            task=overrides.pop("task", "t"),
+            intent=overrides.pop("intent", "general_chat"),
+        )
+        for key, value in overrides.items():
+            setattr(trace, key, value)
+        from runtime.credit_assignment import assign_credit
+        credit = assign_credit(trace).to_dict()
+        self.store.save(trace, credit_assignment=credit)
+        return trace.run_id
+
+    def test_row_carries_required_columns(self):
+        self._save(
+            outcome="success",
+            selected_skill="report_writer",
+            applied_rules=["use markdown"],
+        )
+        row = self.store.list()[0]
+        for key in (
+            "run_id", "created_at", "intent", "selected_skill",
+            "outcome", "primary_failure_source",
+            "should_emit_learning_signal",
+        ):
+            self.assertIn(key, row, f"row missing {key}")
+        self.assertTrue(row["should_emit_learning_signal"])  # positive credits → True
+        self.assertEqual(row["primary_failure_source"], "")
+
+    def test_primary_failure_source_picks_highest_confidence(self):
+        # Build a trace whose credit has env (high) + tool_failure (medium).
+        from runtime.credit_assignment import assign_credit
+        from runtime.run_trace import RunTrace, ToolCallRecord
+
+        trace = self.store.new_trace(task="x", intent="general_chat")
+        trace.outcome = "failure"
+        trace.tool_calls = [
+            ToolCallRecord(tool_name="a", status="failed", error_class="auth", error="401"),
+            ToolCallRecord(tool_name="b", status="failed", error_class="invalid_input"),
+        ]
+        credit = assign_credit(trace).to_dict()
+        self.store.save(trace, credit_assignment=credit)
+        row = self.store.list()[0]
+        # environment is high; tool_failure is medium → environment wins
+        self.assertEqual(row["primary_failure_source"], "environment")
+        # And it must NOT be allowed to emit a learning signal (env-only).
+        self.assertFalse(row["should_emit_learning_signal"])
+
+    def test_filter_by_outcome_and_intent_and_should_emit(self):
+        self._save(task="a", intent="general_chat", outcome="success",
+                   selected_skill="x", applied_rules=["r"])
+        self._save(task="b", intent="financial_research_query", outcome="failure")
+        self._save(task="c", intent="general_chat", outcome="blocked")
+
+        self.assertEqual(len(self.store.list(outcome="success")), 1)
+        self.assertEqual(len(self.store.list(outcome="blocked")), 1)
+        self.assertEqual(len(self.store.list(intent="financial")), 1)
+        # only one has should_emit=True (the success with positive credits)
+        emit_rows = self.store.list(should_emit=True)
+        self.assertEqual(len(emit_rows), 1)
+        self.assertEqual(emit_rows[0]["outcome"], "success")
+        no_emit_rows = self.store.list(should_emit=False)
+        self.assertEqual(len(no_emit_rows), 2)
+
+    def test_limit_clamps_results(self):
+        for _ in range(5):
+            self._save()
+        self.assertEqual(len(self.store.list(limit=2)), 2)
+        self.assertEqual(len(self.store.list(limit=10)), 5)
+
+
 if __name__ == "__main__":
     unittest.main()

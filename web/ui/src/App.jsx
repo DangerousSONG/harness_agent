@@ -1409,7 +1409,7 @@ function normalizeLibraryTab(tab) {
 
 
 function normalizeGovernanceTab(tab) {
-  return ["promotions", "reviews", "versions", "side-channel"].includes(tab) ? tab : "promotions";
+  return ["promotions", "reviews", "versions", "side-channel", "runs"].includes(tab) ? tab : "promotions";
 }
 
 function makeId() {
