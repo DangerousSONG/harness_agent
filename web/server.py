@@ -6490,7 +6490,10 @@ def _draft_answer(message: str, intent: str) -> str:
         return "\u9a8c\u6536\u53ef\u4ee5\u6309\u56db\u5c42\u770b\uff1a\u6838\u5fc3\u8def\u5f84\u80fd\u8dd1\u901a\u3001\u8fb9\u754c\u8f93\u5165\u6709\u63d0\u793a\u3001\u5931\u8d25\u72b6\u6001\u53ef\u6062\u590d\u3001\u5173\u952e\u53d8\u66f4\u6709\u53ef\u56de\u5f52\u7684\u68c0\u67e5\u8bb0\u5f55\u3002"
     if "\u6b63\u5f0f" in message:
         return "\u628a\u539f\u6587\u53d1\u7ed9\u6211\uff0c\u6211\u4f1a\u4fdd\u7559\u610f\u601d\uff0c\u8c03\u6574\u4e3a\u66f4\u6b63\u5f0f\u3001\u6e05\u6670\u3001\u9002\u5408\u4ea4\u4ed8\u6587\u6863\u7684\u8868\u8fbe\u3002"
-    return "I can help with writing, explanation, workspace status, skill memory, promotions, reviews, and versioned skill evolution from this Chat entry point."
+    return (
+        "我可以帮你进行写作、解释、工作区状态查询、Skill 记忆、晋升候选、"
+        "审查和版本化自进化相关操作。"
+    )
 
 
 def _tool_design_answer(message: str) -> str:

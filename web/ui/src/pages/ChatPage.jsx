@@ -189,7 +189,7 @@ const TRACE_LABELS = {
   search: "Search",
   crawl: "Crawl",
   summarize: "Summarize",
-  model_call: "Model call",
+  model_call: "模型调用",
 };
 
 function TraceList({ trace }) {
