@@ -54,6 +54,18 @@ export const api = {
   regeneratePromotion: (id) =>
     request(`/api/promotions/${encodeURIComponent(id)}/regenerate`, { method: "POST" }),
   evolutionState: (id) => request(`/api/evolution/${encodeURIComponent(id)}/state`),
+  runs: (params = {}) => {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.outcome) query.set("outcome", params.outcome);
+    if (params.intent) query.set("intent", params.intent);
+    if (params.should_emit !== undefined && params.should_emit !== null) {
+      query.set("should_emit", params.should_emit ? "true" : "false");
+    }
+    const qs = query.toString();
+    return request(`/api/runs${qs ? `?${qs}` : ""}`);
+  },
+  run: (runId) => request(`/api/runs/${encodeURIComponent(runId)}`),
   evolutionScoutScan: () => request("/api/evolution/scout/scan", { method: "POST" }),
   evolutionScoutSignals: () => request("/api/evolution/scout/signals"),
   evolutionScoutOpportunities: () => request("/api/evolution/scout/opportunities"),

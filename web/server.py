@@ -255,12 +255,15 @@ class WebContext:
         except Exception:
             llm_enabled = lambda: False  # noqa: E731
             LLMBulletWriter = LLMOpportunityEnricher = LLMValidationGate = None  # type: ignore
+        from runtime.run_trace_scanner import RunTraceScanner
+        run_trace_scanner = RunTraceScanner(self.project_root)
         if llm_enabled() and LLMOpportunityEnricher is not None:
             scout = EvolutionScout(
                 project_root=self.project_root,
                 stores=self.evolution_stores,
                 promotions=self.promotions,
                 llm_enricher=LLMOpportunityEnricher(),
+                run_trace_scanner=run_trace_scanner,
             )
             optimizer = SkillOptimizer(
                 project_root=self.project_root,
@@ -274,6 +277,7 @@ class WebContext:
                 project_root=self.project_root,
                 stores=self.evolution_stores,
                 promotions=self.promotions,
+                run_trace_scanner=run_trace_scanner,
             )
             optimizer = SkillOptimizer(
                 project_root=self.project_root,
@@ -1411,8 +1415,18 @@ def create_app(project_root: Path | str = PROJECT_ROOT) -> FastAPI:
         ))
 
     @app.get("/api/runs")
-    def runs_list(limit: int = 50) -> JSONResponse:
-        return ok(ctx.run_traces.list(limit=limit))
+    def runs_list(
+        limit: int = 20,
+        outcome: str | None = None,
+        intent: str | None = None,
+        should_emit: bool | None = None,
+    ) -> JSONResponse:
+        return ok(ctx.run_traces.list(
+            limit=limit,
+            outcome=outcome,
+            intent=intent,
+            should_emit=should_emit,
+        ))
 
     @app.get("/api/runs/{run_id}")
     def runs_detail(run_id: str) -> JSONResponse:

@@ -5,6 +5,7 @@ import { useTranslate } from "../lib/i18n.jsx";
 import { EvolutionTimeline } from "./EvolutionPage";
 import PromotionsPage from "./PromotionsPage";
 import ReviewsPage from "./ReviewsPage";
+import RunsPage from "./RunsPage";
 import SideChannelPage from "./SideChannelPage";
 import VersionsPage from "./VersionsPage";
 
@@ -13,6 +14,7 @@ const TABS = [
   { id: "reviews", labelKey: "governance.tab.reviews" },
   { id: "versions", labelKey: "governance.tab.versions" },
   { id: "side-channel", labelKey: "governance.tab.side_channel" },
+  { id: "runs", labelKey: "governance.tab.runs" },
 ];
 
 const REVIEW_FILTERS = [
@@ -200,6 +202,12 @@ export default function GovernancePage({
       {activeTab === "side-channel" ? (
         <div className="workbench-container">
           <SideChannelPage />
+        </div>
+      ) : null}
+
+      {activeTab === "runs" ? (
+        <div className="workbench-container">
+          <RunsPage />
         </div>
       ) : null}
     </section>
