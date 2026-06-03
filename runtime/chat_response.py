@@ -24,6 +24,10 @@ ESSENTIAL_TRACE_TYPES = {
     "crawl4ai",
     "final_result",
     "memory_capture",
+    # Whether the LLM was actually consulted (and which model / why
+    # not) is the kind of thing the user needs to see at a glance —
+    # never bury it under the "已隐藏 N 步" fold.
+    "model_call",
 }
 
 
