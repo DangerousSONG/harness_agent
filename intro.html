@@ -1,0 +1,791 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Harness Agent · SafeHarness + Self-Evolving Skills</title>
+  <meta name="description" content="本地优先的受控自进化 Agent 实验系统：SafeHarness 拦截 + ReviewQueue 唯一落盘路径 + 主链路与旁路双自进化。" />
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-soft: #fafafa;
+      --bg-panel: #fdfdfd;
+      --ink: #0a0a0a;
+      --ink-soft: #3f3f46;
+      --muted: #71717a;
+      --line: #e4e4e7;
+      --line-soft: #f1f1f4;
+      --accent: #2563eb;
+      --accent-soft: #dbeafe;
+      --safe: #059669;
+      --safe-soft: #d1fae5;
+      --warn: #d97706;
+      --warn-soft: #fef3c7;
+      --danger: #dc2626;
+      --danger-soft: #fee2e2;
+      --indigo: #4f46e5;
+      --indigo-soft: #e0e7ff;
+      --rose: #db2777;
+      --rose-soft: #fce7f3;
+      --radius: 12px;
+      --radius-sm: 8px;
+      --shadow-soft: 0 1px 0 rgba(0,0,0,0.04);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0a0a0a;
+        --bg-soft: #18181b;
+        --bg-panel: #18181b;
+        --ink: #fafafa;
+        --ink-soft: #d4d4d8;
+        --muted: #a1a1aa;
+        --line: #27272a;
+        --line-soft: #1f1f23;
+        --accent: #60a5fa;
+        --accent-soft: rgba(37, 99, 235, 0.18);
+        --safe: #34d399;
+        --safe-soft: rgba(5, 150, 105, 0.18);
+        --warn: #fbbf24;
+        --warn-soft: rgba(217, 119, 6, 0.18);
+        --danger: #f87171;
+        --danger-soft: rgba(220, 38, 38, 0.18);
+        --indigo: #818cf8;
+        --indigo-soft: rgba(79, 70, 229, 0.20);
+        --rose: #f472b6;
+        --rose-soft: rgba(219, 39, 119, 0.18);
+        --shadow-soft: 0 1px 0 rgba(255,255,255,0.04);
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 15px;
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, pre, .mono {
+      font-family: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    }
+    code {
+      font-size: 0.9em;
+      background: var(--line-soft);
+      padding: 1px 6px;
+      border-radius: 4px;
+      color: var(--ink-soft);
+    }
+    pre {
+      background: var(--bg-soft);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      padding: 14px 16px;
+      overflow-x: auto;
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--ink-soft);
+    }
+    pre code { background: none; padding: 0; }
+    .container {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* ---------- Hero ---------- */
+    .hero {
+      padding: 72px 0 40px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+    }
+    .eyebrow {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: var(--accent-soft);
+      padding: 4px 10px;
+      border-radius: 999px;
+    }
+    h1.title {
+      font-size: 44px;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+      margin: 18px 0 8px;
+      font-weight: 700;
+    }
+    .tagline {
+      font-size: 18px;
+      color: var(--muted);
+      max-width: 720px;
+      margin: 0;
+    }
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 24px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      color: var(--ink-soft);
+      background: var(--bg-soft);
+    }
+    .badge.safe   { color: var(--safe);    background: var(--safe-soft);    border-color: transparent; }
+    .badge.accent { color: var(--accent);  background: var(--accent-soft);  border-color: transparent; }
+    .badge.warn   { color: var(--warn);    background: var(--warn-soft);    border-color: transparent; }
+    .badge.indigo { color: var(--indigo);  background: var(--indigo-soft);  border-color: transparent; }
+    .badge.rose   { color: var(--rose);    background: var(--rose-soft);    border-color: transparent; }
+
+    /* ---------- Sections ---------- */
+    section { padding: 48px 0; border-bottom: 1px solid var(--line-soft); }
+    section:last-of-type { border-bottom: none; }
+    h2 {
+      font-size: 28px;
+      letter-spacing: -0.01em;
+      margin: 0 0 12px;
+      font-weight: 700;
+    }
+    h2 .num {
+      display: inline-block;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      font-feature-settings: "tnum";
+      margin-right: 10px;
+      vertical-align: middle;
+    }
+    h3 {
+      font-size: 18px;
+      margin: 28px 0 8px;
+      font-weight: 600;
+    }
+    .lead {
+      color: var(--ink-soft);
+      font-size: 16px;
+      max-width: 760px;
+    }
+    p { color: var(--ink-soft); margin: 0 0 12px; }
+
+    /* ---------- Cards ---------- */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin-top: 20px;
+    }
+    .card {
+      background: var(--bg-panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: var(--shadow-soft);
+    }
+    .card h4 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--ink);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card h4 .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--accent);
+      display: inline-block;
+    }
+    .card p {
+      margin: 0;
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .card.safe   h4 .dot { background: var(--safe); }
+    .card.indigo h4 .dot { background: var(--indigo); }
+    .card.rose   h4 .dot { background: var(--rose); }
+    .card.warn   h4 .dot { background: var(--warn); }
+
+    /* ---------- Two-column compare ---------- */
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 20px;
+    }
+    @media (max-width: 720px) { .compare { grid-template-columns: 1fr; } }
+    .lane {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+      background: var(--bg-panel);
+    }
+    .lane.main   { border-top: 3px solid var(--safe); }
+    .lane.side   { border-top: 3px solid var(--warn); }
+    .lane h4 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.005em;
+    }
+    .lane ul { margin: 0; padding-left: 18px; color: var(--ink-soft); font-size: 14px; }
+    .lane li { margin: 6px 0; }
+    .lane .pill {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+    .lane.main .pill { background: var(--safe-soft); color: var(--safe); }
+    .lane.side .pill { background: var(--warn-soft); color: var(--warn); }
+
+    /* ---------- Architecture container ---------- */
+    .figure {
+      background: var(--bg-panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+      margin: 20px 0;
+    }
+    .figure img,
+    .figure svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .figcap {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 10px;
+      text-align: center;
+    }
+
+    /* ---------- Flow / pipeline strip ---------- */
+    .flow {
+      display: flex;
+      gap: 12px;
+      overflow-x: auto;
+      padding: 4px 2px 14px;
+      margin-top: 16px;
+      scrollbar-width: thin;
+    }
+    .flow .step {
+      flex: 0 0 auto;
+      min-width: 170px;
+      background: var(--bg-panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      position: relative;
+    }
+    .flow .step::after {
+      content: "→";
+      position: absolute;
+      right: -14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .flow .step:last-child::after { content: ""; }
+    .flow .step .label {
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .flow .step .name {
+      font-size: 14px;
+      font-weight: 600;
+      margin-top: 2px;
+      color: var(--ink);
+    }
+    .flow .step .body {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px;
+      line-height: 1.5;
+    }
+    .flow .step.gate { background: var(--accent-soft); border-color: transparent; }
+    .flow .step.gate .label { color: var(--accent); }
+    .flow .step.gate .name { color: var(--accent); }
+
+    /* ---------- Decision table ---------- */
+    table.dec {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      font-size: 13px;
+    }
+    table.dec th, table.dec td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      vertical-align: top;
+    }
+    table.dec th {
+      font-weight: 600;
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      background: var(--bg-soft);
+    }
+    table.dec td.cond { color: var(--ink-soft); width: 70%; }
+    table.dec td.dec  { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 12px; }
+    .dec-tag {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-weight: 600;
+    }
+    .dec-tag.promote { color: var(--safe);   background: var(--safe-soft); }
+    .dec-tag.review  { color: var(--accent); background: var(--accent-soft); }
+    .dec-tag.defer   { color: var(--muted);  background: var(--line-soft); }
+    .dec-tag.reject  { color: var(--danger); background: var(--danger-soft); }
+    .dec-tag.safety  { color: var(--warn);   background: var(--warn-soft); }
+    .dec-tag.quar    { color: var(--rose);   background: var(--rose-soft); }
+
+    /* ---------- Guarantees / boundaries ---------- */
+    .guards {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .guard {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      padding: 12px 14px;
+      background: var(--bg-panel);
+      border: 1px solid var(--line);
+      border-left: 3px solid var(--safe);
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      color: var(--ink-soft);
+    }
+    .guard svg { flex: 0 0 18px; margin-top: 3px; color: var(--safe); }
+    .guard b { color: var(--ink); font-weight: 600; }
+
+    /* ---------- Footer ---------- */
+    footer {
+      padding: 30px 0 50px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+      border-top: 1px solid var(--line);
+      margin-top: 40px;
+    }
+    footer a { color: var(--ink-soft); }
+    footer .links { display: flex; gap: 16px; justify-content: center; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+
+  <!-- ============ Hero ============ -->
+  <header class="hero">
+    <span class="eyebrow">Local-First · Controlled Self-Evolution</span>
+    <h1 class="title">Harness Agent</h1>
+    <p class="tagline">不让 Agent 无约束地修改自己——而是验证一条 <b>受控自进化</b> 链路：SafeHarness 拦截、ReviewQueue 唯一落盘、两条互补的进化链路共享同一道审批关。</p>
+    <div class="badge-row">
+      <span class="badge accent">SafeHarness</span>
+      <span class="badge safe">ReviewQueue gate</span>
+      <span class="badge indigo">Self-Evolving Skills</span>
+      <span class="badge warn">Side-Channel Scout</span>
+      <span class="badge rose">RunTrace · CreditAssignment</span>
+      <span class="badge">FastAPI + React</span>
+      <span class="badge">Python 3.10+ · Local-first</span>
+    </div>
+  </header>
+
+  <!-- ============ What & Why ============ -->
+  <section>
+    <h2><span class="num">01</span>这是什么</h2>
+    <p class="lead">
+      Harness Agent 是一个本地优先的 <b>SafeHarness + Self-Evolving Skills</b> 实验系统。它让 Agent 可以从自己的运行经验中学习并更新 skill，
+      但所有真实修改都必须经过 <code>SafeHarness</code> 拦截 + <code>ReviewQueue</code> 审批 + 回归测试 + 显式 apply + 版本登记。
+      核心命题：<b>memory / PROMO / patch 都可以自动提议；但 <code>SKILL.md</code> 的真实修改必须经过人手 approve + apply。</b>
+    </p>
+
+    <div class="cards">
+      <div class="card">
+        <h4><span class="dot"></span>SafeHarness</h4>
+        <p><code>RuntimeEvent → PolicyEngine → allow / warn / sanitize / require_approval / block</code>。命中 <code>require_approval</code> 时不执行原始动作，转为创建 review。</p>
+      </div>
+      <div class="card safe">
+        <h4><span class="dot"></span>ReviewQueue（唯一落盘路径）</h4>
+        <p><code>pending → approved → applied / rejected</code>。<code>/approve</code> 只产 diff，<code>/apply</code> 才落盘。<b>SKILL.md 的真实修改没有第二条路径。</b></p>
+      </div>
+      <div class="card indigo">
+        <h4><span class="dot"></span>主链路自进化</h4>
+        <p>事件驱动：用户纠正 / 工具失败 / 安全事件 → memory → PROMO → regression case → skill.promotion review。</p>
+      </div>
+      <div class="card warn">
+        <h4><span class="dot"></span>旁路自进化（Scout + Optimizer）</h4>
+        <p>离线批量扫描：Scout 只读发现机会，Optimizer 产 bounded edit，ValidationGate 把守，通过则汇入同一个 ReviewQueue。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ Architecture diagram ============ -->
+  <section>
+    <h2><span class="num">02</span>系统架构图</h2>
+    <p class="lead">六层视角：前端工作台 · 编排与 SafeHarness · 两条自进化链路 · 共享审批 ReviewQueue · AI 基础设施 · 本地存储。</p>
+    <figure class="figure">
+      <img src="docs/architecture.svg" alt="Harness Agent 系统架构图：从前端工作台到 SafeHarness、两条互补的自进化链路、共享的 ReviewQueue、以及本地存储。" />
+      <figcaption class="figcap">⬆ docs/architecture.svg · SafeHarness 拦截 + 两条进化链路 + 唯一审批落盘 + 本地存储</figcaption>
+    </figure>
+  </section>
+
+  <!-- ============ Two evolution loops ============ -->
+  <section>
+    <h2><span class="num">03</span>两条互补的进化链路</h2>
+    <p class="lead">主链路是事件驱动的细粒度学习，旁路是批量扫描的离线补丁。两者共享同一个 ReviewQueue 和 Skill Evolution Registry。</p>
+
+    <div class="compare">
+      <div class="lane main">
+        <h4>♻️ 主链路 · 事件驱动 <span class="pill">细粒度</span></h4>
+        <ul>
+          <li><b>触发</b>：用户纠正 / 工具失败 / 安全事件</li>
+          <li><b>准入</b>：<code>occurrence_count ≥ 3</code>（强纠正 ≥ 2）</li>
+          <li><b>SKILL.md 范围</b>：整篇可编辑</li>
+          <li><b>退化保护</b>：Regression Gate（positive + negative case）</li>
+          <li><b>推进</b>：<code>/evolve-skill &lt;promo_id&gt;</code></li>
+        </ul>
+      </div>
+      <div class="lane side">
+        <h4>🛰️ 旁路 · 批量发现 <span class="pill">离线</span></h4>
+        <ul>
+          <li><b>触发</b>：<code>/evolution-scan</code></li>
+          <li><b>准入</b>：单次 safety 事件即可（safety_gain 通道）</li>
+          <li><b>SKILL.md 范围</b>：仅 <code>## Memory-derived rules</code>，仅 <code>add/replace/delete</code>，单次 ≤ 5 op</li>
+          <li><b>退化保护</b>：ValidationGate（train / validation / regression）</li>
+          <li><b>推进</b>：Scout 一次扫多个 Opportunity，可批量</li>
+        </ul>
+      </div>
+    </div>
+    <p style="margin-top:16px; color: var(--muted); font-size:13px;">共享：<b>同一 ReviewQueue · 同一 Skill Evolution Registry · 同一 Approve + Apply</b>。</p>
+  </section>
+
+  <!-- ============ Scout 4-stage ============ -->
+  <section>
+    <h2><span class="num">04</span>Scout 四段式判断</h2>
+    <p class="lead">每条 memory / PROMO / RunTrace 走五个阶段，决定它最终落在哪个决策桶里。代码：<code>runtime/evolution_scout.py</code>。</p>
+
+    <div class="flow">
+      <div class="step gate">
+        <div class="label">Stage 1</div>
+        <div class="name">硬过滤 / 隔离</div>
+        <div class="body">攻击载荷 → quarantine，原文脱敏</div>
+      </div>
+      <div class="step">
+        <div class="label">Stage 2</div>
+        <div class="name">语义标签（9 类）</div>
+        <div class="body">security · governance · policy · rollback · tool_failure · user_correction · format · capability ·  poisoning</div>
+      </div>
+      <div class="step">
+        <div class="label">Stage 3</div>
+        <div class="name">跨 skill 聚类</div>
+        <div class="body"><code>normalized_problem_signature</code>：action / tool / error_type / artifact / correction</div>
+      </div>
+      <div class="step">
+        <div class="label">Stage 4</div>
+        <div class="name">证据 × 价值 × 风险</div>
+        <div class="body">三个独立分数 + testability，每项 [0,1]</div>
+      </div>
+      <div class="step">
+        <div class="label">Stage 5</div>
+        <div class="name">决策矩阵</div>
+        <div class="body">六桶决策 · 自顶向下 · 先匹配先用</div>
+      </div>
+    </div>
+
+    <h3>决策矩阵</h3>
+    <table class="dec">
+      <thead>
+        <tr><th style="width:70%">触发条件</th><th>决策</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="cond"><code>security_incident</code> 标签</td>
+          <td class="dec"><span class="dec-tag safety">safety_review</span></td>
+        </tr>
+        <tr>
+          <td class="cond"><b>policy_gate</b>：tag ∈ {policy_related, policy_candidate, governance_related, tool_failure}，或 content 含 <code>policy_block / approval_block / Tool Call Blocked / SafeHarness policy / protected file …</code></td>
+          <td class="dec"><span class="dec-tag safety">safety_review</span><br><small style="color:var(--muted)">requires_policy_review=true</small></td>
+        </tr>
+        <tr>
+          <td class="cond"><code>value ≥ 0.60 ∧ risk ≤ 0.35 ∧ testability ≥ 0.70</code></td>
+          <td class="dec"><span class="dec-tag promote">promote</span></td>
+        </tr>
+        <tr>
+          <td class="cond"><code>value ≥ 0.55</code> 且（<code>testability &lt; 0.70</code> 或 <code>risk &gt; 0.35</code>）</td>
+          <td class="dec"><span class="dec-tag review">request_eval</span></td>
+        </tr>
+        <tr>
+          <td class="cond"><code>value ≥ 0.40 ∧ evidence &lt; 0.50</code></td>
+          <td class="dec"><span class="dec-tag defer">defer</span></td>
+        </tr>
+        <tr>
+          <td class="cond"><code>overfitting ≥ 0.5 ∧ Σf &lt; 3</code></td>
+          <td class="dec"><span class="dec-tag reject">reject</span></td>
+        </tr>
+        <tr>
+          <td class="cond"><code>target_skill = self_improvement</code>，非 security</td>
+          <td class="dec"><span class="dec-tag defer">defer</span><br><small style="color:var(--muted)">request_human_label</small></td>
+        </tr>
+        <tr>
+          <td class="cond">攻击载荷（Stage 1 单独处理）</td>
+          <td class="dec"><span class="dec-tag quar">quarantine</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============ Observability stack ============ -->
+  <section>
+    <h2><span class="num">05</span>运行级归因（SkillRouter → RunTrace → CreditAssignment → Utility）</h2>
+    <p class="lead">围绕 <code>ChatOrchestrator.handle</code> 的一条 observability 链。每个环节只读 / 只补统计——不动 <code>SKILL.md</code>，不动 memory 文件，不绕 ReviewQueue。</p>
+
+    <figure class="figure">
+      <!-- inline pipeline diagram -->
+      <svg viewBox="0 0 880 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ChatOrchestrator 观测链路：SkillRouter → 内部管线 → RunTrace → CreditAssignment → 三个 sink。">
+        <defs>
+          <marker id="arrowEnd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#71717a" />
+          </marker>
+        </defs>
+        <style>
+          .box  { fill: #ffffff; stroke: #e4e4e7; stroke-width: 1.5; }
+          .box.gate { fill: #dbeafe; stroke: #2563eb; }
+          .box.sink { fill: #fafafa; stroke: #e4e4e7; }
+          .lbl  { font: 600 13px -apple-system, sans-serif; fill: #0a0a0a; }
+          .sub  { font: 400 11px -apple-system, sans-serif; fill: #71717a; }
+          .arrow { stroke: #71717a; stroke-width: 1.5; fill: none; }
+          .accent-text { fill: #2563eb; }
+          @media (prefers-color-scheme: dark) {
+            .box  { fill: #18181b; stroke: #27272a; }
+            .box.gate { fill: rgba(37,99,235,0.18); stroke: #60a5fa; }
+            .box.sink { fill: #0a0a0a; stroke: #27272a; }
+            .lbl  { fill: #fafafa; }
+            .sub  { fill: #a1a1aa; }
+            .arrow { stroke: #a1a1aa; }
+            .accent-text { fill: #60a5fa; }
+          }
+        </style>
+
+        <!-- message in -->
+        <text x="20" y="36" class="sub">user message</text>
+        <line x1="20" y1="48" x2="120" y2="48" class="arrow" marker-end="url(#arrowEnd)" />
+
+        <!-- Step 1: SkillRouter -->
+        <rect x="125" y="20" width="170" height="58" rx="10" class="box gate"/>
+        <text x="135" y="42" class="lbl accent-text">SkillRouter</text>
+        <text x="135" y="60" class="sub">deterministic, keyword</text>
+        <text x="135" y="73" class="sub">→ router_decision</text>
+
+        <!-- arrow to inner -->
+        <line x1="295" y1="48" x2="345" y2="48" class="arrow" marker-end="url(#arrowEnd)" />
+
+        <!-- Step 2: inner pipeline -->
+        <rect x="350" y="20" width="190" height="58" rx="10" class="box"/>
+        <text x="360" y="42" class="lbl">inner pipeline</text>
+        <text x="360" y="60" class="sub">safety · intent · capability</text>
+        <text x="360" y="73" class="sub">planner · executor</text>
+
+        <line x1="540" y1="48" x2="590" y2="48" class="arrow" marker-end="url(#arrowEnd)" />
+
+        <!-- Step 3: RunTrace -->
+        <rect x="595" y="20" width="170" height="58" rx="10" class="box"/>
+        <text x="605" y="42" class="lbl">RunTrace</text>
+        <text x="605" y="60" class="sub">.audit/runs/RUN-*.json</text>
+        <text x="605" y="73" class="sub">tools · policy · outcome</text>
+
+        <!-- vertical drop to CA -->
+        <line x1="680" y1="78" x2="680" y2="118" class="arrow" marker-end="url(#arrowEnd)" />
+
+        <!-- Step 4: CreditAssignment -->
+        <rect x="555" y="120" width="250" height="58" rx="10" class="box"/>
+        <text x="565" y="142" class="lbl">CreditAssignment</text>
+        <text x="565" y="160" class="sub">8 failure_sources · 4 positive_credits</text>
+        <text x="565" y="173" class="sub">should_generate_learning_signal 闸</text>
+
+        <!-- fan out to 3 sinks -->
+        <line x1="680" y1="178" x2="680" y2="208" class="arrow" />
+        <line x1="180" y1="208" x2="780" y2="208" class="arrow" />
+
+        <line x1="180" y1="208" x2="180" y2="232" class="arrow" marker-end="url(#arrowEnd)" />
+        <line x1="430" y1="208" x2="430" y2="232" class="arrow" marker-end="url(#arrowEnd)" />
+        <line x1="680" y1="208" x2="680" y2="232" class="arrow" marker-end="url(#arrowEnd)" />
+
+        <!-- Sinks -->
+        <rect x="95"  y="234" width="170" height="60" rx="10" class="box sink"/>
+        <text x="105" y="256" class="lbl">SkillProfile</text>
+        <text x="105" y="273" class="sub">skills/&lt;skill&gt;/profile.json</text>
+        <text x="105" y="286" class="sub">success/failure/blocked counter</text>
+
+        <rect x="345" y="234" width="170" height="60" rx="10" class="box sink"/>
+        <text x="355" y="256" class="lbl">MemoryUtility</text>
+        <text x="355" y="273" class="sub">.skills_memory/utility.jsonl</text>
+        <text x="355" y="286" class="sub">used / success / feedback / score</text>
+
+        <rect x="595" y="234" width="190" height="60" rx="10" class="box sink"/>
+        <text x="605" y="256" class="lbl">RunTraceScanner</text>
+        <text x="605" y="273" class="sub">candidate signals → Scout</text>
+        <text x="605" y="286" class="sub">quarantined / needs_human_label</text>
+      </svg>
+      <figcaption class="figcap">⬆ 每个 sink 都只补统计；Scout 接入也只是候选 signal，落盘仍走主审批路径。</figcaption>
+    </figure>
+
+    <div class="cards">
+      <div class="card">
+        <h4><span class="dot"></span>SkillRouter <code>runtime/skill_router.py</code></h4>
+        <p>deterministic keyword + history rate + positive_credit 加成 − failure 惩罚。<code>self_improvement</code> 默认排除，低置信请求<b>回落</b>到现有 executor 逻辑，不强行绑定。</p>
+      </div>
+      <div class="card">
+        <h4><span class="dot"></span>SkillProfile <code>runtime/skill_profile.py</code></h4>
+        <p>每个 skill 的成功 / 失败 / 阻塞 / 反馈 计数。失败仅 <code>skill_gap / rule_not_applied</code> 计入，工具/环境/审批失败不动 counter。</p>
+      </div>
+      <div class="card safe">
+        <h4><span class="dot"></span>CreditAssignment <code>runtime/credit_assignment.py</code></h4>
+        <p>8 类 failure_source × 4 类 positive_credit。<code>should_generate_learning_signal</code> 把工具/环境/审批失败挡在 LearningSignal 之外，避免错误沉淀。</p>
+      </div>
+      <div class="card indigo">
+        <h4><span class="dot"></span>MemoryUtility <code>runtime/memory_utility.py</code></h4>
+        <p>每条 memory 的 utility_score = <code>0.40·success + 0.30·positive_feedback + 0.10·freshness − 0.20·failure</code>，clamp [0,1]。当前只产 stat，retrieval 不变。</p>
+      </div>
+      <div class="card warn">
+        <h4><span class="dot"></span>RunTraceScanner <code>runtime/run_trace_scanner.py</code></h4>
+        <p>把 skill-side 失败 / 用户偏好的 RunTrace 转候选 signal 喂给 Scout：<code>source_type=run_trace</code>、<code>source_ref=RUN-xxxxxxxx</code>。injection → quarantined；无 skill 归属 → request_human_label。</p>
+      </div>
+      <div class="card rose">
+        <h4><span class="dot"></span>Runs UI <code>web/ui/src/pages/RunsPage.jsx</code></h4>
+        <p><b>Self-Evolution → Runs</b> tab：表格列出 run_id · outcome · primary_failure_source · should_emit；点击展开完整 trace JSON。只读视图，不触发任何 PROMO 或 skill 改动。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ Safety boundaries ============ -->
+  <section>
+    <h2><span class="num">06</span>硬安全边界</h2>
+    <p class="lead">所有进化必须可追溯：<code>memory → PROMO → regression REV → skill patch REV → approve → apply → version</code>。下面这些规则在测试里被反复钉死。</p>
+
+    <div class="guards">
+      <div class="guard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><div><b>SKILL.md 的真实修改必须经过 ReviewQueue。</b><code>/approve</code> 只产 diff，<code>/apply</code> 才落盘；缺 regression coverage 时 apply 拒绝。</div></div>
+      <div class="guard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><div><b>工具失败 / 环境问题 / 审批拦截不会被错误沉淀为 skill 更新。</b><code>should_generate_learning_signal</code> 在转 LearningSignal 前拦截；<code>RunTraceScanner / SkillProfile / MemoryUtility</code> 三处再加一层，<code>tool_failure / environment / policy_block</code> 都不计 counter、不进 Scout opportunity。</div></div>
+      <div class="guard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><div><b>Scout <code>policy_gate</code> 硬闸。</b>cluster 命中 <code>policy_block / approval_block / Tool Call Blocked / SafeHarness policy / protected file</code> 等 → 强制 <code>safety_review</code>，再高的 value/testability 也不能 promote。</div></div>
+      <div class="guard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><div><b>SkillRouter 默认从候选中排除 <code>self_improvement</code>。</b>低置信请求回落到现有 executor 逻辑，不会被强行绑定到自我改进通道。</div></div>
+      <div class="guard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><div><b>secret / 注入 / bypass approval / disable safety 不沉淀为长期规则。</b>Skill Memory 入口脱敏 + 污染拦截；LLM 输出经 <code>redact_secrets</code> + <code>looks_like_memory_poisoning</code> 清洗，命中即回退 deterministic。</div></div>
+      <div class="guard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><div><b>Optimizer 仅 <code>add/replace/delete</code> 在 <code>## Memory-derived rules</code>。</b>evaluator / scorer / regression gate 不能被 Scout 或 Optimizer 修改。</div></div>
+    </div>
+  </section>
+
+  <!-- ============ Quickstart ============ -->
+  <section>
+    <h2><span class="num">07</span>快速开始</h2>
+    <p class="lead">Python 3.10+。本地优先，所有产物都落到 <code>.gitignored</code> 的本地目录。</p>
+
+    <pre><code>python -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+
+# CLI
+python harness/agent_harness.py
+
+# Web 后端
+uvicorn web.server:create_app --factory --reload --port 8000
+
+# Web 前端
+cd web/ui &amp;&amp; npm install &amp;&amp; npm run dev</code></pre>
+
+    <h3>最少配置（<code>.env</code>）</h3>
+    <pre><code>OPENAI_API_KEY=...
+MODEL_ID=...                 # CLI / agent_harness
+OPENAI_MODEL=                # web server / chat orchestrator
+OPENAI_BASE_URL=
+
+# 实时查询 provider：Bailian / DashScope > DuckDuckGo no-key fallback
+SEARCH_PROVIDER=bailian
+DASHSCOPE_API_KEY=...
+SEARCH_TOOL_NAME=auto
+
+# 旁路 Scout / Optimizer 默认 deterministic；接 LLM：
+# EVOLUTION_LLM_ENABLED=1</code></pre>
+
+    <h3>常用验证</h3>
+    <pre><code>python -m unittest
+python -m compileall harness runtime tools safety
+echo q | python harness/agent_harness.py
+cd web/ui &amp;&amp; npm run build</code></pre>
+  </section>
+
+  <!-- ============ Project layout ============ -->
+  <section>
+    <h2><span class="num">08</span>项目布局</h2>
+    <pre><code>harness_agent/
+├─ harness/      # REPL、主循环、prompt、任务、消息、teammate
+├─ runtime/      # ReviewQueue · Skill 加载 · memory · 主链路进化 · chat
+│                # 旁路：evolution_scout · skill_optimizer · scout_decisions
+│                # 工具：skill_eval_runner · knowledge_base · kb_index · tool_registry
+│                # 观测：run_trace · credit_assignment · run_trace_scanner
+│                # 路由 &amp; 统计：skill_router · skill_profile · memory_utility
+├─ safety/       # SafeHarness 事件 · 决策 · 策略 · guard · 审计
+├─ tools/        # OpenAI tool schema + handler 分发
+├─ skills/       # Skill 定义 · memory · eval cases · profile.json
+├─ web/          # FastAPI server + React/Vite 工作台
+├─ docs/         # 设计文档 + architecture.svg
+└─ tests/        # self_improvement · evolution pipeline · scout · run_trace · kb · web API</code></pre>
+
+    <h3>本地运行产物（建议加入 <code>.gitignore</code>）</h3>
+    <p style="font-size:13px;"><code>.tasks/</code> · <code>.team/</code> · <code>.transcripts/</code> · <code>.audit/</code>（含 <code>runs/RUN-*.json</code>） · <code>.reviews/</code> · <code>.skills_memory/</code>（全局 memory + <code>utility.jsonl</code> + scanner 状态）· <code>.skills_versions/</code> · <code>.evolution/</code> · <code>skills/*/memory/</code> · <code>skills/*/profile.json</code>。也别提交 <code>.env</code>。</p>
+  </section>
+
+  <!-- ============ Web workbench ============ -->
+  <section>
+    <h2><span class="num">09</span>Web 工作台</h2>
+    <p class="lead">左侧导航 5 项，统一走 <code>Paginator</code> 分页（10/页），EN / 中文切换由 <code>LanguageProvider</code> 接管。</p>
+    <div class="cards">
+      <div class="card"><h4><span class="dot"></span>Chat</h4><p>自然语言入口，复用所有审批与版本规则；输入框带"📎 知识库 N/3"选择器。</p></div>
+      <div class="card"><h4><span class="dot"></span>Workspace</h4><p>文件读写、命令运行。</p></div>
+      <div class="card"><h4><span class="dot"></span>Assets</h4><p>Skills / Tools / Workflows / Memories / Knowledge bases / Eval cases。</p></div>
+      <div class="card indigo"><h4><span class="dot"></span>Self-Evolution</h4><p>5 个 tab：候选 PROMO / 审批队列 / 版本与回滚 / 旁路进化 / <b>Runs</b>。顶部常驻 3 张 metric 卡。</p></div>
+      <div class="card"><h4><span class="dot"></span>Settings</h4><p>Provider 配置 + 模型连接（写入 <code>.env</code> 并 in-process 生效）。</p></div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="links">
+      <a href="README.md">README</a>
+      <a href="docs/HARNESS_DESIGN.md">Harness Design</a>
+      <a href="docs/SAFEHARNESS_DESIGN.md">SafeHarness Design</a>
+      <a href="docs/RUNTIME_BACKEND_DESIGN.md">Runtime Backend</a>
+      <a href="docs/UI_ACCEPTANCE.md">UI Acceptance</a>
+    </div>
+    <div>本地优先 · 受控自进化 · 所有 SKILL.md 修改皆需 approve + apply + version</div>
+  </footer>
+
+</div>
+
+</body>
+</html>
