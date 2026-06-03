@@ -255,12 +255,15 @@ class WebContext:
         except Exception:
             llm_enabled = lambda: False  # noqa: E731
             LLMBulletWriter = LLMOpportunityEnricher = LLMValidationGate = None  # type: ignore
+        from runtime.run_trace_scanner import RunTraceScanner
+        run_trace_scanner = RunTraceScanner(self.project_root)
         if llm_enabled() and LLMOpportunityEnricher is not None:
             scout = EvolutionScout(
                 project_root=self.project_root,
                 stores=self.evolution_stores,
                 promotions=self.promotions,
                 llm_enricher=LLMOpportunityEnricher(),
+                run_trace_scanner=run_trace_scanner,
             )
             optimizer = SkillOptimizer(
                 project_root=self.project_root,
@@ -274,6 +277,7 @@ class WebContext:
                 project_root=self.project_root,
                 stores=self.evolution_stores,
                 promotions=self.promotions,
+                run_trace_scanner=run_trace_scanner,
             )
             optimizer = SkillOptimizer(
                 project_root=self.project_root,

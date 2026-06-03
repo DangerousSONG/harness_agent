@@ -34,6 +34,7 @@ from .evolution_stores import (
     LearningSignal,
 )
 from .promotion_browser import PromotionBrowser
+from .run_trace_scanner import RunTraceScanner
 from .scout_decisions import ScoutDecisionStore
 
 
@@ -231,12 +232,14 @@ class EvolutionScout:
         promotions: PromotionBrowser,
         llm_enricher: Any = None,
         decision_store: ScoutDecisionStore | None = None,
+        run_trace_scanner: RunTraceScanner | None = None,
     ):
         self.project_root = Path(project_root)
         self.stores = stores
         self.promotions = promotions
         self.llm_enricher = llm_enricher
         self.decision_store = decision_store or ScoutDecisionStore(self.project_root)
+        self.run_trace_scanner = run_trace_scanner
 
     # ---- scan -----------------------------------------------------------
 
@@ -280,6 +283,32 @@ class EvolutionScout:
             stored = self.stores.signals.save(signal)
             new_signals.append(stored)
             existing_signals[key] = stored
+
+        # Stage 1c: pull candidate signals from the RunTrace scanner. The
+        # scanner has already filtered out tool_failure / environment /
+        # policy_block / unknown — those never reach this loop. Quarantined
+        # candidates (prompt injection / approval bypass etc.) are kept so
+        # they can route to the existing quarantine bucket, never to a
+        # normal skill opportunity.
+        if self.run_trace_scanner is not None:
+            for candidate in self.run_trace_scanner.scan():
+                rt_signal = self._signal_from_run_trace_candidate(candidate)
+                if not rt_signal:
+                    continue
+                if rt_signal.get("quarantined"):
+                    quarantined_count += 1
+                key = self._signal_key(rt_signal)
+                if key in existing_signals:
+                    signal_id = existing_signals[key]["signal_id"]
+                    rt_signal["signal_id"] = signal_id
+                    if "created_at" in existing_signals[key]:
+                        rt_signal["created_at"] = existing_signals[key]["created_at"]
+                    self.stores.signals.save(LearningSignal(**rt_signal))
+                    continue
+                signal = LearningSignal.new(**rt_signal)
+                stored = self.stores.signals.save(signal)
+                new_signals.append(stored)
+                existing_signals[key] = stored
 
         # Stage 2: cluster all signals (quarantine bucket is segregated).
         all_signals = self.stores.signals.list()
@@ -407,6 +436,93 @@ class EvolutionScout:
             "attack_type": attack_type if quarantined else "",
             "redacted": quarantined,
             "correction_strength": strength,
+            "features": features,
+        }
+
+    def _signal_from_run_trace_candidate(
+        self,
+        candidate: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Convert a RunTraceScanner candidate into a classified signal.
+
+        Invariants:
+        - ``source_type`` is always ``run_trace``; ``source_ref`` is the
+          source ``run_id`` so downstream lookups can find the exact file.
+        - Candidates flagged ``quarantined`` route into the existing
+          quarantine bucket via ``quarantined=True`` + an
+          ``attack:run_trace_injection`` tag — they never enter a normal
+          skill opportunity even if their content is innocuous.
+        - When the scanner asked for ``needs_human_label``, the
+          ``observed_skill`` is forced to ``self_improvement`` so the
+          existing ``self_improvement_gate`` blocks promote and only
+          ``request_eval`` / ``defer`` decisions are reachable.
+        """
+        run_id = candidate.get("source_run_id") or ""
+        if not run_id:
+            return None
+        signal_kind = candidate.get("signal_kind") or ""
+        if not signal_kind:
+            return None
+
+        needs_human_label = bool(candidate.get("needs_human_label"))
+        raw_target = candidate.get("target_skill") or "self_improvement"
+        observed_skill = "self_improvement" if needs_human_label else raw_target
+
+        source_path = f".audit/runs/{run_id}.json"
+        content = (candidate.get("content") or "")[:1500]
+
+        if candidate.get("quarantined"):
+            attack_type = "run_trace_injection"
+            return {
+                "source_type": "run_trace",
+                "source_path": source_path,
+                "source_ref": run_id,
+                "observed_skill": observed_skill,
+                "content": content,
+                "tags": sorted({
+                    "error",
+                    "memory_poisoning",
+                    "run_trace",
+                    f"attack:{attack_type}",
+                }),
+                "frequency": 1,
+                "severity": "high",
+                "quarantined": True,
+                "attack_type": attack_type,
+                "redacted": True,
+                "correction_strength": 0.0,
+                "features": {"safety_type": "injection"},
+            }
+
+        if signal_kind == "skill_gap":
+            kind_tags = {"capability_gap"}
+            features = {"error_type": "missing_capability", "action": "self_improve"}
+            correction = 0.0
+        elif signal_kind == "rule_not_applied":
+            kind_tags = {"policy_related"}
+            features = {"error_type": "rule_not_applied"}
+            correction = 0.0
+        elif signal_kind == "positive_preference":
+            kind_tags = {"format_preference", "user_correction"}
+            features = {"correction_pattern": "default", "action": "format"}
+            correction = 0.9
+        else:
+            return None
+
+        tags = sorted(kind_tags | {"learning", "run_trace"})
+        return {
+            "source_type": "run_trace",
+            "source_path": source_path,
+            "source_ref": run_id,
+            "observed_skill": observed_skill,
+            "content": content,
+            "tags": tags,
+            "frequency": 1,
+            "severity": "medium",
+            "quarantined": False,
+            "attack_type": "",
+            "redacted": False,
+            "correction_strength": correction,
             "features": features,
         }
 
