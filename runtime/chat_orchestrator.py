@@ -9,7 +9,10 @@ from runtime.chat_planner import ActionPlanner, ClarificationPlanner, RiskClassi
 from runtime.chat_response import ResponseComposer, normalize_legacy_response, trace
 from runtime.chat_safety import InputSafetyGate
 from runtime.credit_assignment import assign_credit
+from runtime.memory_utility import MemoryUtilityStore
 from runtime.run_trace import RunTraceStore, mark_exception, populate_from_response
+from runtime.skill_profile import SkillProfileStore
+from runtime.skill_router import SkillRouter
 
 
 LegacyHandler = Callable[[Any, str, dict[str, Any]], dict[str, Any]]
@@ -51,7 +54,15 @@ class ChatOrchestrator:
     MemoryCaptureJudge.
     """
 
-    def __init__(self, ctx: Any, legacy_handler: LegacyHandler | None = None):
+    def __init__(
+        self,
+        ctx: Any,
+        legacy_handler: LegacyHandler | None = None,
+        *,
+        skill_router: SkillRouter | None = None,
+        skill_profile_store: SkillProfileStore | None = None,
+        memory_utility_store: MemoryUtilityStore | None = None,
+    ):
         self.ctx = ctx
         self.safety_gate = InputSafetyGate()
         self.task_mode_classifier = TaskModeClassifier()
@@ -69,12 +80,27 @@ class ChatOrchestrator:
         # is unavailable so tests with stub contexts still work.
         project_root = getattr(ctx, "project_root", None)
         self.run_trace_store = RunTraceStore(project_root) if project_root else None
+        # Deterministic skill router pre-pass. Advisory only — it records
+        # its pick on the RunTrace and pre-fills ``selected_skill`` when
+        # the top candidate clears the configured confidence threshold,
+        # but never overrides the existing executor fallback.
+        if skill_profile_store is None and project_root is not None:
+            skill_profile_store = SkillProfileStore(project_root / "skills")
+        self.skill_profile_store = skill_profile_store
+        self.skill_router = skill_router or SkillRouter()
+        # Per-memory utility tracking. Advisory only — no effect on
+        # retrieval ordering yet; just accumulates stats for future use.
+        if memory_utility_store is None and project_root is not None:
+            memory_utility_store = MemoryUtilityStore(project_root)
+        self.memory_utility_store = memory_utility_store
 
     def handle(self, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
         run_trace = (
             self.run_trace_store.new_trace(task=message)
             if self.run_trace_store else None
         )
+        if run_trace is not None:
+            self._apply_router_decision(message, run_trace)
         try:
             response = self._handle_inner(message, context)
         except BaseException as exc:
@@ -97,12 +123,103 @@ class ChatOrchestrator:
                 )
                 credit = assign_credit(run_trace).to_dict()
                 self.run_trace_store.save(run_trace, credit_assignment=credit)
+                self._update_skill_profile(run_trace, credit)
+                self._update_memory_utility(run_trace, credit, message)
                 if isinstance(response.get("data"), dict):
                     response["data"]["run_id"] = run_trace.run_id
             except Exception:
                 # Observability must never break the chat response.
                 pass
         return response
+
+    # ----------------------------------------------------- router pre-pass
+
+    def _apply_router_decision(self, message: str, run_trace: Any) -> None:
+        """Run the SkillRouter and stamp the result onto the RunTrace.
+
+        Advisory only: when the top candidate's confidence clears the
+        router threshold, we pre-fill ``selected_skill`` so that runs
+        that never go through ``skill_use_request`` still record the
+        routed pick. ``populate_from_response`` preserves this pre-fill
+        when the response itself carries no ``used_skill``.
+        """
+        if self.skill_router is None or self.skill_profile_store is None:
+            return
+        try:
+            profiles = self.skill_profile_store.list_profiles()
+        except Exception:
+            profiles = []
+        if not profiles:
+            return
+        try:
+            ranked = self.skill_router.rank_skills(message, profiles)
+        except Exception:
+            return
+        top = ranked[0] if ranked else None
+        decision: dict[str, Any] = {
+            "ranked_skills": [r.to_dict() for r in ranked[:5]],
+            "selected_skill": "",
+            "confidence": top.confidence if top else "low",
+            "matched_reasons": list(top.matched_reasons) if top else [],
+        }
+        if top is not None and self.skill_router.meets_threshold(top):
+            decision["selected_skill"] = top.skill_name
+            run_trace.selected_skill = top.skill_name
+        run_trace.router_decision = decision
+
+    def _update_skill_profile(self, run_trace: Any, credit: dict[str, Any]) -> None:
+        """Bump the per-skill counters based on the final RunTrace."""
+        if self.skill_profile_store is None:
+            return
+        skill_name = getattr(run_trace, "selected_skill", "") or ""
+        if not skill_name:
+            return
+        failure_sources = credit.get("failure_sources") or []
+        primary = ""
+        if failure_sources:
+            rank = {"high": 0, "medium": 1, "low": 2}
+            primary = sorted(
+                failure_sources,
+                key=lambda f: rank.get(f.get("confidence", "low"), 3),
+            )[0].get("source", "")
+        try:
+            self.skill_profile_store.update_from_run(
+                skill_name,
+                outcome=run_trace.outcome,
+                primary_failure_source=primary,
+                has_positive_credit=bool(credit.get("positive_credits")),
+            )
+        except Exception:
+            # Profile is purely observational; never break a response.
+            pass
+
+    def _update_memory_utility(
+        self,
+        run_trace: Any,
+        credit: dict[str, Any],
+        message: str,
+    ) -> None:
+        """Bump per-memory utility counters from the final RunTrace.
+
+        No-op when no memories were retrieved — keeps the store from
+        accumulating empty rows on general_chat runs.
+        """
+        if self.memory_utility_store is None:
+            return
+        retrieved = getattr(run_trace, "retrieved_memories", None) or []
+        if not retrieved:
+            return
+        try:
+            self.memory_utility_store.update_from_run(
+                retrieved_memories=list(retrieved),
+                outcome=getattr(run_trace, "outcome", ""),
+                failure_sources=credit.get("failure_sources") or [],
+                user_feedback=message or "",
+                target_skill=getattr(run_trace, "selected_skill", "") or "",
+            )
+        except Exception:
+            # Utility is purely observational; never break a response.
+            pass
 
     def _handle_inner(self, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
         context = context or {}

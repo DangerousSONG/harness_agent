@@ -72,6 +72,7 @@ class RunTrace:
     final_output_summary: str = ""
     outcome: str = "unknown"
     failure_signals: list[str] = field(default_factory=list)
+    router_decision: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -214,7 +215,10 @@ def populate_from_response(
     loaded_context = loaded_context or {}
 
     trace.intent = trace.intent or str(intent.get("primary", "") if isinstance(intent, dict) else intent or "")
-    trace.selected_skill = response.get("used_skill") or ""
+    # Preserve a router-pre-filled selected_skill when the response itself
+    # carries no ``used_skill`` (so an advisory router pick can still be
+    # recorded for runs that didn't go through the skill_use_request path).
+    trace.selected_skill = response.get("used_skill") or trace.selected_skill or ""
     trace.final_output_summary = (response.get("message") or "")[:240]
 
     # tool_calls: pull from trace entries with type=tool_call

@@ -198,6 +198,31 @@ SAFETY_TYPE_LEXICON: dict[str, tuple[str, ...]] = {
 }
 
 
+# Hard promote gate. A cluster matching ANY of these is routed to
+# ``safety_review`` instead of ``promote`` no matter how strong its
+# value/testability scores look — policy / approval / SafeHarness
+# fingerprints are not the skill's prerogative to bake into a rule.
+POLICY_GATE_TAGS: frozenset[str] = frozenset({
+    "policy_related",
+    "policy_candidate",
+    "governance_related",
+    "tool_failure",
+})
+
+POLICY_GATE_CONTENT_PHRASES: tuple[str, ...] = (
+    "policy_candidate",
+    "policy_block",
+    "approval_block",
+    "tool call blocked",
+    "policy enforcement triggered",
+    "safeharness policy",
+    "protected file",
+    "safety",
+)
+
+POLICY_GATE_SOURCE_HINTS: tuple[str, ...] = ("policy_candidate",)
+
+
 # ---------------------------------------------------------------------------
 # Public types
 # ---------------------------------------------------------------------------
@@ -699,6 +724,8 @@ class EvolutionScout:
         value_score = _value_score(components)
         risk_score = _risk_score(components)
 
+        policy_gate, policy_gate_reasons = _detect_policy_gate(members, bare_tags)
+
         (
             decision, opp_type, priority, risk_level, confidence,
             threshold_hit, binding_threshold, alternative_decision,
@@ -712,6 +739,8 @@ class EvolutionScout:
             has_cross_cutting=has_cross_cutting,
             target_skill=target_skill,
             frequency_sum=frequency_sum,
+            policy_gate=policy_gate,
+            policy_gate_reasons=policy_gate_reasons,
         )
 
         should_improve = _derive_should_improve(bare_tags, members, target_skill)
@@ -726,7 +755,11 @@ class EvolutionScout:
             members=members,
             target_skill=target_skill,
             cross_skill=cross_skill,
+            policy_gate=policy_gate,
+            policy_gate_reasons=policy_gate_reasons,
         )
+        if policy_gate and "requires_policy_review=true" not in reason:
+            reason = f"{reason} requires_policy_review=true"
         breakdown = _score_breakdown(decision, components, value_score, risk_score, evidence_quality)
         related_promos = sorted({m["source_ref"] for m in members if m["source_type"] == "promo"})
 
@@ -1160,6 +1193,8 @@ def _decide(
     has_cross_cutting: bool,
     target_skill: str,
     frequency_sum: int,
+    policy_gate: bool = False,
+    policy_gate_reasons: list[str] | None = None,
 ) -> tuple[str, str, str, str, str]:
     decision, opp_type, priority, risk_level, confidence, _, _, _ = _decide_explained(
         value=value,
@@ -1171,8 +1206,43 @@ def _decide(
         has_cross_cutting=has_cross_cutting,
         target_skill=target_skill,
         frequency_sum=frequency_sum,
+        policy_gate=policy_gate,
+        policy_gate_reasons=policy_gate_reasons,
     )
     return decision, opp_type, priority, risk_level, confidence
+
+
+def _detect_policy_gate(
+    members: list[dict[str, Any]],
+    tags: set[str],
+) -> tuple[bool, list[str]]:
+    """Return (triggered, reasons) for the hard promote gate.
+
+    Triggers on any of:
+      - cluster tags intersect POLICY_GATE_TAGS
+      - any member's source_type carries a POLICY_GATE_SOURCE_HINT
+        (e.g. ``skill_memory.policy_candidate``)
+      - any member's content contains one of POLICY_GATE_CONTENT_PHRASES
+
+    Reasons are kept compact so they can be plumbed into the decision
+    log without leaking redacted content.
+    """
+    reasons: list[str] = []
+    tag_hits = sorted(tags & POLICY_GATE_TAGS)
+    if tag_hits:
+        reasons.extend(f"tag:{t}" for t in tag_hits)
+    for m in members:
+        source_type = (m.get("source_type") or "").lower()
+        for hint in POLICY_GATE_SOURCE_HINTS:
+            if hint in source_type:
+                reasons.append(f"source_type:{source_type}")
+                break
+        content_lower = (m.get("content") or "").lower()
+        for phrase in POLICY_GATE_CONTENT_PHRASES:
+            if phrase in content_lower:
+                reasons.append(f"phrase:{phrase}")
+                break
+    return (bool(reasons), reasons[:5])
 
 
 def _decide_explained(
@@ -1186,6 +1256,8 @@ def _decide_explained(
     has_cross_cutting: bool,
     target_skill: str,
     frequency_sum: int,
+    policy_gate: bool = False,
+    policy_gate_reasons: list[str] | None = None,
 ) -> tuple[str, str, str, str, str, str, str, str]:
     """Same matrix as ``_decide`` but also returns
     ``threshold_hit`` (the rule that fired),
@@ -1198,6 +1270,20 @@ def _decide_explained(
             "security_lane: contains security_incident tag",
             "security_incident=True",
             "promote (if not security)",
+        )
+
+    # Hard promote gate for policy / approval / SafeHarness markers.
+    # Even if the cluster's value + testability would otherwise clear
+    # the promote bar, anything that smells like a policy or approval
+    # incident must go through safety_review — those concerns aren't
+    # the skill's prerogative to bake into a rule.
+    if policy_gate:
+        binding = ",".join(policy_gate_reasons or []) or "policy_gate=True"
+        return (
+            "safety_review", "safety_review", "high", "high", "medium",
+            "policy_gate: signal carries policy / approval / SafeHarness markers",
+            binding,
+            "promote/request_eval (if not policy-gated)",
         )
 
     # self_improvement gate: an unattributed self_improvement cluster
@@ -1305,6 +1391,8 @@ def _reason_text(
     members: list[dict[str, Any]],
     target_skill: str,
     cross_skill: bool,
+    policy_gate: bool = False,
+    policy_gate_reasons: list[str] | None = None,
 ) -> str:
     skill_label = f"`{target_skill}`" if target_skill else "目标 skill"
     frequency = sum(int(m.get("frequency", 1)) for m in members)
@@ -1317,11 +1405,33 @@ def _reason_text(
             why += " 同类问题跨多个 skill，可迁移性高。"
         effect = "升级后预期固化为 SKILL.md 的 Memory-derived rules，减少同类问题的纠正成本。"
     elif decision == "request_eval":
-        why = f"价值评估 {value:.2f} 已达晋升阈值，但 testability={testability:.2f} 或 risk={risk:.2f} 不达标。"
-        effect = "建议先补一组 positive + negative regression case 再考虑升级。"
+        if target_skill == "self_improvement":
+            why = (
+                f"价值 {value:.2f} 已达晋升阈值，但 target_skill 是 self_improvement。"
+            )
+            effect = (
+                "需要人工把来源 memory 的 Target Skill 改成真实 skill 后再考虑升级"
+                "（request_human_label）。"
+            )
+        else:
+            why = f"价值评估 {value:.2f} 已达晋升阈值，但 testability={testability:.2f} 或 risk={risk:.2f} 不达标。"
+            effect = "建议先补一组 positive + negative regression case 再考虑升级。"
     elif decision == "safety_review":
-        why = "信号涉及安全/审批事件（命中 security_incident 标签），不能直接进入 skill rule。"
-        effect = "走人工 safety review；批准后才考虑沉淀为 policy 规则。"
+        if policy_gate:
+            markers = ", ".join(policy_gate_reasons or []) or "policy_gate=True"
+            why = (
+                "信号命中 policy / approval / SafeHarness 标记"
+                f"（{markers}），不能直接固化为 skill rule。"
+            )
+            effect = "走人工 safety review / policy review；批准后才考虑沉淀为 policy 规则。"
+        else:
+            why = "信号涉及安全/审批事件（命中 security_incident 标签），不能直接进入 skill rule。"
+            effect = "走人工 safety review；批准后才考虑沉淀为 policy 规则。"
+    elif decision == "defer" and target_skill == "self_improvement":
+        why = (
+            f"target_skill 是 self_improvement，价值 {value:.2f} 暂不足以走 request_human_label。"
+        )
+        effect = "保留观察；要升级先把来源 memory 的 Target Skill 标到真实 skill。"
     elif decision == "quarantine":
         why = "检测到攻击载荷（prompt injection / approval bypass / safety disable / secret exfiltration），原文已脱敏。"
         effect = "仅用于审计；不进入任何 Optimizer 提案。"
