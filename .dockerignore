@@ -1,0 +1,61 @@
+# Keep build context lean and prevent secrets / runtime state from
+# leaking into the image. Runtime data is mounted at deploy time
+# (see docker-compose.yml + docs/DEPLOY_REGISTRY.md).
+
+# ---- VCS & editor ----------------------------------------------------
+.git
+.gitignore
+.gitattributes
+.vscode
+.idea
+*.swp
+
+# ---- Python --------------------------------------------------------
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.tox
+htmlcov
+.coverage
+
+# ---- Node / Vite ----------------------------------------------------
+web/ui/node_modules
+web/ui/dist
+web/ui/.vite
+
+# ---- Secrets / local config ----------------------------------------
+.env
+.env.*
+!.env.example
+
+# ---- Runtime state (mounted at deploy time, never baked in) --------
+.audit
+.evolution
+.reviews
+.skills_memory
+.skills_versions
+.knowledge_bases
+.tasks
+.team
+.transcripts
+
+# ---- Build / dist scratch ------------------------------------------
+build
+dist
+*.log
+
+# ---- Docs / CI artefacts that don't need to ship ------------------
+docs/journal
+*.zip
+*.tar
+*.tar.gz
+
+# ---- macOS / Windows housekeeping ---------------------------------
+.DS_Store
+Thumbs.db

@@ -1,0 +1,49 @@
+# Local validation for the Harness Agent image.
+#
+# Usage:
+#   cp .env.example .env       # then fill in real values
+#   docker compose up --build  # builds the image + runs the container
+#
+# The container exposes port 8000 on the host. Runtime state
+# directories are bind-mounted so audit / review / version / memory
+# data persists across container restarts.
+#
+# This file is for local validation only — production deployment on
+# the platform's Registry is described in docs/DEPLOY_REGISTRY.md.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: harness-agent:latest
+    container_name: harness-agent
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      HOST: 0.0.0.0
+      PORT: 8000
+    volumes:
+      # Runtime state — persisted across container restarts. Create
+      # these directories on the host before the first run (an empty
+      # directory is fine; the app creates the files it needs).
+      - ./.audit:/app/.audit
+      - ./.evolution:/app/.evolution
+      - ./.reviews:/app/.reviews
+      - ./.skills_memory:/app/.skills_memory
+      - ./.skills_versions:/app/.skills_versions
+      - ./.knowledge_bases:/app/.knowledge_bases
+      # Asset definitions — bind-mounted so you can curate the
+      # built-in Skills and Tools without rebuilding the image.
+      - ./skills:/app/skills
+      - ./tools:/app/tools
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
