@@ -323,10 +323,13 @@ class EvolutionPipelineTestCase(unittest.TestCase):
 
     def test_optimizer_propose_does_not_modify_skill_md(self):
         self.scout.scan()
-        opps = [
-            opp for opp in self.stores.opportunities.list()
-            if opp["target_skill"] == "markdown_writer" and opp["decision"] in {"promote", "request_eval", "defer"}
-        ]
+        opps = sorted(
+            [
+                opp for opp in self.stores.opportunities.list()
+                if opp["target_skill"] == "markdown_writer" and opp["decision"] in {"promote", "request_eval", "defer"}
+            ],
+            key=lambda o: {"low": 0, "medium": 1, "high": 2}.get(o.get("risk_level", "low"), 0),
+        )
         self.assertTrue(opps)
         batch = self.scout.create_batch([opps[0]["opportunity_id"]])
         before = self._skill_text()
@@ -354,13 +357,16 @@ class EvolutionPipelineTestCase(unittest.TestCase):
             validation_gate=gate,
         )
         self.scout.scan()
-        opps = [
-            opp for opp in self.stores.opportunities.list()
-            if opp["target_skill"] == "markdown_writer" and opp["decision"] in {"promote", "request_eval", "defer"}
-        ]
+        opps = sorted(
+            [
+                opp for opp in self.stores.opportunities.list()
+                if opp["target_skill"] == "markdown_writer" and opp["decision"] in {"promote", "request_eval", "defer"}
+            ],
+            key=lambda o: {"low": 0, "medium": 1, "high": 2}.get(o.get("risk_level", "low"), 0),
+        )
         batch = self.scout.create_batch([opps[0]["opportunity_id"]])
         propose = optimizer.propose(batch_id=batch["batch_id"])
-        self.assertTrue(propose.ok)
+        self.assertTrue(propose.ok, propose.message)
 
         result = optimizer.validate(propose.edit_id)
         self.assertFalse(result.ok, "impossibly-high thresholds must fail")
@@ -376,13 +382,16 @@ class EvolutionPipelineTestCase(unittest.TestCase):
 
     def test_validation_pass_creates_pending_review_without_apply(self):
         self.scout.scan()
-        opps = [
-            opp for opp in self.stores.opportunities.list()
-            if opp["target_skill"] == "markdown_writer" and opp["decision"] in {"promote", "request_eval", "defer"}
-        ]
+        opps = sorted(
+            [
+                opp for opp in self.stores.opportunities.list()
+                if opp["target_skill"] == "markdown_writer" and opp["decision"] in {"promote", "request_eval", "defer"}
+            ],
+            key=lambda o: {"low": 0, "medium": 1, "high": 2}.get(o.get("risk_level", "low"), 0),
+        )
         batch = self.scout.create_batch([opps[0]["opportunity_id"]])
         propose = self.optimizer.propose(batch_id=batch["batch_id"])
-        self.assertTrue(propose.ok)
+        self.assertTrue(propose.ok, propose.message)
 
         before_text = self._skill_text()
         before_mtime = self._skill_mtime()
@@ -411,10 +420,13 @@ class EvolutionPipelineTestCase(unittest.TestCase):
 
     def test_approve_and_apply_is_the_only_path_to_skill_md(self):
         self.scout.scan()
-        opps = [
-            opp for opp in self.stores.opportunities.list()
-            if opp["target_skill"] == "markdown_writer" and opp["decision"] in {"promote", "request_eval", "defer"}
-        ]
+        opps = sorted(
+            [
+                opp for opp in self.stores.opportunities.list()
+                if opp["target_skill"] == "markdown_writer" and opp["decision"] in {"promote", "request_eval", "defer"}
+            ],
+            key=lambda o: {"low": 0, "medium": 1, "high": 2}.get(o.get("risk_level", "low"), 0),
+        )
         batch = self.scout.create_batch([opps[0]["opportunity_id"]])
         propose = self.optimizer.propose(batch_id=batch["batch_id"])
         self.optimizer.validate(propose.edit_id)
