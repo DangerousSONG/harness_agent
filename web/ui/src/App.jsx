@@ -1207,6 +1207,12 @@ export default function App() {
         currentPromotion={currentPromotion}
         onNextAction={continueEvolution}
         nextActionBusy={Boolean(busyPromoId || busyReviewId)}
+        onStepNavigate={(target) => {
+          if (!target) return;
+          if (target.page) setPage(target.page);
+          if (target.tab && target.page === "assets-governance") setGovernanceTab(target.tab);
+          if (target.tab && target.page === "assets-library") setLibraryTab(target.tab);
+        }}
       >
         {page === "workspace" ? (
           <WorkspacePage

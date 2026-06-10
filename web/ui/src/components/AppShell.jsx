@@ -30,6 +30,18 @@ const NAV_ASSETS = [
 
 const NAV_BOTTOM = [{ id: "settings", labelKey: "nav.settings", icon: Settings }];
 
+// Mapping from the SKILL evolution timeline step name to a navigation
+// target. Clicking a step in the right-side context panel jumps the
+// user to the matching page / tab so the timeline doubles as a table
+// of contents for the SKILL self-evolution flow.
+const STEP_NAV_TARGETS = {
+  memory: { page: "assets-library", tab: "memories" },
+  promo: { page: "assets-governance", tab: "promotions" },
+  regression: { page: "assets-governance", tab: "reviews" },
+  skill: { page: "assets-governance", tab: "reviews" },
+  version: { page: "assets-governance", tab: "versions" },
+};
+
 function StepDot({ status, active }) {
   const normalized = String(status || "waiting").toLowerCase();
   const completed = ["completed", "applied"].includes(normalized);
@@ -59,6 +71,7 @@ function ContextPanel({
   nextActionBusy,
   flowActive,
   onClose,
+  onStepNavigate,
 }) {
   const { t } = useLanguage();
   const currentSkill =
@@ -118,25 +131,36 @@ function ContextPanel({
           <p className="muted-label">{t("panel.skill_evolution_progress")}</p>
           <div className="relative mt-5 space-y-5">
             <div className="absolute left-2.5 top-2 h-[calc(100%-1rem)] w-px bg-line" />
-            {steps.map((step) => (
-              <div
-                className={[
-                  "relative flex gap-3 rounded-lg px-1 py-1",
-                  step.active ? "bg-blue-50/70" : "",
-                ].join(" ")}
-                key={step.name}
-              >
-                <StepDot status={step.status} active={step.active} />
-                <div className="min-w-0">
-                  <p className={["text-sm font-semibold", step.active ? "text-appleBlue" : "text-zinc-900"].join(" ")}>
-                    {step.label}
-                  </p>
-                  <div className="mt-1.5">
-                    <StatusPill status={step.status} tone={step.active ? "approved" : undefined} />
+            {steps.map((step) => {
+              const navTarget = STEP_NAV_TARGETS[step.name];
+              const clickable = Boolean(navTarget && onStepNavigate);
+              const Tag = clickable ? "button" : "div";
+              return (
+                <Tag
+                  type={clickable ? "button" : undefined}
+                  onClick={clickable ? () => onStepNavigate(navTarget) : undefined}
+                  className={[
+                    "relative flex w-full items-start gap-3 rounded-lg px-1.5 py-1 text-left transition",
+                    step.active ? "bg-blue-50/70" : "",
+                    clickable ? "cursor-pointer hover:bg-zinc-50" : "",
+                  ].join(" ")}
+                  key={step.name}
+                >
+                  <StepDot status={step.status} active={step.active} />
+                  <div className="min-w-0 flex-1">
+                    <p className={["text-sm font-semibold", step.active ? "text-appleBlue" : "text-zinc-900"].join(" ")}>
+                      {step.label}
+                    </p>
+                    <div className="mt-1.5">
+                      <StatusPill status={step.status} tone={step.active ? "approved" : undefined} />
+                    </div>
                   </div>
-                </div>
-              </div>
-            ))}
+                  {clickable ? (
+                    <ChevronRight className="mt-1 h-3.5 w-3.5 flex-shrink-0 text-zinc-300 transition group-hover:text-zinc-500" />
+                  ) : null}
+                </Tag>
+              );
+            })}
           </div>
         </section>
 
@@ -238,6 +262,7 @@ export default function AppShell({
   currentPromotion,
   onNextAction,
   nextActionBusy,
+  onStepNavigate,
 }) {
   const { t } = useLanguage();
   const assetsActive = page.startsWith("assets-");
@@ -371,6 +396,7 @@ export default function AppShell({
         currentPromotion={currentPromotion}
         onNextAction={onNextAction}
         nextActionBusy={nextActionBusy}
+        onStepNavigate={onStepNavigate}
       />
     </div>
   );
@@ -396,6 +422,7 @@ function EvolutionPanelSlot({
   currentPromotion,
   onNextAction,
   nextActionBusy,
+  onStepNavigate,
 }) {
   const { t } = useLanguage();
   const flowActive = evolutionFlowActive({ reviews, evolutionState, currentPromotion });
@@ -434,6 +461,7 @@ function EvolutionPanelSlot({
       nextActionBusy={nextActionBusy}
       flowActive={flowActive}
       onClose={() => setManualOpen(false)}
+      onStepNavigate={onStepNavigate}
     />
   );
 }

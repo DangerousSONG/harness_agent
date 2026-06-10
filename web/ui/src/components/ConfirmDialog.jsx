@@ -16,8 +16,11 @@ export default function ConfirmDialog({
   const t = useTranslate();
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/20 px-4 backdrop-blur-sm">
-      <div className="card max-h-[88vh] w-full max-w-2xl overflow-auto p-5">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-[modalFade_0.16s_ease-out]"
+      style={{ background: "rgba(9, 9, 11, 0.42)" }}
+    >
+      <div className="max-h-[88vh] w-full max-w-md overflow-auto rounded-2xl border border-line bg-white p-5 shadow-xl animate-[modalRise_0.18s_ease-out]">
         <div className="flex items-start gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-50 text-risk">
             <AlertTriangle className="h-5 w-5" />

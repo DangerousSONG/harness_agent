@@ -4,6 +4,7 @@ import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import KnowledgeBasesPage from "./KnowledgeBasesPage";
 import AssetCreationDialog from "../components/AssetCreationDialog";
+import Modal from "../components/Modal";
 import { api, getErrorMessage } from "../lib/api";
 import { compact, formatDate, titleize } from "../lib/format";
 import { useTranslate } from "../lib/i18n.jsx";
@@ -231,7 +232,7 @@ export default function AssetsPage({
                 <AssetCard
                   key={skill.name}
                   title={skill.name}
-                  description={skill.description || "暂无描述"}
+                  description={cleanDescription(skill.description)}
                   status={assetStatus("skill", skill.name, reviews, skill)}
                   rows={assetRows({
                     assetType: "skill",
@@ -287,7 +288,7 @@ export default function AssetsPage({
                 <AssetCard
                   key={tool.name}
                   title={tool.name}
-                  description={tool.description || "暂无描述"}
+                  description={cleanDescription(tool.description)}
                   status={
                     tool.lifecycle_status && tool.lifecycle_status !== "active"
                       ? (LIFECYCLE_LABEL[tool.lifecycle_status] || tool.lifecycle_status)
@@ -475,51 +476,21 @@ function DangerConfirmDialog({ target, busy, onCancel, onConfirm }) {
   if (!target) return null;
   const isHard = target.action === "hard_delete";
   const assetLabel = target.kind === "skill" ? "Skill" : "Tool";
-  const title = isHard
-    ? `永久删除 ${assetLabel}：`
-    : `归档 ${assetLabel}：`;
-  const detail = isHard ? (
-    <>
-      <p className="mt-2 text-sm leading-6 text-zinc-700">
-        此操作将<span className="font-semibold text-rose-700">永久删除</span>
-        资产文件夹，无法恢复。请确认你只想删除这一项。
-      </p>
-      <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-zinc-600">
-        <li>
-          将移除：
-          <span className="font-mono">
-            {target.kind === "skill" ? "skills" : "tools"}/{target.name}/
-          </span>
-        </li>
-        <li>不会改动 .reviews / .skills_versions / 审计日志</li>
-        <li>不会去触发 ReviewQueue</li>
-      </ul>
-    </>
-  ) : (
-    <p className="mt-2 text-sm leading-6 text-zinc-600">
-      归档后该资产不会被加载或执行
-      {target.kind === "skill"
-        ? "（SkillRouter 跳过）"
-        : "（ToolRegistry 跳过）"}
-      ，文件保留在磁盘。可以在「已归档」列表里恢复或永久删除。
-    </p>
+  const title = (
+    <span>
+      {isHard ? "永久删除" : "归档"} {assetLabel}：
+      <span className="ml-1 font-mono text-rose-700">{target.name}</span>
+      ?
+    </span>
   );
-  const buttonLabel = isHard ? "确认永久删除" : "确认归档";
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/40 p-4"
-      onClick={busy ? undefined : onCancel}
-    >
-      <div
-        className="w-full max-w-md rounded-xl border border-line bg-white p-5 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 className="text-base font-semibold text-zinc-950">
-          {title}
-          <span className="ml-1 font-mono text-rose-700">{target.name}</span>?
-        </h3>
-        {detail}
-        <div className="mt-5 flex justify-end gap-2">
+    <Modal
+      open={Boolean(target)}
+      onClose={busy ? undefined : onCancel}
+      size="sm"
+      title={title}
+      footer={
+        <>
           <button className="secondary-button" onClick={onCancel} disabled={busy}>
             取消
           </button>
@@ -529,11 +500,38 @@ function DangerConfirmDialog({ target, busy, onCancel, onConfirm }) {
             onClick={onConfirm}
             disabled={busy}
           >
-            {busy ? "处理中…" : buttonLabel}
+            {busy ? "处理中…" : isHard ? "确认永久删除" : "确认归档"}
           </button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    >
+      {isHard ? (
+        <>
+          <p className="text-sm leading-6 text-zinc-700">
+            此操作将<span className="font-semibold text-rose-700">永久删除</span>
+            资产文件夹，无法恢复。请确认你只想删除这一项。
+          </p>
+          <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-zinc-600">
+            <li>
+              将移除：
+              <span className="font-mono">
+                {target.kind === "skill" ? "skills" : "tools"}/{target.name}/
+              </span>
+            </li>
+            <li>不会改动 .reviews / .skills_versions / 审计日志</li>
+            <li>不会去触发 ReviewQueue</li>
+          </ul>
+        </>
+      ) : (
+        <p className="text-sm leading-6 text-zinc-600">
+          归档后该资产不会被加载或执行
+          {target.kind === "skill"
+            ? "（SkillRouter 跳过）"
+            : "（ToolRegistry 跳过）"}
+          ，文件保留在磁盘。可以在「已归档」列表里恢复或永久删除。
+        </p>
+      )}
+    </Modal>
   );
 }
 
@@ -621,7 +619,7 @@ function ArchivedCard({ item, kind, busy, onRestore, onHardDelete }) {
         <div className="min-w-0">
           <h4 className="truncate text-sm font-semibold text-zinc-900">{item.name}</h4>
           <p className="mt-1 line-clamp-2 text-xs text-zinc-500">
-            {item.description || "暂无描述"}
+            {cleanDescription(item.description)}
           </p>
         </div>
         <StatusPill status="已归档" />
@@ -862,13 +860,16 @@ function AssetDetailModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/30 p-4">
-      <div className="max-h-[88vh] w-full max-w-6xl overflow-hidden rounded-lg border border-line bg-white shadow-xl">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-[modalFade_0.16s_ease-out]"
+      style={{ background: "rgba(9, 9, 11, 0.42)" }}
+    >
+      <div className="max-h-[88vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-line bg-white shadow-xl animate-[modalRise_0.18s_ease-out]">
         <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
           <div className="min-w-0">
-            <p className="muted-label">{titleize(assetType)} Asset</p>
+            <p className="muted-label">{assetType === "tool" ? "工具资产" : "Skill 资产"}</p>
             <h2 className="mt-1 truncate text-lg font-semibold text-zinc-950">{name}</h2>
-            <p className="mt-1 text-sm text-zinc-500">{detail.description || selected.asset.description || selected.asset.reason || "SafeHarness asset detail."}</p>
+            <p className="mt-1 text-sm text-zinc-500">{cleanDescription(detail.description || selected.asset.description || selected.asset.reason) || "暂无描述"}</p>
           </div>
           <button className="rounded-md p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900" onClick={onClose} aria-label="Close">
             <X className="h-4 w-4" />
@@ -1119,10 +1120,19 @@ function FilePanel({ file, fallbackPath }) {
 }
 
 function Metric({ label, value }) {
+  const rendered = compact(value);
+  const isEmpty = !rendered || rendered === "-" || rendered === "—";
   return (
-    <div className="grid grid-cols-[8rem_1fr] gap-3 text-sm">
+    <div className="grid grid-cols-[7rem_1fr] gap-3 text-sm">
       <span className="text-xs font-medium text-zinc-500">{label}</span>
-      <span className="min-w-0 break-words text-right font-semibold text-zinc-900">{compact(value)}</span>
+      <span
+        className={[
+          "min-w-0 break-words text-right",
+          isEmpty ? "font-normal text-zinc-300" : "font-semibold text-zinc-900",
+        ].join(" ")}
+      >
+        {isEmpty ? "—" : rendered}
+      </span>
     </div>
   );
 }
@@ -1148,14 +1158,25 @@ function defaultToolTestInputs(tool) {
   return {};
 }
 
+// Drop placeholder-ish descriptions (TODO / FIXME / "tbd" / etc.) so
+// the card renders the friendly "暂无描述" italic instead of literal
+// boilerplate that escaped a template.
+function cleanDescription(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+  const lowered = raw.toLowerCase();
+  if (lowered === "todo" || lowered === "tbd" || lowered === "fixme" || lowered === "n/a" || lowered === "-" || lowered === "—") return "";
+  return raw;
+}
+
 function assetRows({ assetType, name, currentVersion, evalStatus, latestChange, pendingReview }) {
   return [
-    ["Current version", currentVersion],
-    ["Status", assetType === "tool" ? "tool asset" : "active asset"],
-    ["Latest change", latestChange],
-    ["Pending review", pendingReview],
-    ["Eval status", evalStatus],
-    ["Path", assetType === "tool" ? `tools/${name}/` : `skills/${name}/`],
+    ["当前版本", currentVersion],
+    ["资产类型", assetType === "tool" ? "工具" : "Skill"],
+    ["最近变更", latestChange],
+    ["待审查项", pendingReview],
+    ["回归用例", evalStatus === "missing" ? "未配置" : evalStatus === "present" ? "已配置" : evalStatus],
+    ["文件路径", assetType === "tool" ? `tools/${name}/` : `skills/${name}/`],
   ];
 }
 
