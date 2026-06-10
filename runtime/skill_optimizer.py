@@ -31,6 +31,11 @@ from .evolution_stores import (
     ValidationResult,
     validate_edit_ops,
 )
+from .skill_edit_budget import (
+    SkillEditBudget,
+    budget_for_opportunities,
+    enforce_budget,
+)
 
 
 @dataclass
@@ -207,6 +212,16 @@ class SkillOptimizer:
         if not ok:
             return OptimizerResult(False, f"refused: {reason}")
 
+        # Defence-in-depth #3: enforce a per-patch edit budget keyed off
+        # the batch's risk_level. Policy / safety / tool-blocked
+        # opportunities resolve to a zero budget — the proposal is
+        # refused outright. Otherwise the budget caps total ops, ops by
+        # kind, per-rule length, and protects forbidden sections.
+        budget = budget_for_opportunities(opportunities)
+        enforcement = enforce_budget(edit_ops, budget)
+        if not enforcement.ok:
+            return OptimizerResult(False, enforcement.reason)
+
         rationale = _rationale_text(opportunities)
         expected = "; ".join(
             line for opp in opportunities for line in (opp.get("should_improve") or [])
@@ -227,6 +242,11 @@ class SkillOptimizer:
             expected_improvement=expected,
             risk_assessment=risk_assessment,
             required_validation_cases=required_validation,
+            budget=enforcement.budget,
+            budget_usage={
+                "used": enforcement.used,
+                "hit_limits": enforcement.hit_limits,
+            },
         )
         stored = self.stores.skill_edits.save(edit)
         self._record_scout_outcome(
@@ -322,6 +342,10 @@ class SkillOptimizer:
                 "edit_ops": edit.get("edit_ops", []),
                 "expected_improvement": edit.get("expected_improvement", ""),
                 "required_validation_cases": edit.get("required_validation_cases", []),
+                # Audit only — surfaced under "展开技术细节" in the UI;
+                # nothing here changes the review's safety semantics.
+                "edit_budget": edit.get("budget", {}),
+                "edit_budget_usage": edit.get("budget_usage", {}),
             },
         }
         item = self.review_store.create_review(**review_fields)

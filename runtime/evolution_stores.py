@@ -144,6 +144,11 @@ class SkillEditProposal:
     status: str = "proposed"  # proposed | validated | rejected | review_created
     review_id: str = ""
     created_at: str = field(default_factory=_utc_now)
+    # Edit-budget audit fields. Populated by the Optimizer when it
+    # computes a per-risk budget; defaults stay empty so older proposals
+    # / direct constructions in tests still work.
+    budget: dict[str, Any] = field(default_factory=dict)
+    budget_usage: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
