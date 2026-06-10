@@ -110,11 +110,12 @@ export default function AssetCreationDialog({ open, kind, onClose, onCreated }) 
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/40 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-[modalFade_0.16s_ease-out]"
+      style={{ background: "rgba(9, 9, 11, 0.42)" }}
       onClick={closeDialog}
     >
       <div
-        className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-line bg-white shadow-xl"
+        className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line bg-white shadow-xl animate-[modalRise_0.18s_ease-out]"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-center justify-between border-b border-line px-5 py-4">
