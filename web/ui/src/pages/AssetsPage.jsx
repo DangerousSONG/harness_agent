@@ -1,4 +1,4 @@
-import { Archive, BookOpen, Boxes, ChevronDown, ChevronRight, GitPullRequest, Hammer, Play, Plus, RotateCcw, Trash2, Workflow, Wrench, X } from "lucide-react";
+import { Archive, BookOpen, Boxes, CheckCircle2, ChevronDown, ChevronRight, GitPullRequest, Hammer, Lock, Play, Plus, RotateCcw, Trash2, Workflow, Wrench, X, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
@@ -452,13 +452,19 @@ export default function AssetsPage({
       {toast.message ? (
         <div
           className={[
-            "pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-lg border px-4 py-3 text-sm shadow-soft",
+            "pointer-events-none fixed bottom-6 left-1/2 z-50 flex max-w-md -translate-x-1/2 items-center gap-2.5 rounded-xl border px-4 py-2.5 text-sm shadow-soft backdrop-blur",
+            "animate-[fadeInUp_0.18s_ease-out]",
             toast.tone === "error"
-              ? "border-rose-200 bg-rose-50/95 text-rose-700"
-              : "border-emerald-200 bg-emerald-50/95 text-emerald-800",
+              ? "border-rose-200/80 bg-rose-50/95 text-rose-700"
+              : "border-emerald-200/80 bg-emerald-50/95 text-emerald-800",
           ].join(" ")}
         >
-          {toast.message}
+          {toast.tone === "error" ? (
+            <XCircle className="h-4 w-4 flex-shrink-0" />
+          ) : (
+            <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+          )}
+          <span className="leading-relaxed">{toast.message}</span>
         </div>
       ) : null}
     </section>
@@ -610,7 +616,7 @@ function ArchiveSection({
 
 function ArchivedCard({ item, kind, busy, onRestore, onHardDelete }) {
   return (
-    <article className="rounded-lg border border-line bg-white p-3">
+    <article className="group rounded-xl border border-amber-200/70 bg-white p-3.5 shadow-hairline transition hover:border-amber-300 hover:shadow-soft">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h4 className="truncate text-sm font-semibold text-zinc-900">{item.name}</h4>
@@ -622,7 +628,7 @@ function ArchivedCard({ item, kind, busy, onRestore, onHardDelete }) {
       </div>
       <div className="mt-3 flex gap-2">
         <button
-          className="secondary-button flex-1 justify-center"
+          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-semibold text-zinc-700 transition hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700 disabled:opacity-40"
           onClick={onRestore}
           disabled={busy}
         >
@@ -630,7 +636,7 @@ function ArchivedCard({ item, kind, busy, onRestore, onHardDelete }) {
           恢复
         </button>
         <button
-          className="secondary-button flex-1 justify-center text-rose-700 hover:bg-rose-50"
+          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-semibold text-zinc-700 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-40"
           onClick={onHardDelete}
           disabled={busy}
         >
@@ -638,7 +644,7 @@ function ArchivedCard({ item, kind, busy, onRestore, onHardDelete }) {
           永久删除
         </button>
       </div>
-      <p className="mt-2 text-[11px] text-zinc-500">
+      <p className="mt-2.5 text-[11px] text-zinc-400">
         路径：<span className="font-mono">{kind === "skill" ? "skills" : "tools"}/{item.name}/</span>
       </p>
     </article>
@@ -660,45 +666,58 @@ function CreateEntryCard({ title, description, onClick }) {
     <button
       type="button"
       onClick={onClick}
-      className="group flex h-full min-h-[180px] cursor-pointer flex-col items-start gap-3 rounded-xl border-2 border-dashed border-blue-300 bg-blue-50/40 p-5 text-left transition hover:border-appleBlue hover:bg-blue-50/70"
+      className="group relative flex h-full min-h-[200px] cursor-pointer flex-col items-start justify-between gap-3 overflow-hidden rounded-2xl border border-blue-200/70 bg-gradient-to-br from-blue-50/80 via-white to-white p-5 text-left shadow-hairline transition hover:-translate-y-0.5 hover:border-appleBlue/60 hover:shadow-soft focus:outline-none focus:ring-2 focus:ring-appleBlue/40"
     >
-      <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-appleBlue ring-1 ring-blue-200 group-hover:ring-appleBlue">
-        <Plus className="h-4 w-4" />
-      </span>
-      <div>
-        <p className="text-base font-semibold text-zinc-950">{title}</p>
-        <p className="mt-1 text-sm leading-6 text-zinc-600">{description}</p>
+      <div className="pointer-events-none absolute -right-8 -top-8 h-32 w-32 rounded-full bg-appleBlue/5 blur-2xl transition group-hover:bg-appleBlue/10" />
+      <div className="relative flex items-start gap-3">
+        <span className="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-white text-appleBlue shadow-hairline ring-1 ring-blue-100 transition group-hover:scale-105 group-hover:ring-appleBlue/30">
+          <Plus className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-base font-semibold text-zinc-950">{title}</p>
+          <p className="mt-1 line-clamp-3 text-sm leading-6 text-zinc-600">{description}</p>
+        </div>
       </div>
-      <span className="primary-button mt-auto">创建</span>
+      <span className="relative inline-flex items-center gap-1 rounded-full bg-appleBlue px-3 py-1.5 text-xs font-semibold text-white shadow-hairline transition group-hover:bg-blue-600">
+        <Plus className="h-3 w-3" /> 创建
+      </span>
     </button>
   );
 }
 
 function AssetCard({ title, description, status, rows, metrics, children, onClick, onDelete, deleteBusy, builtIn }) {
   return (
-    <article className="section-panel cursor-pointer p-4 transition hover:border-zinc-300" onClick={onClick}>
+    <article
+      className="section-panel group cursor-pointer p-4 transition duration-150 hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-soft"
+      onClick={onClick}
+    >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <h2 className="truncate text-base font-semibold text-zinc-950">{title}</h2>
             {builtIn ? (
               <span
-                className="inline-flex flex-shrink-0 items-center gap-1 rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[10px] font-semibold text-zinc-600"
+                className="inline-flex flex-shrink-0 items-center gap-1 rounded-full border border-zinc-200 bg-gradient-to-b from-white to-zinc-50 px-2 py-0.5 text-[10px] font-semibold text-zinc-600 shadow-hairline"
                 title="系统内置资产，不能归档或删除"
               >
+                <Lock className="h-2.5 w-2.5" />
                 内置
               </span>
             ) : null}
           </div>
-          {description ? <p className="mt-1 line-clamp-2 text-sm leading-6 text-zinc-500">{description}</p> : null}
+          {description ? (
+            <p className="mt-1 line-clamp-2 text-sm leading-6 text-zinc-500">{description}</p>
+          ) : (
+            <p className="mt-1 text-sm italic text-zinc-400">暂无描述</p>
+          )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <StatusPill status={status || "draft"} />
           {onDelete ? (
             <button
               type="button"
-              className="rounded-md p-1.5 text-zinc-400 hover:bg-rose-50 hover:text-rose-600"
-              title="删除（归档）"
+              className="rounded-lg p-1.5 text-zinc-400 transition hover:bg-rose-50 hover:text-rose-600 focus:outline-none focus:ring-2 focus:ring-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+              title="归档"
               disabled={deleteBusy}
               onClick={(event) => {
                 event.stopPropagation();
