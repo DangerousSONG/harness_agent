@@ -1,0 +1,113 @@
+# Default values for the Harness Agent Helm chart.
+#
+# Two values are MANDATORY for the 书安 OS platform: image.repository
+# and image.tag. Without them the platform will not trigger a build /
+# deploy.
+#
+# The contract values (service.targetPort, probes.*.path) MUST match
+# the corresponding fields in .a3s/manifest.acl and the Dockerfile —
+# all three are kept in lockstep by docs/DEPLOY_CHECKLIST.md.
+
+replicaCount: 1
+
+image:
+  repository: a3s/harness-agent
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+# Optional: image pull secret (e.g. for the internal Registry). Leave
+# empty for the default service account.
+imagePullSecrets: []
+#  - name: a3s-registry-pull
+
+# Optional: override the rendered names.
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  # External (in-cluster) port the Service publishes.
+  port: 80
+  # MUST equal Dockerfile EXPOSE/ENV PORT and manifest.acl
+  # contract.port — the container is listening here.
+  targetPort: 8000
+
+probes:
+  liveness:
+    # MUST equal manifest.acl contract.health and Dockerfile
+    # HEALTHCHECK target.
+    path: /api/health
+    initialDelaySeconds: 15
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    path: /api/health
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+
+# Plain env vars injected into the container. Add OPENAI_BASE_URL /
+# search provider config here; keep secrets in extraEnvFromSecrets.
+extraEnv:
+  - name: APP_ENV
+    value: production
+  - name: PORT
+    value: "8000"
+
+# Env vars sourced from existing Kubernetes Secrets. Each entry takes
+# the standard ``{ name, valueFrom: { secretKeyRef: { name, key } } }``
+# shape. Recommended for OPENAI_API_KEY, AUTH_PASSWORD, registry
+# tokens, etc.
+extraEnvFromSecrets: []
+#  - name: OPENAI_API_KEY
+#    valueFrom:
+#      secretKeyRef:
+#        name: harness-agent-secrets
+#        key: openai_api_key
+#  - name: AUTH_PASSWORD
+#    valueFrom:
+#      secretKeyRef:
+#        name: harness-agent-secrets
+#        key: auth_password
+
+# Platform-injected OS API base URL. When the platform supplies
+# os.apiBaseUrl through values overrides, the template forwards it
+# into the container as A3S_OS_API_BASE_URL.
+os:
+  apiBaseUrl: ""
+
+# Optional persistence. The container creates the audit / review /
+# version directories on demand; set persistence.enabled=true to
+# bind them to a PVC so a restart doesn't drop the audit trail.
+persistence:
+  enabled: false
+  storageClass: ""
+  size: 10Gi
+  # mountPaths is mirrored from the runtime directories the
+  # ``.dockerignore`` keeps out of the image. The chart mounts each
+  # under the listed path, all backed by the single PVC declared
+  # above.
+  mountPaths:
+    - /app/.audit
+    - /app/.reviews
+    - /app/.evolution
+    - /app/.skills_memory
+    - /app/.skills_versions
+    - /app/.knowledge_bases
+
+# Optional NodePort / LoadBalancer / Ingress flags can be appended
+# below as the platform requires; the default ClusterIP service is
+# the safe baseline.
+serviceAccount:
+  create: false
+  name: ""

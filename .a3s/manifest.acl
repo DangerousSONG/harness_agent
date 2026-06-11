@@ -1,0 +1,43 @@
+# .a3s/manifest.acl
+#
+# Deployable asset manifest for the 书安 OS (A3S) platform.
+#
+# This file declares the asset as category=agent and points the
+# platform at the build inputs (Dockerfile) and runtime spec
+# (Helm chart). The platform reads metadata.deployment.chartPath
+# + Dockerfile to build the image into its internal Registry, then
+# applies the Helm chart values to render the workload.
+#
+# Format note: the keys below follow the minimal contract the
+# platform's "资产清单文件规范" mandates — name / category /
+# version / description plus deployment.chartPath and deployment.kind
+# under metadata, and port + health under contract. If the platform
+# adds optional fields later (e.g. labels, tags, owner), append
+# them under the matching block.
+
+metadata:
+  # Stable asset identifier; also used as the default Helm release
+  # name when ``helm install harness-agent ./chart`` runs.
+  name: harness-agent
+  # Deployable asset category. The platform UI lists assets by this
+  # facet; ``agent`` matches the SafeHarness console.
+  category: agent
+  version: "0.1.0"
+  description: "SafeHarness self-evolving agent console"
+  deployment:
+    # Relative path (from the repo root) to the Helm chart directory
+    # the platform should apply.
+    chartPath: chart
+    # Workload kind. The chart template currently provisions a
+    # Deployment + Service; switch to ``statefulset`` here AND in
+    # the chart if persistence-bound replicas are ever needed.
+    kind: deployment
+
+contract:
+  # Container-internal port the application listens on. MUST equal
+  # Dockerfile EXPOSE / ENV PORT and chart values.service.targetPort.
+  port: 8000
+  # Liveness / readiness probe path. MUST equal Dockerfile
+  # HEALTHCHECK target and chart values.probes.*.path. ``web/main.py``
+  # registers this endpoint as a cheap synchronous JSON response.
+  health: /api/health

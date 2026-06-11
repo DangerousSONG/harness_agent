@@ -2,12 +2,20 @@
 
 打包 Harness Agent 镜像并上传到平台 Registry，然后在平台上用这个镜像创建应用。
 
+> **本仓库已按平台「镜像打包标准」改造**，根目录包含完整三件套：
+> `.a3s/manifest.acl` + `Dockerfile` + `chart/`（含 `Chart.yaml` /
+> `values.yaml` / `templates/deployment.yaml`）。**推荐走方式 A
+> 让平台自动构建**——直接 `docker tag/push` 一个 tar 镜像不一定能
+> 创建完整可部署应用，因为部署还需要 Helm chart 和 manifest 一起
+> 出现在仓库根。两种方式的差异见本文末「方式 A vs 方式 B」一节。
+
 | 参数 | 值 |
 |---|---|
 | Registry 地址 | `10.12.111.133` |
 | 命名空间 | `users/a42b309e-77b1-41a1-b38b-5f951cfddc58/` |
 | 镜像全名格式 | `10.12.111.133/users/a42b309e-77b1-41a1-b38b-5f951cfddc58/harness-agent:<tag>` |
 | 容器内端口 | `8000` |
+| 健康检查路径 | `/api/health` |
 | 启动命令 | `uvicorn web.main:app --host 0.0.0.0 --port 8000` |
 
 ## 一、本地构建与本地验证
@@ -142,3 +150,46 @@ docker stop harness-agent-test
 ```
 
 如果第 3 步返回 JSON、第 4 步返回 HTML（带 `<div id="root">`），就可以推 Registry 了。
+
+## 十、方式 A vs 方式 B
+
+### 方式 A：平台推荐（**首选**）
+
+把整个仓库（含三件套）上传到平台，由平台读取：
+
+1. `.a3s/manifest.acl` —— 资产分类、版本、健康检查契约
+2. `Dockerfile` —— 镜像构建输入
+3. `chart/values.yaml` —— 必须包含 `image.repository` + `image.tag`
+
+平台会**在集群内构建镜像**并自动推送到内置 Registry，然后用
+`chart/templates/` 渲染 Deployment + Service 部署上线。这种方式
+的好处：
+
+- 平台自动给镜像加上对应版本号 / 命名空间，不需要在本地 `docker tag/push`
+- Helm 渲染过程平台可见，出问题时平台日志直接定位
+- 升级（patch 版本号）会自动触发滚动更新
+
+### 方式 B：本地手动镜像 tar
+
+仅当**调试 / 镜像管理**用途时考虑：
+
+```bash
+docker save \
+  10.12.111.133/users/a42b309e-77b1-41a1-b38b-5f951cfddc58/harness-agent:v0.1.0 \
+  > harness-agent-v0.1.0.tar
+```
+
+把这个 tar 上传到 Registry 后可以拉取，但**不能直接创建一个完整
+可部署应用**——平台还需要看到 `.a3s/manifest.acl` 和 `chart/` 才能
+渲染 Helm 工作负载。所以方式 B 仅适合：
+
+- 已经在用方式 A 部署应用，单独想把某个镜像 tar 同步到 Registry
+- 镜像管理 / 备份场景
+
+**不要只上传 `harness-agent.tar` 作为完整应用**——平台不会拿它跑 Helm 模板。
+
+## 十一、自检清单
+
+详见 `docs/DEPLOY_CHECKLIST.md`。每次发版前对照该文件确认三处端口 /
+健康检查路径一致，再 `helm template harness-agent ./chart` 验证模板
+能渲染。

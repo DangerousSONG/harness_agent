@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "harness-agent.fullname" . }}
+  labels:
+    {{- include "harness-agent.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      # Points at the container's named ``http`` port (see
+      # templates/deployment.yaml). Keeping it as the port name
+      # rather than a hard number lets values.service.targetPort
+      # change without editing this file.
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "harness-agent.selectorLabels" . | nindent 4 }}
