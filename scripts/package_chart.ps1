@@ -1,84 +1,79 @@
-# scripts/package_chart.ps1
-#
-# Packages the Helm chart at .\chart into a .tgz the 书安 OS Helm
-# Marketplace API can ingest. Output lands in .\artifacts.
-#
-# Usage:
-#   .\scripts\package_chart.ps1
-#
-# Optional override:
-#   .\scripts\package_chart.ps1 -ChartDir .\chart -OutDir .\artifacts
-
-[CmdletBinding()]
-param(
-    [string]$ChartDir = "chart",
-    [string]$OutDir   = "artifacts"
+﻿param(
+    [string]$ChartDir = ".\chart",
+    [string]$OutputDir = ".\artifacts"
 )
 
 $ErrorActionPreference = "Stop"
 
-# -- prerequisites ---------------------------------------------------
-
-if (-not (Test-Path -LiteralPath (Join-Path $ChartDir "Chart.yaml"))) {
-    Write-Error "Chart.yaml not found under '$ChartDir'. Run this script from the repo root."
-    exit 1
-}
-if (-not (Test-Path -LiteralPath (Join-Path $ChartDir "values.yaml"))) {
-    Write-Error "values.yaml not found under '$ChartDir'. Run this script from the repo root."
+function Fail($Message) {
+    Write-Host "ERROR: $Message" -ForegroundColor Red
     exit 1
 }
 
-# Cheap Chart.yaml sanity check: must declare ``name`` and ``version``
-# (the platform's import job rejects packages where either is empty).
-$chartYaml = Get-Content -LiteralPath (Join-Path $ChartDir "Chart.yaml") -Raw
-if ($chartYaml -notmatch "(?m)^\s*name\s*:\s*\S") {
-    Write-Error "Chart.yaml is missing a non-empty 'name:' field."
-    exit 1
-}
-if ($chartYaml -notmatch "(?m)^\s*version\s*:\s*\S") {
-    Write-Error "Chart.yaml is missing a non-empty 'version:' field."
-    exit 1
-}
+Write-Host "Packaging Helm chart..." -ForegroundColor Cyan
 
-# Helm is mandatory. Don't silently shell out and hope for the best.
 $helm = Get-Command helm -ErrorAction SilentlyContinue
 if ($null -eq $helm) {
-    Write-Error "未检测到 helm，请先安装 Helm，或在有 Helm 的机器上执行。"
-    exit 1
+    Fail "Helm not found. Please install Helm first."
 }
 
-# -- package ---------------------------------------------------------
-
-if (-not (Test-Path -LiteralPath $OutDir)) {
-    New-Item -ItemType Directory -Path $OutDir | Out-Null
+if (-not (Test-Path $ChartDir)) {
+    Fail "Chart directory not found: $ChartDir"
 }
 
-Write-Host "Packaging $ChartDir → $OutDir …" -ForegroundColor Cyan
-$result = & helm package $ChartDir -d $OutDir 2>&1
-$exit   = $LASTEXITCODE
-$result | ForEach-Object { Write-Host $_ }
+$chartYaml = Join-Path $ChartDir "Chart.yaml"
+$valuesYaml = Join-Path $ChartDir "values.yaml"
 
-if ($exit -ne 0) {
-    Write-Error "helm package 失败 (exit $exit). 见上方输出。"
-    exit $exit
+if (-not (Test-Path $chartYaml)) {
+    Fail "Chart.yaml not found: $chartYaml"
 }
 
-# Find the .tgz helm just emitted so we can echo it cleanly. helm
-# names the file ``<name>-<version>.tgz`` so the most-recent .tgz in
-# the out dir is the one we just produced.
-$tgz = Get-ChildItem -LiteralPath $OutDir -Filter "*.tgz" |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
-
-if ($null -eq $tgz) {
-    Write-Error "helm package returned 0 but no .tgz appeared in $OutDir."
-    exit 1
+if (-not (Test-Path $valuesYaml)) {
+    Fail "values.yaml not found: $valuesYaml"
 }
 
-Write-Host ""
-Write-Host "✓ Chart packaged:" -ForegroundColor Green
-Write-Host "  $($tgz.FullName)" -ForegroundColor Green
-Write-Host ""
-Write-Host "Next: upload + deploy with" -ForegroundColor Yellow
-Write-Host "  `$env:SHUAN_OS_TOKEN=`"…`"" -ForegroundColor Yellow
-Write-Host "  .\scripts\deploy_to_shuan_os.ps1" -ForegroundColor Yellow
+$chartLines = Get-Content $chartYaml
+
+$nameLine = $chartLines | Where-Object { $_ -match "^\s*name\s*:" } | Select-Object -First 1
+$versionLine = $chartLines | Where-Object { $_ -match "^\s*version\s*:" } | Select-Object -First 1
+
+if ([string]::IsNullOrWhiteSpace($nameLine)) {
+    Fail "Chart.yaml missing name field."
+}
+
+if ([string]::IsNullOrWhiteSpace($versionLine)) {
+    Fail "Chart.yaml missing version field."
+}
+
+$chartName = ($nameLine -replace "^\s*name\s*:\s*", "").Trim().Trim('"').Trim("'")
+$chartVersion = ($versionLine -replace "^\s*version\s*:\s*", "").Trim().Trim('"').Trim("'")
+
+if ([string]::IsNullOrWhiteSpace($chartName)) {
+    Fail "Chart name is empty."
+}
+
+if ([string]::IsNullOrWhiteSpace($chartVersion)) {
+    Fail "Chart version is empty."
+}
+
+Write-Host "Chart name: $chartName"
+Write-Host "Chart version: $chartVersion"
+
+if (-not (Test-Path $OutputDir)) {
+    New-Item -ItemType Directory -Path $OutputDir | Out-Null
+}
+
+helm package $ChartDir -d $OutputDir
+
+if ($LASTEXITCODE -ne 0) {
+    Fail "helm package failed. Exit code: $LASTEXITCODE"
+}
+
+$packagePath = Join-Path $OutputDir "$chartName-$chartVersion.tgz"
+
+if (-not (Test-Path $packagePath)) {
+    Fail "Chart package not found: $packagePath"
+}
+
+Write-Host "Chart package created successfully:" -ForegroundColor Green
+Write-Host $packagePath -ForegroundColor Green
