@@ -1,13 +1,19 @@
 """Production entry point.
 
-Imports the FastAPI ``app`` from :mod:`web.server` and, when a built
-``web/ui/dist`` is present (the Dockerfile copies it in during the
-multi-stage build), mounts the bundle as the static frontend with an
-SPA-style ``index.html`` fallback so React Router URLs survive a hard
-refresh.
+Imports the FastAPI ``app`` from :mod:`web.server` and:
 
-The base ``web.server`` module is intentionally left untouched, so the
-test suite keeps driving it the same way it always has.
+1. Registers a lightweight ``GET /api/health`` liveness endpoint at
+   the path the platform manifest, Dockerfile HEALTHCHECK, and Helm
+   chart probes all reference. The endpoint returns ``{"status":
+   "ok"}`` synchronously, so the kubelet probes can hit it without
+   ever exercising business logic.
+2. When a built ``web/ui/dist`` is present (the Dockerfile copies it
+   in during the multi-stage build), mounts the bundle as the static
+   frontend with an SPA-style ``index.html`` fallback so React Router
+   URLs survive a hard refresh.
+
+The base ``web.server`` module is intentionally left untouched, so
+the test suite keeps driving it the same way it always has.
 
 Usage::
 
@@ -19,13 +25,28 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from web.server import app
 
 _HERE = Path(__file__).resolve().parent
 _UI_DIST = _HERE / "ui" / "dist"
+
+
+# --------------------------------------------------------------- health
+
+
+@app.get("/api/health", include_in_schema=False)
+def _health() -> JSONResponse:
+    """Cheap liveness probe used by Docker HEALTHCHECK, Helm probes,
+    and the platform manifest contract. Must never touch business
+    state — return as fast as possible so the kubelet's tight loop
+    doesn't fight for I/O with real requests."""
+    return JSONResponse({"status": "ok"})
+
+
+# --------------------------------------------------- static frontend
 
 
 def _mount_static_frontend() -> None:

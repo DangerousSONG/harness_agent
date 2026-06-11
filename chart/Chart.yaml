@@ -1,0 +1,11 @@
+apiVersion: v2
+name: harness-agent
+description: SafeHarness self-evolving agent console
+type: application
+# Chart version follows the chart itself (rev when the templates change).
+version: 0.1.0
+# Application version mirrors metadata.version in .a3s/manifest.acl.
+appVersion: "0.1.0"
+home: https://github.com/dangeroussong/harness_agent
+maintainers:
+  - name: harness-agent

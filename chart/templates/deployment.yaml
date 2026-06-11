@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "harness-agent.fullname" . }}
+  labels:
+    {{- include "harness-agent.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "harness-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "harness-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "harness-agent.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Pod-level security: run as the non-root user baked into the
+      # Dockerfile (uid 10001) and drop the kernel capabilities the
+      # workload doesn't need.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Container-level security: drop ALL caps, refuse privilege
+          # escalation, mirror the runAsNonRoot guarantee.
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.extraEnvFromSecrets }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.os.apiBaseUrl }}
+            - name: A3S_OS_API_BASE_URL
+              value: {{ .Values.os.apiBaseUrl | quote }}
+            {{- end }}
+          {{- if .Values.persistence.enabled }}
+          volumeMounts:
+            {{- range $idx, $path := .Values.persistence.mountPaths }}
+            - name: runtime-state
+              mountPath: {{ $path }}
+              # Each runtime directory shares the single PVC; subPath
+              # keeps them on disjoint directories inside the volume
+              # so the audit log and the review queue don't collide.
+              subPath: {{ trimPrefix "/app/" $path | replace "/" "-" }}
+            {{- end }}
+          {{- end }}
+      {{- if .Values.persistence.enabled }}
+      volumes:
+        - name: runtime-state
+          persistentVolumeClaim:
+            claimName: {{ include "harness-agent.fullname" . }}-runtime
+      {{- end }}
